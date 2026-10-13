@@ -219,6 +219,7 @@ void BuilderProcess::build(std::string name, SchematicPtr schematic, BlockPos or
 
 void BuilderProcess::onLostControl() {
     incorrectPositions_.reset();
+    failedCalcs_ = 0;
     name_.clear();
     schematic_.reset();
     layer_ = Settings::get().startAtLayer;
@@ -255,6 +256,13 @@ std::optional<DesiredBlock> BuilderProcess::getSchematic(int x, int y, int z, co
     DesiredBlock d = schematic_->desired(rx, ry, rz, current.name);
     if (d.kind == DesiredBlock::Kind::Any) return std::nullopt;
     return d;
+}
+
+std::optional<std::string> BuilderProcess::placeAt(int x, int y, int z, const BlockProps& current) const {
+    if (!schematic_) return std::nullopt;
+    auto d = getSchematic(x, y, z, current);
+    if (!d || d->kind != DesiredBlock::Kind::Block) return std::nullopt;
+    return d->name;
 }
 
 // Java BuilderProcess.valid
@@ -615,6 +623,11 @@ GoalPtr BuilderProcess::assemble(CalculationContext& ctx, bool wholeInventory, b
     }
     for (const BlockPos& pos : sourceLiquids) toPlace.push_back(std::make_shared<GoalBlock>(pos.above()));
     if (!toPlace.empty()) {
+        if (Settings::get().chatDebug) {
+            std::string list;
+            for (std::size_t i = 0; i < toPlace.size() && i < 6; ++i) list += toPlace[i]->toString() + " ";
+            baritone_.logDirect(std::format("Builder : {} a poser ({}), {} a casser", toPlace.size(), list, toBreak.size()), false);
+        }
         return std::make_shared<JankyGoalComposite>(std::make_shared<GoalComposite>(std::move(toPlace)),
                                                     std::make_shared<GoalComposite>(std::move(toBreak)));
     }
@@ -737,7 +750,17 @@ std::optional<PathingCommand> BuilderProcess::tick(bool calcFailed, bool isSafeT
             return PathingCommand{nullptr, PathingCommandType::RequestPause};
         }
     }
-    (void)calcFailed;
+    // Java keeps retrying silently; tell the player once why nothing happens. The usual cause
+    // is a part of the build that can only be reached by pillaring or bridging without
+    // throwaway blocks (acceptableThrowawayItems) in the hotbar.
+    if (calcFailed) {
+        if (++failedCalcs_ == 5) {
+            baritone_.logDirect("Construction : aucun chemin vers les blocs a poser. Il faut peut-etre des blocs jetables "
+                                "(acceptableThrowawayItems : terre, cobble...) pour monter ou faire un pont.", true);
+        }
+    } else if (baritone_.pathing().isPathing()) {
+        failedCalcs_ = 0;
+    }
     return PathingCommand{goal, PathingCommandType::ForceRevalidateGoalAndPath};
 }
 

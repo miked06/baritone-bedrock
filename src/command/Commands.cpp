@@ -1026,7 +1026,7 @@ void registerAll(CommandManager& manager, Bot& bot) {
             auto t = static_cast<std::size_t>(cmd->type);
             chat::info(std::format("Derniere commande : {}", t < std::size(types) ? types[t] : "?"));
         }
-        chat::info("Chemin : " + b.pathing().debugState());
+        chat::info("Chemin : " + b.pathing().debugState() + (b.pathing().isCalculating() ? " (calcul en cours)" : ""));
     }});
 
     manager.add({{"thisway", "forward"}, "thisway <distance>", "Va tout droit dans la direction regardee",
@@ -1307,6 +1307,14 @@ void registerAll(CommandManager& manager, Bot& bot) {
                      if (!mem::isReadable(reinterpret_cast<const void*>(addr), 8)) throw CommandError("Adresse illisible");
                      hexDump(args[0], reinterpret_cast<const void*>(addr), size);
                      chat::info("dump ecrit dans log.txt");
+                 }});
+
+    manager.add({{"quiet"}, "quiet <on|off>", "Dev : n'affiche plus les messages du bot dans le chat (ils restent dans log.txt)",
+                 [](const Args& args) {
+                     bool on = args.empty() || args[0] == "on";
+                     if (!on) chat::setQuiet(false);
+                     chat::info(on ? "Chat silencieux (messages dans log.txt)" : "Chat normal");
+                     if (on) chat::setQuiet(true);
                  }});
 
     manager.add({{"attrs"}, "attrs", "Dev : attributs du joueur (defaut et actuel) dans le log",

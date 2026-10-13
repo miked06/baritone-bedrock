@@ -6,6 +6,13 @@
 </p>
 
 <p align="center">
+  <a href="https://miked06.github.io/bartione-bedrock-website/"><b>Website</b></a> ·
+  <a href="https://github.com/miked06/baritone-bedrock/releases/latest"><b>Download</b></a> ·
+  <a href="docs/COMMANDS.md"><b>Commands</b></a> ·
+  <a href="docs/SETTINGS.md"><b>Settings</b></a>
+</p>
+
+<p align="center">
   <a href="https://github.com/miked06/baritone-bedrock/actions/workflows/build.yml"><img alt="Build" src="https://github.com/miked06/baritone-bedrock/actions/workflows/build.yml/badge.svg"></a>
   <a href="COPYING.LESSER"><img alt="License: LGPL-3.0" src="https://img.shields.io/badge/license-LGPL--3.0-blue.svg"></a>
   <img alt="Minecraft Bedrock 26.52" src="https://img.shields.io/badge/Minecraft%20Bedrock-26.52-green.svg">
@@ -30,7 +37,7 @@ The pathfinding engine, the movements, the processes and all the settings follow
 
 | | |
 |---|---|
-| 🧭 **Pathfinding** | A* over the real world with Baritone's movements: walk, sprint, ascend, descend, fall, diagonal, pillar, parkour, ladders, swimming, breaking and placing blocks on the way. Long trips are planned in segments, through chunks remembered in a long-distance cache. |
+| 🧭 **Pathfinding** | A* over the real world with Baritone's movements: walk, sprint, ascend, descend, fall, diagonal, pillar, parkour (also diagonally), ladders, swimming, breaking and placing blocks on the way. Long trips are planned in segments, through chunks remembered in a long-distance cache. |
 | ⛏️ **Mining** | `#mine diamond` finds ores (loaded chunks + cache), mines them and picks up the drops. With no ore in sight it goes down to the right level and branch-mines. Ore families (`deepslate_*`, `nether_gold_ore`...) and item names are understood. |
 | 🏗️ **Building** | `#build` loads `.mcstructure`, `.schem` (Sponge), `.litematic` and `.schematic` files, converts Java block names to Bedrock and reproduces block orientation (stairs, logs, slabs, furnaces, chests...). `#sel` builds boxes, walls, spheres and cylinders. |
 | 🌾 **Farming** | `#farm` harvests ripe crops, replants, uses bone meal and picks everything up. |
@@ -99,6 +106,7 @@ Everything the bot writes is in `%LOCALAPPDATA%\BaritoneBedrock\`:
 | [Building](docs/BUILDING.md) | Compiling the DLL and running the tests |
 | [Architecture](docs/ARCHITECTURE.md) | How the bot is organized and how it talks to the game |
 | [Development](docs/DEVELOPMENT.md) | Dev tools, reverse engineering notes, updating to a new game version |
+| [Changelog](CHANGELOG.md) | What changed in each version |
 | [Contributing](CONTRIBUTING.md) | How to report bugs and send changes |
 
 ## How it works, in short

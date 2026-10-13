@@ -20,7 +20,16 @@ namespace {
 struct Line {
     Vec3d a, b;
     sdk::Color color;
+    float width = 0;  // world units; 0 = a 1-pixel line
 };
+
+// Java's line widths are in pixels; Bedrock's line primitive is always 1 pixel, so wider
+// lines are drawn as two crossed ribbons. About 0.012 block per pixel at ~10 blocks away.
+float worldWidth(double pixels) { return pixels <= 1.0 ? 0.0f : static_cast<float>(pixels * 0.012); }
+void widen(std::vector<Line>& lines, std::size_t from, double pixels) {
+    float w = worldWidth(pixels);
+    for (std::size_t i = from; i < lines.size(); ++i) lines[i].width = w;
+}
 
 // Java IRenderer.startLines: every line is drawn with alpha 0.4 unless said otherwise
 constexpr float kLineAlpha = 0.4f;
@@ -194,7 +203,9 @@ void PathRenderer::render(sdk::LevelRenderer* renderer, sdk::ScreenContext* scre
         if (s.renderGoal && f.goal) {
             int budget = 100;
             drawGoal(lines, f.goal.get(), s.colorGoalBox, f.player, 0, budget);
+            widen(lines, 0, s.goalRenderLineWidthPixels);
         }
+        const std::size_t pathLines = lines.size();
         if (s.renderPath) {
             if (s.renderSelectionBoxes) {
                 for (const BlockPos& p : f.toBreak) addBlockBox(lines, p, color(s.colorBlocksToBreak));
@@ -214,7 +225,9 @@ void PathRenderer::render(sdk::LevelRenderer* renderer, sdk::ScreenContext* scre
                 addBlockBox(lines, f.mostRecent.back(), color(s.colorMostRecentConsidered));
             }
         }
+        widen(lines, pathLines, s.pathRenderLineWidthPixels);
         // Java ElytraBehavior.onRenderPass
+        const std::size_t elytraLines = lines.size();
         if (s.renderElytraPath || s.elytraRenderSimulation) {
             const sdk::Color ec = color(kElytraColor);
             if (s.renderElytraPath) {
@@ -241,7 +254,9 @@ void PathRenderer::render(sdk::LevelRenderer* renderer, sdk::ScreenContext* scre
             for (std::size_t i = 1; i < f.elytraSimulation.size(); ++i)
                 lines.push_back({f.elytraSimulation[i - 1], f.elytraSimulation[i], sim});
         }
+        widen(lines, elytraLines, s.pathRenderLineWidthPixels);
         // Java SelectionRenderer
+        const std::size_t selectionLines = lines.size();
         if (s.renderSelection) {
             const float opacity = static_cast<float>(std::clamp(s.selectionOpacity, 0.0, 1.0));
             for (const auto& [a, b] : f.selections) addRegion(lines, a, b, color(s.colorSelection, opacity));
@@ -254,6 +269,7 @@ void PathRenderer::render(sdk::LevelRenderer* renderer, sdk::ScreenContext* scre
             }
             if (f.build) addRegion(lines, f.build->first, f.build->second, color(kBuildColor, opacity));
         }
+        widen(lines, selectionLines, s.selectionLineWidth);
     }
     if (lines.empty() || !renderer || !screen) return;
 
@@ -263,16 +279,43 @@ void PathRenderer::render(sdk::LevelRenderer* renderer, sdk::ScreenContext* scre
     if (!tess || !mat) return;
     if (sdk::Color* shader = screen->shaderColor()) *shader = {1, 1, 1, 1};
 
-    tess->begin(sdk::Primitive::LineList, static_cast<int>(lines.size() * 2));
-    for (const Line& l : lines) {
-        tess->color(l.color);
-        tess->vertex(static_cast<float>(l.a.x - origin.x), static_cast<float>(l.a.y - origin.y),
-                     static_cast<float>(l.a.z - origin.z));
-        tess->color(l.color);
-        tess->vertex(static_cast<float>(l.b.x - origin.x), static_cast<float>(l.b.y - origin.y),
-                     static_cast<float>(l.b.z - origin.z));
+    auto put = [&](const Vec3d& v, const sdk::Color& c) {
+        tess->color(c);
+        tess->vertex(static_cast<float>(v.x - origin.x), static_cast<float>(v.y - origin.y), static_cast<float>(v.z - origin.z));
+    };
+    std::size_t thin = 0, thick = 0;
+    for (const Line& l : lines) (l.width > 0 ? thick : thin)++;
+
+    if (thin) {
+        tess->begin(sdk::Primitive::LineList, static_cast<int>(thin * 2));
+        for (const Line& l : lines) {
+            if (l.width > 0) continue;
+            put(l.a, l.color);
+            put(l.b, l.color);
+        }
+        sdk::renderMeshImmediately(screen, tess, mat);
     }
-    sdk::renderMeshImmediately(screen, tess, mat);
+    if (thick) {
+        // each segment: a horizontal and a vertical ribbon, both windings (no back-face culling)
+        tess->begin(sdk::Primitive::Quad, static_cast<int>(thick * 16));
+        for (const Line& l : lines) {
+            if (l.width <= 0) continue;
+            Vec3d d = l.b - l.a;
+            double len = std::sqrt(d.lengthSq());
+            if (len < 1e-6) continue;
+            d = d * (1.0 / len);
+            Vec3d side = std::fabs(d.y) > 0.99 ? Vec3d{1, 0, 0} : Vec3d{-d.z, 0, d.x};
+            side = side * (1.0 / std::sqrt(side.lengthSq()));
+            Vec3d up{d.y * side.z - d.z * side.y, d.z * side.x - d.x * side.z, d.x * side.y - d.y * side.x};
+            for (const Vec3d& n : {side, up}) {
+                Vec3d o = n * (l.width * 0.5);
+                const Vec3d q[4] = {l.a - o, l.b - o, l.b + o, l.a + o};
+                for (int k = 0; k < 4; ++k) put(q[k], l.color);
+                for (int k = 3; k >= 0; --k) put(q[k], l.color);
+            }
+        }
+        sdk::renderMeshImmediately(screen, tess, mat);
+    }
 }
 
 }  // namespace platform

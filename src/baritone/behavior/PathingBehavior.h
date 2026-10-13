@@ -46,6 +46,10 @@ public:
 
     GoalPtr goal() const;
     bool isPathing() const;
+    bool isCalculating() const {
+        std::lock_guard lock(calcLock_);
+        return inProgress_ != nullptr;
+    }
     bool hasInProgress() const;
     bool isSafeToCancel() const { return safeToCancel_; }
     // dest and goal of the path being executed

@@ -206,13 +206,14 @@ These read the game's memory and help when updating the bot to a new game versio
 |---|---|
 | `#debug` (`#info`) | What the bot reads from the game: position, block under the feet, held item, armor, hunger, effects, the game's target. Run it first after a game update. |
 | `#world` | State of the world snapshot. |
-| `#calc <x> [y] <z>` | Compute a path without moving and print it. |
+| `#calc <x> [y] <z>` | Compute a path without moving and print it (with the player's tools, blocks and water bucket). |
 | `#cost` | Cost of every movement from the player's position. |
 | `#inv [all]` (`#hotbar`) | Hotbar (or whole inventory) contents. |
 | `#entities` (`#ent`) | Loaded entities. |
 | `#nbt [dx dy dz]` | Block states of a block near the player. |
 | `#ecs <Component...>` / `#ecsdump <Component> [bytes]` | Does the player have these EnTT components / raw content of one. |
 | `#attrs` | Player attributes (health, hunger, speed...). |
+| `#quiet [on\|off]` | Hide the bot's messages from the chat (screenshots, videos); they still go to `log.txt`. |
 | `#vt <object> [count]` / `#hex <object> [size]` / `#hexat <address> [size]` | Dump a vtable or memory to the log. |
 | `#ism [slot...]` / `#swap <slot> <slot> [local\|server]` | Inventory request manager state / swap two slots. |
 | `#slot <0-8>`, `#walk <ticks> [sprint]`, `#look <yaw> <pitch>`, `#break dx dy dz`, `#place dx dy dz`, `#grab <0\|1>` | Low-level tests of input and interaction. |

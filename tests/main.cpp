@@ -239,6 +239,37 @@ TEST(parkour_gap) {
     CHECK_MSG(uses(r, MovementType::Parkour), describe(r));
 }
 
+TEST(parkour_diagonal) {
+    // a 3x3 platform, then single blocks that only meet diagonally over the void: the first
+    // one is 2 blocks diagonally away from the corner (a jump), the others touch by the corners
+    SettingsGuard guard;
+    Settings::get().allowParkour = true;
+    Settings::get().allowBreak = false;
+    Settings::get().allowPlace = false;
+    const Blocks& b = Blocks::get();
+    TestWorld w;
+    w.fill(-1, 0, -1, 1, 0, 1, b.stone);
+    for (int i = 3; i <= 6; ++i) w.fill(i, 0, i, i, 0, i, b.stone);
+    auto r = findPath(w, {0, 1, 0}, std::make_shared<GoalBlock>(6, 1, 6));
+    CHECK_MSG(r.type == PathResultType::SuccessToGoal, describe(r));
+    CHECK_MSG(uses(r, MovementType::Parkour), describe(r));
+    // never over lava
+    TestWorld lava;
+    lava.fill(-1, 0, -1, 1, 0, 1, b.stone);
+    lava.fill(3, 0, 3, 3, 0, 3, b.stone);
+    lava.fill(2, 0, 2, 2, 0, 2, b.lava);  // right under the gap
+    auto rl = findPath(lava, {0, 1, 0}, std::make_shared<GoalBlock>(3, 1, 3));
+    for (const auto& m : rl.path ? rl.path->movements() : std::vector<MovementSpec>{})
+        CHECK_MSG(!(m.type == MovementType::Parkour && m.src == BlockPos{1, 1, 1}), describe(rl));
+    // a wall in a corner cell blocks the jump (the body sweeps through it)
+    TestWorld wall;
+    wall.fill(-1, 0, -1, 1, 0, 1, b.stone);
+    wall.fill(3, 0, 3, 3, 0, 3, b.stone);
+    wall.fill(2, 1, 1, 2, 3, 1, b.stone);
+    auto rw = findPath(wall, {1, 1, 1}, std::make_shared<GoalBlock>(3, 1, 3));
+    CHECK_MSG(rw.type != PathResultType::SuccessToGoal || !uses(rw, MovementType::Parkour), describe(rw));
+}
+
 TEST(avoid_lava) {
     const Blocks& b = Blocks::get();
     TestWorld w;

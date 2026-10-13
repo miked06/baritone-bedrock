@@ -36,6 +36,9 @@ public:
     std::string displayName() const override;
     void customizeContext(CalculationContext& ctx) override;
 
+    // Java placeAt: the block wanted at a position while building (not air), if any.
+    std::optional<std::string> placeAt(int x, int y, int z, const BlockProps& current) const;
+
     // Rendering: the box being built.
     std::optional<std::pair<BlockPos, BlockPos>> bounds() const;
 
@@ -76,6 +79,7 @@ private:
     std::map<BlockPos, std::vector<BlockPos>> badSpots_;
     std::map<BlockPos, int> stuckHere_;
     int recenterTicks_ = 0;
+    int failedCalcs_ = 0;  // path calculations failed in a row
 };
 
 }  // namespace baritone

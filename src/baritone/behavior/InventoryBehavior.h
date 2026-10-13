@@ -16,6 +16,9 @@ public:
     explicit InventoryBehavior(PlayerContext& player) : player_(player) {}
     // InventoryPauserProcess.stationaryForInventoryMove (inventoryMoveOnlyIfStationary)
     void setStationaryCheck(std::function<bool()> check) { stationaryCheck_ = std::move(check); }
+    // Java BuilderProcess.placeAt: the block the build wants at a position, if any (so that a
+    // path placing a block there uses the schematic's block, not only throwaway blocks)
+    void setPlaceAt(std::function<std::optional<std::string>(int, int, int)> placeAt) { placeAt_ = std::move(placeAt); }
 
     bool hasGenericThrowaway();
     // Finds a throwaway block in the hotbar and (if select) holds it.
@@ -52,6 +55,7 @@ private:
 
     PlayerContext& player_;
     std::function<bool()> stationaryCheck_;
+    std::function<std::optional<std::string>(int, int, int)> placeAt_;
     int ticksSinceLastMove_ = 1000;
     std::optional<std::pair<int, int>> lastRequestedMove_;
 };

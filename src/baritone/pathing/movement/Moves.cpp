@@ -1,6 +1,7 @@
 #include "baritone/pathing/movement/Moves.h"
 
 #include <algorithm>
+#include <numbers>
 
 #include "baritone/pathing/movement/MovementHelper.h"
 
@@ -404,6 +405,52 @@ double downward(CalculationContext& ctx, int x, int y, int z) {
     return fallCost(1) + getMiningDurationTicks(ctx, x, y - 1, z, down, false);
 }
 
+// Bedrock addition: Baritone only jumps along the four axes, so two blocks that only meet
+// diagonally across a gap (a common parkour layout) had no path at all. Same rules as
+// parkour(): head room for the jump, no ladder/stairs/slab/fluid to jump from, never over lava,
+// and the cells the player's body sweeps through are clear (on a diagonal that includes the
+// two "corner" cells of every step).
+void parkourDiagonal(CalculationContext& ctx, int x, int y, int z, int sx, int sz, MoveResult& res) {
+    if (!ctx.allowParkour) return;
+    if (!ctx.allowJumpAtBuildLimit && y >= ctx.bsi.maxY() - 1) return;
+    if (!fullyPassable(ctx, x, y + 2, z)) return;
+    const BlockProps& standingOn = ctx.props(x, y - 1, z);
+    if (isClimbable(standingOn) || standingOn.type == T::Stairs || isBottomSlab(standingOn)) return;
+    if (standingOn.type == T::SoulSand || (ctx.allowWalkOnMagmaBlocks && standingOn.type == T::Magma)) return;
+    if (ctx.assumeWalkOnWater && standingOn.hasFluid()) return;
+    if (ctx.props(x, y, z).hasFluid()) return;  // can't jump out of water
+
+    // the first diagonal cell is the gap: with a floor there, a diagonal walk does it
+    if (canWalkOn(ctx, x + sx, y - 1, z + sz)) return;
+    const int maxJump = ctx.canSprint ? 3 : 2;
+    auto clearColumn = [&](int cx, int cz, int top) {
+        for (int dy = 0; dy <= top; ++dy)
+            if (!fullyPassable(ctx, cx, y + dy, cz)) return false;
+        return true;
+    };
+    auto overLava = [&](int cx, int cz) { const BlockProps& p = ctx.props(cx, y - 1, cz); return avoidWalkingInto(p) && p.type != T::Water; };
+    for (int i = 1; i <= maxJump; ++i) {
+        int cx = x + sx * i, cz = z + sz * i;
+        // the two corners between the previous diagonal cell and this one
+        int ax = x + sx * i, az = z + sz * (i - 1);
+        int bx = x + sx * (i - 1), bz = z + sz * i;
+        if (!clearColumn(ax, az, 2) || !clearColumn(bx, bz, 2)) return;
+        if (overLava(ax, az) || overLava(bx, bz)) return;
+        if (!clearColumn(cx, cz, i < maxJump ? 2 : 1)) return;
+        const BlockProps& landingOn = ctx.props(cx, y - 1, cz);
+        if (i >= 2 && landingOn.type != T::Farmland && canWalkOn(ctx, cx, y - 1, cz, landingOn) && fullyPassable(ctx, cx, y + 2, cz)) {
+            if (!checkOvershootSafety(ctx, cx + sx, y, cz + sz)) return;
+            res.x = cx;
+            res.y = y;
+            res.z = cz;
+            res.cost = SPRINT_ONE_BLOCK_COST * i * std::numbers::sqrt2 + ctx.jumpPenalty;
+            return;
+        }
+        if (overLava(cx, cz)) return;
+        if (i >= 2 && !fullyPassable(ctx, cx, y + 3, cz)) return;  // the top of the jump
+    }
+}
+
 void parkour(CalculationContext& ctx, int x, int y, int z, Direction dir, MoveResult& res) {
     if (!ctx.allowParkour) return;
     if (!ctx.allowJumpAtBuildLimit && y >= ctx.bsi.maxY() - 1) return;
@@ -529,13 +576,17 @@ void applyParkour(const Move& m, CalculationContext& ctx, int x, int y, int z, M
     parkour(ctx, x, y, z, m.direction, res);
 }
 
+void applyParkourDiagonal(const Move& m, CalculationContext& ctx, int x, int y, int z, MoveResult& res) {
+    parkourDiagonal(ctx, x, y, z, m.dx > 0 ? 1 : -1, m.dz > 0 ? 1 : -1, res);
+}
+
 constexpr Direction N = Direction::North, S = Direction::South, E = Direction::East, W = Direction::West;
 
 }  // namespace
 
-const std::array<Move, 22>& allMoves() {
+const std::array<Move, 26>& allMoves() {
     using MT = MovementType;
-    static const std::array<Move, 22> moves{{
+    static const std::array<Move, 26> moves{{
         {"DOWNWARD", MT::Downward, 0, -1, 0, false, false, Direction::Down, applyDownward},
         {"PILLAR", MT::Pillar, 0, 1, 0, false, false, Direction::Up, applyPillar},
         {"TRAVERSE_NORTH", MT::Traverse, 0, 0, -1, false, false, N, applyTraverse},
@@ -558,6 +609,10 @@ const std::array<Move, 22>& allMoves() {
         {"PARKOUR_SOUTH", MT::Parkour, 0, 0, 4, true, true, S, applyParkour},
         {"PARKOUR_EAST", MT::Parkour, 4, 0, 0, true, true, E, applyParkour},
         {"PARKOUR_WEST", MT::Parkour, -4, 0, 0, true, true, W, applyParkour},
+        {"PARKOUR_NORTHEAST", MT::Parkour, 3, 0, -3, true, true, N, applyParkourDiagonal},
+        {"PARKOUR_NORTHWEST", MT::Parkour, -3, 0, -3, true, true, N, applyParkourDiagonal},
+        {"PARKOUR_SOUTHEAST", MT::Parkour, 3, 0, 3, true, true, S, applyParkourDiagonal},
+        {"PARKOUR_SOUTHWEST", MT::Parkour, -3, 0, 3, true, true, S, applyParkourDiagonal},
     }};
     return moves;
 }

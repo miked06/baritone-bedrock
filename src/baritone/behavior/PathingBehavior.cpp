@@ -238,6 +238,18 @@ void PathingBehavior::findPathInNewThread(const BlockPos& start, bool talkAboutI
     calcThread_ = std::thread([this, finder, start, goal, primary, failure, talkAboutIt] {
         PathCalculationResult result = finder->calculate(primary, failure);
         std::lock_guard plan(planLock_);
+        if (Settings::get().chatDebug) {
+            static constexpr const char* types[] = {"succes", "segment", "echec", "annule", "exception"};
+            auto t = static_cast<std::size_t>(result.type);
+            notify_(std::format("Calcul {} -> {} : {}, {} positions, {} noeuds{}", start, goal->toString().substr(0, 60),
+                                t < std::size(types) ? types[t] : "?", result.path ? result.path->length() : 0,
+                                result.path ? result.path->numNodesConsidered() : 0,
+                                result.path && current_ == nullptr &&
+                                        std::ranges::find(result.path->positions(), expectedSegmentStart_) == result.path->positions().end()
+                                    ? std::format(" (rejete: ne passe pas par {})", expectedSegmentStart_)
+                                    : result.error.empty() ? "" : " (" + result.error + ")"),
+                    false);
+        }
         if (result.path) {
             auto executor = std::make_unique<PathExecutor>(result.path);
             if (!current_) {

@@ -33,6 +33,7 @@ Baritone Bedrock was written by reading [Baritone's Java code](https://github.co
 | `extendCacheOnThreshold` | Always on in practice. | Loaded chunks are always scanned exactly. |
 | `pauseMiningForFallingBlocks` | Rarely triggers. | On Bedrock a falling block entity only exists for about one tick; the bot still digs through falling gravel and sand correctly. |
 | `#goto` failures | Retries twice with more time before giving up. | Long trips through complex terrain. |
+| `pathRenderLineWidthPixels`, `goalRenderLineWidthPixels`, `selectionLineWidth` | Lines wider than 1 pixel are drawn as two crossed ribbons, with a width in blocks (about 0.012 block per pixel): they look thinner far away and thicker up close. | The game's line primitive is always 1 pixel. |
 
 ## Not possible
 
@@ -41,7 +42,6 @@ Baritone Bedrock was written by reading [Baritone's Java code](https://github.co
 | `elytraNetherSeed`, `elytraPredictTerrain` | Java uses a native library that generates nether terrain from the seed. The Bedrock port plans with the chunks it has seen. |
 | `elytraCacheCullDistance`, `elytraTimeBetweenCacheCullSecs`, `elytraCustomAllocator` | Settings of Java's native elytra pathfinder. |
 | `elytraRenderRaytraces`, `elytraRenderHitboxRaytraces` | The flight solver works differently (it simulates whole trajectories); the chosen trajectory is drawn with `elytraRenderSimulation`. |
-| `pathRenderLineWidthPixels`, `goalRenderLineWidthPixels`, `selectionLineWidth` | The game's line renderer draws 1-pixel lines. |
 | `renderPathIgnoreDepth`, `renderGoalIgnoreDepth`, `renderSelectionBoxesIgnoreDepth`, `renderSelectionIgnoreDepth` | No material without depth test was found for lines; lines are hidden by blocks. |
 | `renderCachedChunks`, `cachedChunksOpacity` | Would need to draw cached chunks as world geometry. |
 | `renderGoalXZBeacon` | Drawn as a thin column instead of a beacon beam. |
@@ -52,6 +52,7 @@ Baritone Bedrock was written by reading [Baritone's Java code](https://github.co
 
 Things Bedrock Baritone has that Java does not:
 
+- Diagonal parkour: Baritone only jumps along the four axes; Bedrock Baritone also jumps 2 blocks diagonally over a gap (3 when it can sprint), at the same height, never over lava (with `allowParkour`).
 - `#build` reads `.mcstructure` (Bedrock) files and converts Java block names to Bedrock.
 - `#sel` keeps several selections at once.
 - A watchdog writes the game thread's call stack to `log.txt` if the game freezes for more than 5 seconds.

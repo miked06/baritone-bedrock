@@ -1,6 +1,7 @@
 #include "baritone/pathing/movement/Movement.h"
 
 #include <algorithm>
+#include <numbers>
 #include <cmath>
 
 #include "baritone/Settings.h"
@@ -241,6 +242,10 @@ double Movement::calculateCost(CalculationContext& ctx) const {
         case MovementType::Downward: return movement_costs::downward(ctx, src_.x, src_.y, src_.z);
         case MovementType::Parkour: {
             BlockPos d = direction();
+            if (d.x != 0 && d.z != 0) {
+                movement_costs::parkourDiagonal(ctx, src_.x, src_.y, src_.z, d.x > 0 ? 1 : -1, d.z > 0 ? 1 : -1, res);
+                return (res.x == dest_.x && res.y == dest_.y && res.z == dest_.z) ? res.cost : COST_INF;
+            }
             Direction dir = d.x > 0 ? Direction::East : d.x < 0 ? Direction::West : d.z > 0 ? Direction::South
                                                                                               : Direction::North;
             movement_costs::parkour(ctx, src_.x, src_.y, src_.z, dir, res);
@@ -964,6 +969,7 @@ public:
         stepX_ = (d.x > 0) - (d.x < 0);
         stepZ_ = (d.z > 0) - (d.z < 0);
         ascend_ = dest.y > src.y;
+        diagonal_ = stepX_ != 0 && stepZ_ != 0;
     }
 
     bool safeToCancel(ExecContext&) const override { return currentState_.status != MovementStatus::Running; }
@@ -972,7 +978,13 @@ protected:
     std::unordered_set<BlockPos> calculateValidPositions() const override {
         std::unordered_set<BlockPos> set;
         for (int i = 0; i <= dist_; ++i)
-            for (int y = 0; y < 2; ++y) set.insert(src_.offset(stepX_ * i, y, stepZ_ * i));
+            for (int y = 0; y < 2; ++y) {
+                set.insert(src_.offset(stepX_ * i, y, stepZ_ * i));
+                if (diagonal_ && i > 0) {  // the body crosses the corner cells of each step
+                    set.insert(src_.offset(stepX_ * i, y, stepZ_ * (i - 1)));
+                    set.insert(src_.offset(stepX_ * (i - 1), y, stepZ_ * i));
+                }
+            }
         return set;
     }
 
@@ -982,7 +994,7 @@ protected:
         BlockPos feet = ctx.playerFeet();
         Vec3d pos = ctx.player.position();
         if (feet.y < src_.y) return state.setStatus(MovementStatus::Unreachable);  // we fell
-        if (dist_ >= 4 || ascend_) state.setInput(Input::Sprint, true);
+        if (dist_ >= 4 || ascend_ || diagonal_) state.setInput(Input::Sprint, true);
         if (Settings::get().allowWalkOnMagmaBlocks && ctx.props(feet.below()).type == T::Magma) state.setInput(Input::Sneak, true);
         mh::moveTowards(ctx, state, dest_);
         BlockPos step{stepX_, 0, stepZ_};
@@ -990,9 +1002,11 @@ protected:
             // in the air (Bedrock carries a bit further than Java): keep facing the jump
             // direction, stop pushing once over the landing block, step back if past its middle
             // predict where we land without input (air drag 0.91, gravity), then push or brake
-            double along = (pos.x - (dest_.x + 0.5)) * stepX_ + (pos.z - (dest_.z + 0.5)) * stepZ_;
+            // along the jump direction (a unit vector: 45 degrees on a diagonal)
+            const double norm = diagonal_ ? std::numbers::sqrt2 : 1.0;
+            double along = ((pos.x - (dest_.x + 0.5)) * stepX_ + (pos.z - (dest_.z + 0.5)) * stepZ_) / norm;
             Vec3d vel = ctx.player.velocity();
-            double v = vel.x * stepX_ + vel.z * stepZ_, vy = vel.y, y = pos.y, travel = 0;
+            double v = (vel.x * stepX_ + vel.z * stepZ_) / norm, vy = vel.y, y = pos.y, travel = 0;
             for (int t = 0; t < 40; ++t) {
                 vy = (vy - 0.08) * 0.98;
                 y += vy;
@@ -1010,7 +1024,16 @@ protected:
         if (feet == dest_) {
             if (helper::isClimbable(ctx.props(dest_))) return state.setStatus(MovementStatus::Success);
             if (pos.y - feet.y < 0.094) state.setStatus(MovementStatus::Success);
-        } else if (feet != src_) {
+        } else if (diagonal_ && ctx.player.onGround() && pos.y - src_.y < 0.0001) {
+            // diagonal: run to the corner of the block and jump once the body is past it (the
+            // player crosses the corner cells, so the feet block can't tell when to jump)
+            double out = ((pos.x - (src_.x + 0.5)) * stepX_ + (pos.z - (src_.z + 0.5)) * stepZ_) / std::numbers::sqrt2;
+            if (out > 0.62) state.setInput(Input::Jump, true);
+            else if (out < -0.2) {
+                state.setInput(Input::Sprint, false);
+                mh::moveTowards(ctx, state, src_);
+            }
+        } else if (feet != src_ && !diagonal_) {
             if (feet == src_ + step || pos.y - src_.y > 0.0001) {
                 if (Settings::get().allowPlace && ctx.inventory.hasGenericThrowaway() && !ctx.canWalkOn(dest_.below()) &&
                     !ctx.player.onGround() &&
@@ -1034,6 +1057,7 @@ protected:
 private:
     int dist_, stepX_, stepZ_;
     bool ascend_;
+    bool diagonal_ = false;  // Bedrock addition: a jump along a diagonal
 };
 
 // ===========================================================================

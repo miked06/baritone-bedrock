@@ -29,7 +29,7 @@ struct Move {
     void (*apply)(const Move& m, CalculationContext& ctx, int x, int y, int z, MoveResult& res);
 };
 
-const std::array<Move, 22>& allMoves();
+const std::array<Move, 26>& allMoves();
 
 // Cost functions of each movement, also used to re-check a movement during execution.
 namespace movement_costs {
@@ -44,6 +44,9 @@ void diagonal(CalculationContext& ctx, int x, int y, int z, int destX, int destZ
 double pillar(CalculationContext& ctx, int x, int y, int z);
 double downward(CalculationContext& ctx, int x, int y, int z);
 void parkour(CalculationContext& ctx, int x, int y, int z, Direction dir, MoveResult& res);
+// Bedrock addition (not in Baritone): a sprint jump along a diagonal (sx, sz = +-1) over a gap,
+// 2 blocks diagonally, 3 with sprinting. Lands at the same height.
+void parkourDiagonal(CalculationContext& ctx, int x, int y, int z, int sx, int sz, MoveResult& res);
 }  // namespace movement_costs
 
 }  // namespace baritone

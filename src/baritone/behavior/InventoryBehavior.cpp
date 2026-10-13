@@ -80,7 +80,13 @@ bool InventoryBehavior::hasGenericThrowaway() {
     return selectItem(isThrowaway, false);
 }
 
-bool InventoryBehavior::selectThrowawayForLocation(bool select, int, int, int) {
+// Java selectThrowawayForLocation: the block the build wants there first, then any throwaway
+bool InventoryBehavior::selectThrowawayForLocation(bool select, int x, int y, int z) {
+    if (placeAt_) {
+        if (auto wanted = placeAt_(x, y, z)) {
+            if (selectItem([&](const HotbarStack& s) { return s.isBlock && s.name == *wanted; }, select)) return true;
+        }
+    }
     return selectItem(isThrowaway, select);
 }
 

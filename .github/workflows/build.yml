@@ -40,9 +40,18 @@ jobs:
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v4
+
       - uses: actions/download-artifact@v4
         with:
           name: BaritoneBedrock
+
+      - name: Release notes from CHANGELOG.md
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          awk -v v="## $version" '$0 == v {f=1; next} /^## / {f=0} f' CHANGELOG.md > notes.md
+          [ -s notes.md ] || echo "See CHANGELOG.md." > notes.md
+          cat notes.md
 
       - name: Publish release
         uses: softprops/action-gh-release@v2
@@ -50,4 +59,4 @@ jobs:
           files: |
             BaritoneBedrock.dll
             BaritoneBedrock.pdb
-          generate_release_notes: true
+          body_path: notes.md

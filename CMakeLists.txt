@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.25)
-project(BaritoneBedrock VERSION 1.0.0 LANGUAGES C CXX)
+project(BaritoneBedrock VERSION 1.1.0 LANGUAGES C CXX)
 
 if(NOT CMAKE_SIZEOF_VOID_P EQUAL 8)
     message(FATAL_ERROR "Minecraft Bedrock is x64 only: configure with -A x64")

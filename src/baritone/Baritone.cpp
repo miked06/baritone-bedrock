@@ -36,6 +36,11 @@ Baritone::Baritone(PlayerContext& player, Notify notify)
     control_.registerProcess(&elytra_);
     control_.registerProcess(&inventoryPauser_);
     inventory_.setStationaryCheck([this] { return inventoryPauser_.stationaryForInventoryMove(); });
+    inventory_.setPlaceAt([this](int x, int y, int z) -> std::optional<std::string> {
+        if (!world_ || !builder_.isActive()) return std::nullopt;
+        BlockStateInterface bsi(world_);
+        return builder_.placeAt(x, y, z, bsi.props(x, y, z));
+    });
 }
 
 std::optional<PathingCommand> InventoryPauserProcess::onTick(bool, bool isSafeToCancel) {

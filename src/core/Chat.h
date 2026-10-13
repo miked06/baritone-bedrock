@@ -8,6 +8,9 @@ namespace chat {
 void info(std::string_view message);
 void error(std::string_view message);
 
+// #quiet: keep the chat clean (screenshots, videos); messages still go to log.txt.
+void setQuiet(bool quiet);
+
 // Called on the game thread every tick.
 void flush();
 

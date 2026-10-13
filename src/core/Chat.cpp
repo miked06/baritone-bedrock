@@ -1,5 +1,6 @@
 #include "core/Chat.h"
 
+#include <atomic>
 #include <format>
 #include <mutex>
 #include <string>
@@ -15,6 +16,7 @@ namespace {
 
 std::mutex g_mutex;
 std::vector<std::string> g_pending;
+std::atomic<bool> g_quiet{false};  // #quiet: messages go to the log only
 
 // Bedrock formatting codes. Java: "[Baritone]", "[B]" with shortBaritonePrefix, nothing
 // with useMessageTag (Java marks the message with a tag instead; Bedrock has no tags).
@@ -45,13 +47,15 @@ void error(std::string_view message) {
     push(std::format("{}{}{}", prefix(), kRed, message));
 }
 
+void setQuiet(bool quiet) { g_quiet = quiet; }
+
 void flush() {
     std::vector<std::string> lines;
     {
         std::lock_guard lock(g_mutex);
         lines.swap(g_pending);
     }
-    if (lines.empty()) return;
+    if (lines.empty() || g_quiet) return;
     auto* client = sdk::ClientInstance::get();
     auto* gui = client ? client->guiData() : nullptr;
     if (!gui) return;
