@@ -1,0 +1,21 @@
+# Build output
+build/
+out/
+CMakeUserPresets.json
+.vs/
+*.user
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+
+# Memory dumps of the game (hundreds of MB, copyrighted, regenerable with tools/dump_module.py)
+re/
+
+# Third-party injector and its local config
+FateInjector.exe
+config.txt
+
+# Local development notes
+PLAN.md

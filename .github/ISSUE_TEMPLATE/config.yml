@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Documentation
+    url: https://github.com/miked06/baritone-bedrock/tree/main/docs
+    about: Commands, settings, troubleshooting and development notes.

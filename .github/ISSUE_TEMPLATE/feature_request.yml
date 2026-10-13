@@ -1,0 +1,19 @@
+name: Feature request
+description: Suggest an improvement or a missing Baritone feature
+labels: [enhancement]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What would you like?
+    validations:
+      required: true
+  - type: textarea
+    id: baritone
+    attributes:
+      label: Does Baritone (Java) do this?
+      description: If yes, the command, setting or class that does it helps a lot.
+  - type: textarea
+    id: why
+    attributes:
+      label: Why is it useful?

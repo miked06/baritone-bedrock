@@ -1,0 +1,56 @@
+name: Bug report
+description: Something does not work as expected
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting! Please check [TROUBLESHOOTING.md](https://github.com/miked06/baritone-bedrock/blob/main/docs/TROUBLESHOOTING.md) first.
+  - type: input
+    id: game-version
+    attributes:
+      label: Minecraft version
+      description: Shown at the bottom of the main menu.
+      placeholder: "26.52"
+    validations:
+      required: true
+  - type: input
+    id: bot-version
+    attributes:
+      label: Bot version
+      description: Output of `#version`, or the release / commit you built.
+      placeholder: "1.0.0"
+    validations:
+      required: true
+  - type: dropdown
+    id: mode
+    attributes:
+      label: Game mode
+      options: [Survival, Creative, Adventure, Other]
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: What did you do?
+      description: The commands you typed and the situation (terrain, items, dimension...).
+      placeholder: |
+        1. #goto 100 64 200
+        2. ...
+    validations:
+      required: true
+  - type: textarea
+    id: result
+    attributes:
+      label: What happened, and what did you expect?
+    validations:
+      required: true
+  - type: textarea
+    id: log
+    attributes:
+      label: log.txt
+      description: |
+        Attach `%LOCALAPPDATA%\BaritoneBedrock\log.txt` (drag and drop the file here).
+        For movement problems, run `#set logMovement true` before reproducing.
+    validations:
+      required: false
