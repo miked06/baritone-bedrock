@@ -1,11 +1,13 @@
 #pragma once
 #include <map>
+#include <chrono>
 #include <optional>
 #include <unordered_set>
 #include <vector>
 
 #include "baritone/process/Process.h"
 #include "baritone/schematic/Schematic.h"
+#include "baritone/schematic/CompletedPositions.h"
 #include "baritone/utils/Rotation.h"
 #include "baritone/world/BlockProps.h"
 
@@ -75,7 +77,12 @@ private:
     int numRepeats_ = 0;
     int stopAtHeight_ = 0;
     std::optional<std::unordered_set<BlockPos>> incorrectPositions_;
-    std::unordered_set<int64_t> observedCompleted_;  // done, even when out of render distance now
+    CompletedPositions observedCompleted_;  // done, even when out of render distance now
+    bool fullScanPending_ = false;
+    std::size_t fullScanCursor_ = 0;
+    std::size_t scanBudget_ = 0;
+    int scanFirstY_ = 0, scanLastY_ = -1;
+    std::chrono::steady_clock::time_point scanDeadline_;
     // Bedrock: standing spots that turned out useless for a target (no face visible from there)
     std::map<BlockPos, std::vector<BlockPos>> badSpots_;
     std::map<BlockPos, int> stuckHere_;

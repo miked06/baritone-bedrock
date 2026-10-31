@@ -52,6 +52,7 @@ void info(Bot& bot) {
     if (auto layer = work.layers()) chat::info(std::format("Active layers: {}..{} (zero-based; preview and build)", layer->first, layer->second));
 }
 void startBuild(Bot& bot) {
+    if (bot.schematicLoading()) throw CommandError("A schematic is still loading; wait for Loaded before building");
     auto& work = bot.schematics();
     if (!work.loaded()) throw CommandError("No schematic loaded. Use #schematic load <file>");
     feet(bot);
@@ -71,6 +72,8 @@ void registerSchematicCommands(CommandManager& manager, Bot& bot) {
     auto run = [&bot](const Args& args) {
         auto& work = bot.schematics();
         const std::string action = args.empty() ? "info" : lower(args[0]);
+        if (bot.schematicLoading() && action != "info" && action != "list" && action != "load" && action != "clear" && action != "unload")
+            throw CommandError("A schematic is still loading; wait for Loaded before editing or building");
         auto stopBuild = [&] { if (bot.baritone().builder().isActive()) bot.cancelAll(); };
         if (action == "list") {
             if (args.size() != 1 && args.size() != 2) throw CommandError("Usage: #schematic list [page]");
@@ -92,22 +95,15 @@ void registerSchematicCommands(CommandManager& manager, Bot& bot) {
             auto at = feet(bot);
             if (args.size() == 5) at = coordinates(args, 2, at);
             auto path = resolve(args[1]);
-            baritone::SchematicPtr source;
-            try { source = baritone::loadSchematic(path.string()); }
-            catch (const std::exception& error) {
-                throw CommandError(std::format("Could not read {}: {}", path.filename().string(), error.what()));
-            } // failed loads keep the current placement
-            work.load(path.filename().string(), std::move(source), at);
-            bot.cancelAll();
-            info(bot);
-            for (const auto& warning : work.warnings()) chat::error("Schematic note: " + warning);
-            chat::info("Preview: cyan = missing, red = wrong block, orange = remove, gray = unloaded. Matching blocks are hidden");
-            chat::info("Preview shows up to 512 differences within 16 blocks of you; the blue outline covers the full placement");
-            chat::info("Use #schematic move/rotate/mirror/layer, #schematic materials, then #schematic build");
+            bot.loadSchematicAsync(path.string(), at, true);
             return;
         }
         if (action == "info") {
             if (args.size() != 0 && args.size() != 1) throw CommandError("Usage: #schematic info");
+            if (bot.schematicLoading()) {
+                chat::info("A schematic is loading in the background. The previous placement remains until a successful load");
+                if (!work.loaded()) return;
+            }
             info(bot); return;
         }
         if (action == "build") {
@@ -116,7 +112,7 @@ void registerSchematicCommands(CommandManager& manager, Bot& bot) {
         }
         if (action == "clear" || action == "unload") {
             if (args.size() != 1) throw CommandError("Usage: #schematic clear");
-            stopBuild(); work.clear(); chat::info("Schematic unloaded"); return;
+            bot.cancelSchematicLoad(); stopBuild(); work.clear(); chat::info("Schematic unloaded"); return;
         }
         if (action == "move") {
             if (!work.loaded()) throw CommandError("No schematic loaded");

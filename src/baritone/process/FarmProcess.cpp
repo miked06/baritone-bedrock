@@ -54,6 +54,7 @@ bool FarmProcess::isPlantable(const std::string& item) {
 }
 
 void FarmProcess::farm(int range, BlockPos center) {
+    onLostControl();
     active_ = true;
     range_ = range;
     center_ = center;
@@ -77,31 +78,34 @@ std::optional<PathingCommand> FarmProcess::onTick(bool calcFailed, bool isSafeTo
     if (!active_ || !baritone_.liveContext()) return std::nullopt;
     CalculationContext& ctx = *baritone_.liveContext();
     const Settings& st = Settings::get();
-    if (st.mineGoalUpdateInterval != 0 && tickCount_++ % st.mineGoalUpdateInterval == 0) {
+    const bool initialScan = !locations_ && !scan_.running();
+    const int interval = st.mineGoalUpdateInterval;
+    if (initialScan || (interval > 0 && tickCount_ % interval == 0)) {
         // Java scanChunkRadius(ctx, scan, farmMaxScanSize, 10, 10)
         scan_.start(baritone_.world(), BlockFilter(scannedBlocks()), baritone_.playerFeet(), st.farmMaxScanSize, 10);
     }
+    ++tickCount_;
     if (auto result = scan_.poll()) locations_ = std::move(*result);
     if (!locations_) return PathingCommand{nullptr, PathingCommandType::RequestPause};
-    if (st.farmUsingSelection && !baritone_.selections().all().empty()) {
-        const Selection& last = baritone_.selections().all().back();
-        std::erase_if(*locations_, [&](const BlockPos& p) { return !last.contains(p); });
-    }
+    const Selection* selection = st.farmUsingSelection && !baritone_.selections().all().empty()
+        ? &baritone_.selections().all().back() : nullptr;
 
     std::vector<BlockPos> toBreak, openFarmland, bonemealable, openSoulSand, openLog;
     for (const BlockPos& pos : *locations_) {
+        if (selection && !selection->contains(pos)) continue;
         if (range_ != 0 && pos.distSq(center_) > static_cast<int64_t>(range_) * range_) continue;
         const BlockProps& p = ctx.props(pos.x, pos.y, pos.z);
         bool airAbove = ctx.props(pos.x, pos.y + 1, pos.z).type == BlockType::Air;
         if (p.name == "minecraft:farmland") {
-            if (airAbove) openFarmland.push_back(pos);
+            if (airAbove && st.replantCrops && st.allowPlace) openFarmland.push_back(pos);
             continue;
         }
         if (p.name == "minecraft:soul_sand") {
-            if (airAbove) openSoulSand.push_back(pos);
+            if (airAbove && st.replantCrops && st.replantNetherWart && st.allowPlace) openSoulSand.push_back(pos);
             continue;
         }
         if (p.name == "minecraft:jungle_log") {
+            if (!st.replantCrops || !st.allowPlace) continue;
             for (Direction d : kHorizontals)
                 if (ctx.props(pos.offset(d).x, pos.y, pos.offset(d).z).type == BlockType::Air) {
                     openLog.push_back(pos);
@@ -110,10 +114,10 @@ std::optional<PathingCommand> FarmProcess::onTick(bool calcFailed, bool isSafeTo
             continue;
         }
         if (readyForHarvest(ctx, pos, p)) {
-            toBreak.push_back(pos);
+            if (ctx.allowBreak || ctx.allowBreakAnyway.contains(p.name)) toBreak.push_back(pos);
             continue;
         }
-        if (isBonemealable(p)) bonemealable.push_back(pos);
+        if (st.allowPlace && isBonemealable(p)) bonemealable.push_back(pos);
     }
 
     ExecContext ec{baritone_.player(), ctx, baritone_.inventory(), baritone_.playerFeet()};
@@ -212,6 +216,8 @@ std::optional<PathingCommand> FarmProcess::onTick(bool calcFailed, bool isSafeTo
     }
     for (const EntityInfo& e : baritone_.player().entities()) {
         if (!e.isItem || !isCropDrop(e.itemName)) continue;
+        if (selection && !selection->contains({static_cast<int>(std::floor(e.position.x)), static_cast<int>(std::floor(e.position.y)),
+                                             static_cast<int>(std::floor(e.position.z))})) continue;
         if (range_ != 0 && (e.position - Vec3d::center(center_)).lengthSq() > static_cast<double>(range_) * range_) continue;
         goals.push_back(std::make_shared<GoalBlock>(static_cast<int>(std::floor(e.position.x)),
                                                     static_cast<int>(std::floor(e.position.y + 0.1)),

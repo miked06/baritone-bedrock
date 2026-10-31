@@ -15,6 +15,30 @@ constexpr std::size_t kMaxOutput = 256ull * 1024 * 1024;
     throw std::runtime_error(std::string("invalid compressed data: ") + what);
 }
 
+uint32_t crc32(const uint8_t* data, std::size_t length) {
+    static constexpr auto table = [] {
+        std::array<uint32_t, 256> values{};
+        for (uint32_t i = 0; i < 256; ++i) {
+            uint32_t value = i;
+            for (int bit = 0; bit < 8; ++bit) value = (value >> 1) ^ ((value & 1) ? 0xEDB88320u : 0);
+            values[i] = value;
+        }
+        return values;
+    }();
+    uint32_t crc = 0xFFFFFFFFu;
+    for (std::size_t i = 0; i < length; ++i) crc = table[(crc ^ data[i]) & 0xFF] ^ (crc >> 8);
+    return crc ^ 0xFFFFFFFFu;
+}
+uint32_t adler32(const std::vector<uint8_t>& data) {
+    uint32_t a = 1, b = 0;
+    for (std::size_t start = 0; start < data.size();) {
+        const auto end = std::min(data.size(), start + 5552);
+        while (start < end) { a += data[start++]; b += a; }
+        a %= 65521; b %= 65521;
+    }
+    return (b << 16) | a;
+}
+
 class BitReader {
 public:
     BitReader(const uint8_t* data, std::size_t size) : data_(data), size_(size) {}
@@ -203,12 +227,14 @@ std::vector<uint8_t> inflateRaw(const uint8_t* data, std::size_t size, std::size
 }
 
 std::vector<uint8_t> decompressIfNeeded(const std::vector<uint8_t>& data) {
-    if (data.size() >= 18 && data[0] == 0x1F && data[1] == 0x8B) {  // gzip
+    if (data.size() >= 2 && data[0] == 0x1F && data[1] == 0x8B) {  // gzip
+        if (data.size() < 18) corrupt("truncated gzip stream");
         if (data[2] != 8) corrupt("gzip method");
         uint8_t flags = data[3];
+        if (flags & 0xE0) corrupt("reserved gzip flags");
         std::size_t pos = 10;
         auto need = [&](std::size_t n) {
-            if (pos + n > data.size()) corrupt("gzip header");
+            if (pos + n > data.size() - 8) corrupt("gzip header");
         };
         if (flags & 4) {  // FEXTRA
             need(2);
@@ -218,12 +244,27 @@ std::vector<uint8_t> decompressIfNeeded(const std::vector<uint8_t>& data) {
             while (need(1), data[pos++] != 0) {}
         if (flags & 16)  // FCOMMENT
             while (need(1), data[pos++] != 0) {}
-        if (flags & 2) pos += 2;  // FHCRC
+        if (flags & 2) {
+            need(2);
+            if ((crc32(data.data(), pos) & 0xFFFF) != (data[pos] | (uint32_t(data[pos + 1]) << 8))) corrupt("gzip header checksum");
+            pos += 2;
+        }
         need(0);
-        return inflateRaw(data.data() + pos, data.size() - pos);
+        std::size_t used = 0;
+        auto out = inflateRaw(data.data() + pos, data.size() - pos - 8, &used);
+        auto little32 = [&](std::size_t p) { return uint32_t(data[p]) | (uint32_t(data[p + 1]) << 8) | (uint32_t(data[p + 2]) << 16) | (uint32_t(data[p + 3]) << 24); };
+        if (used != data.size() - pos - 8 || little32(data.size() - 4) != out.size() || little32(data.size() - 8) != crc32(out.data(), out.size()))
+            corrupt("gzip checksum, size or trailing data");
+        return out;
     }
     if (data.size() >= 2 && (data[0] & 0x0F) == 8 && ((data[0] << 8) | data[1]) % 31 == 0) {  // zlib
-        return inflateRaw(data.data() + 2, data.size() - 2);
+        if (data.size() < 6 || (data[0] >> 4) > 7 || (data[1] & 0x20)) corrupt("unsupported or truncated zlib header");
+        std::size_t used = 0;
+        auto out = inflateRaw(data.data() + 2, data.size() - 6, &used);
+        const auto p = data.size() - 4;
+        const uint32_t expected = (uint32_t(data[p]) << 24) | (uint32_t(data[p + 1]) << 16) | (uint32_t(data[p + 2]) << 8) | data[p + 3];
+        if (used != data.size() - 6 || expected != adler32(out)) corrupt("zlib checksum or trailing data");
+        return out;
     }
     return data;
 }

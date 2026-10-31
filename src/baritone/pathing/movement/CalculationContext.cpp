@@ -32,6 +32,9 @@ CalculationContext::CalculationContext(std::shared_ptr<const WorldSnapshot> worl
     frostWalker = abilities.frostWalker;
     placeBlockCost = s.blockPlacementPenalty;
     allowBreak = s.allowBreak;
+    allowPlace = s.allowPlace;
+    allowPlaceInFluidsSource = s.allowPlaceInFluidsSource;
+    allowPlaceInFluidsFlow = s.allowPlaceInFluidsFlow;
     allowBreakAnyway = toSet(s.allowBreakAnyway);
     allowParkour = s.allowParkour;
     allowParkourPlace = s.allowParkourPlace;
@@ -67,12 +70,12 @@ CalculationContext::CalculationContext(std::shared_ptr<const WorldSnapshot> worl
 }
 
 double CalculationContext::costOfPlacingAt(int x, int y, int z, const BlockProps& current) const {
-    if (y < bsi.minY() || y >= bsi.maxY()) return costs::COST_INF;
+    if (!allowPlace || y < bsi.minY() || y >= bsi.maxY()) return costs::COST_INF;
+    if (current.hasFluid() && ((current.fluidLevel == 0 && !allowPlaceInFluidsSource) ||
+        (current.fluidLevel != 0 && !allowPlaceInFluidsFlow))) return costs::COST_INF;
     if (placeCostOverride) return placeCostOverride(x, y, z, current);
     if (!hasThrowaway) return costs::COST_INF;
     // source blocks / flowing fluid (Java FluidState.isSource: level 0)
-    if (!Settings::get().allowPlaceInFluidsSource && current.hasFluid() && current.fluidLevel == 0) return costs::COST_INF;
-    if (!Settings::get().allowPlaceInFluidsFlow && current.hasFluid() && current.fluidLevel != 0) return costs::COST_INF;
     if (y < bsi.minY() || y >= bsi.maxY()) return costs::COST_INF;
     if (placeOverride && placeOverride(x, y, z, current) >= costs::COST_INF) return costs::COST_INF;
     return placeBlockCost;

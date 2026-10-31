@@ -12,6 +12,7 @@
 #include "baritone/Settings.h"
 #include "core/Bot.h"
 #include "core/Log.h"
+#include "core/Perf.h"
 #include "core/Safe.h"
 #include "memory/Hooks.h"
 #include "memory/Signatures.h"
@@ -40,6 +41,8 @@ UpdateFn g_update = nullptr;
 
 void __fastcall update(void* game) {
     hooks::Guard guard;
+    perf::markFrame();
+    perf::Scope timing(perf::Metric::GameUpdate);
     g_updateThread = GetCurrentThreadId();
     g_update(game);
     safe::run("frame", [] { Bot::get().onFrame(); });

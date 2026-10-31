@@ -27,6 +27,7 @@
 #include "baritone/schematic/Orientation.h"
 #include "baritone/schematic/Schematic.h"
 #include "baritone/schematic/SchematicWorkspace.h"
+#include "baritone/schematic/SchematicLoadJob.h"
 #include "baritone/schematic/NbtReader.h"
 #include "baritone/utils/CommandLine.h"
 #include "InflateData.h"
@@ -813,7 +814,12 @@ TEST(elytra_path_around_wall) {
     TestWorld w(3);
     w.floor(0, b.stone);
     w.fill(10, 1, -48, 10, 60, 40, b.stone);  // a high wall with a gap at z > 40
-    auto r = elytra::ElytraPathFinder(w.snapshot()).calculate({0, 20, 0}, {30, 20, 0}, 2.0, 3000);
+    // This checks route/collision correctness, not a wall-clock performance SLA.
+    // Leave headroom for sanitizer overhead and a running Minecraft client.
+    const auto started = std::chrono::steady_clock::now();
+    auto r = elytra::ElytraPathFinder(w.snapshot()).calculate({0, 20, 0}, {30, 20, 0}, 2.0, 10000);
+    std::printf("      elytra wall: %d nodes, %.0f ms\n", r.nodes,
+        std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count());
     CHECK_MSG(r.reachesGoal, std::format("{} nodes", r.nodes));
     bool around = std::ranges::any_of(r.path, [](const BlockPos& p) { return p.x == 10 && (p.z > 40 || p.y > 61); });
     CHECK(around);
@@ -1269,6 +1275,291 @@ TEST(sponge_v3_nested_palette_and_invalid_indices) {
     std::filesystem::remove(path);
 }
 
+StateId auditCrop(bool mature) {
+    BlockProps p;
+    p.name = "minecraft:wheat";
+    p.collides = false; p.pathfindable = true; p.replaceable = true;
+    p.growth = mature ? 7 : 1; p.matureGrowth = 7;
+    return BlockRegistry::get().add(p);
+}
+
+TEST(farm_initial_scan_with_periodic_rescans_disabled) {
+    SettingsGuard settings;
+    Settings::get().mineGoalUpdateInterval = 0;
+    TestWorld world(1); world.set(2, 1, 0, auditCrop(true));
+    test::TestPlayer player;
+    Baritone bot(player, [](const std::string&, bool) {});
+    bot.tick(world.snapshot()); bot.farm().farm(10, {});
+    bool found = false;
+    for (int i = 0; i < 100 && !found; ++i) {
+        bot.controls() = {};
+        bot.farm().onTick(false, true);
+        found = bot.controls().target.rotation.has_value();
+        if (!found) std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    CHECK(found);
+}
+
+TEST(builder_respects_disabled_breaking_for_nearby_wrong_blocks) {
+    SettingsGuard settings;
+    Settings::get().allowBreak = false; Settings::get().allowBreakAnyway.clear();
+    TestWorld world(1); world.floor(0, Blocks::get().stone); world.set(2, 1, 0, Blocks::get().dirt);
+    test::TestPlayer player;
+    Baritone bot(player, [](const std::string&, bool) {}); bot.tick(world.snapshot());
+    auto schematic = std::make_shared<FillSchematic>(BlockPos{1, 1, 1}, DesiredBlock::air());
+    bot.builder().build("clear", schematic, {2, 1, 0});
+    for (int i = 0; i < 3; ++i) {
+        bot.controls() = {};
+        bot.builder().onTick(false, true);
+        if (bot.controls().target.rotation) player.facing = *bot.controls().target.rotation;
+        CHECK(!bot.controls().input(Input::ClickLeft));
+    }
+}
+
+TEST(builder_large_completed_scan_yields_before_completion) {
+    struct CountingAir : Schematic {
+        mutable std::size_t calls = 0;
+        BlockPos size() const override { return {64, 64, 64}; }
+        DesiredBlock desired(int, int, int, const BlockProps&) const override { ++calls; return DesiredBlock::air(); }
+    };
+    SettingsGuard settings;
+    Settings::get().buildInLayers = false;
+    TestWorld world(4);
+    test::TestPlayer player;
+    Baritone bot(player, [](const std::string&, bool) {}); bot.tick(world.snapshot());
+    auto source = std::make_shared<CountingAir>();
+    bot.builder().build("large already-complete build", source, {0, 1, 0});
+    bot.builder().onTick(false, true);
+    CHECK(source->calls <= 8192);
+    CHECK(bot.builder().isActive());
+    for (int i = 0; i < 1024 && bot.builder().isActive(); ++i) bot.builder().onTick(false, true);
+    CHECK(!bot.builder().isActive());
+}
+
+TEST(builder_direct_placement_respects_disabled_fluid_replacement) {
+    SettingsGuard settings;
+    Settings::get().allowPlace = true;
+    Settings::get().allowPlaceInFluidsSource = false;
+    Settings::get().okIfWater = false;
+    TestWorld world(1); world.floor(0, Blocks::get().stone); world.set(2, 1, 0, Blocks::get().water);
+    test::TestPlayer player;
+    player.inventory[0].name = "minecraft:stone";
+    player.inventory[0].count = 32;
+    player.inventory[0].isBlock = true;
+    Baritone bot(player, [](const std::string&, bool) {}); bot.tick(world.snapshot());
+    bot.builder().build("fluid replacement disabled", std::make_shared<FillSchematic>(BlockPos{1, 1, 1}, DesiredBlock::block("minecraft:stone")), {2, 1, 0});
+    for (int i = 0; i < 5; ++i) {
+        bot.controls() = {};
+        bot.builder().onTick(false, true);
+        if (bot.controls().target.rotation) player.facing = *bot.controls().target.rotation;
+        CHECK(!bot.controls().input(Input::ClickRight));
+    }
+}
+
+TEST(builder_incremental_layers_and_repeats_complete_with_a_shared_tick_budget) {
+    struct CountingAny : Schematic {
+        mutable std::size_t calls = 0;
+        BlockPos size() const override { return {32, 4, 32}; }
+        DesiredBlock desired(int, int, int, const BlockProps&) const override { ++calls; return DesiredBlock::any(); }
+    };
+    SettingsGuard settings;
+    auto& s = Settings::get();
+    s.buildInLayers = true; s.layerHeight = 1; s.startAtLayer = 0;
+    s.buildRepeat = {0, 4, 0}; s.buildRepeatCount = 3;
+    TestWorld world(2);
+    test::TestPlayer player;
+    Baritone bot(player, [](const std::string&, bool) {}); bot.tick(world.snapshot());
+    auto source = std::make_shared<CountingAny>();
+    bot.builder().build("layered repeats", source, {0, 1, 0});
+    bot.builder().onTick(false, true);
+    CHECK(bot.builder().isActive());
+    CHECK(source->calls <= 8192);
+    for (int i = 0; i < 256 && bot.builder().isActive(); ++i) bot.builder().onTick(false, true);
+    CHECK(!bot.builder().isActive());
+    CHECK(source->calls >= 3 * 32 * 4 * 32);
+}
+
+TEST(follow_pickup_filters_range_and_walks_into_items) {
+    SettingsGuard settings;
+    Settings::get().followTargetMaxDistance = 10;
+    TestWorld world(1);
+    test::TestPlayer player;
+    EntityInfo item; item.isItem = true; item.itemName = "minecraft:diamond"; item.position = {5.5, 1, 0.5};
+    EntityInfo far = item; far.position = {50.5, 1, 0.5};
+    EntityInfo other = item; other.itemName = "minecraft:dirt"; other.position = {3.5, 1, 0.5};
+    player.nearby = {item, far, other};
+    Baritone bot(player, [](const std::string&, bool) {}); bot.tick(world.snapshot());
+    bot.follow().pickup([](const std::string& name) { return name == "minecraft:diamond"; }, "diamonds");
+    CHECK(bot.follow().isActive());
+    auto command = bot.follow().onTick(false, true);
+    CHECK(command && command->goal && command->goal->isInGoal(5, 1, 0));
+    CHECK(!command->goal->isInGoal(3, 1, 0) && !command->goal->isInGoal(50, 1, 0));
+    bot.cancelEverything(); CHECK(!bot.follow().isActive());
+}
+
+TEST(completed_positions_compact_sections_preserve_negative_coordinates) {
+    CompletedPositions done;
+    for (int x = -16; x < 0; ++x) for (int y = -16; y < 0; ++y) for (int z = -16; z < 0; ++z) done.insert({x, y, z});
+    CHECK(done.sectionCount() == 1 && done.contains({-1, -1, -1}));
+    CHECK(!done.contains({0, -1, -1}) && !done.contains({-1, 0, -1}));
+    done.erase({-1, -1, -1}); CHECK(!done.contains({-1, -1, -1}));
+    CHECK(done.contains({-2, -1, -1}));
+    done.clear(); CHECK(done.sectionCount() == 0);
+}
+
+TEST(builder_place_override_cannot_bypass_permission_or_fluid_flags) {
+    SettingsGuard settings;
+    TestWorld world(1);
+    Settings::get().allowPlace = false;
+    CalculationContext disabled(world.snapshot(), {}, true);
+    disabled.placeCostOverride = [](int, int, int, const BlockProps&) { return 0.0; };
+    CHECK(disabled.costOfPlacingAt(1, 1, 1, BlockRegistry::get().props(kAir)) >= costs::COST_INF);
+    Settings::get().allowPlace = true; Settings::get().allowPlaceInFluidsSource = false;
+    CalculationContext dry(world.snapshot(), {}, true);
+    dry.placeCostOverride = disabled.placeCostOverride;
+    CHECK(dry.costOfPlacingAt(1, 1, 1, BlockRegistry::get().props(Blocks::get().water)) >= costs::COST_INF);
+}
+
+TEST(mine_permission_restriction_preserves_states_and_ore_allowlist) {
+    BlockFilter filter({"oak_log[pillar_axis=x]", "diamond"});
+    auto restricted = filter.restrictedTo({"minecraft:oak_log", "minecraft:diamond_ore"});
+    BlockProps log; log.name = "minecraft:oak_log"; log.states = {{"pillar_axis", "x"}};
+    CHECK(restricted.matches(log));
+    log.states[0].second = "y"; CHECK(!restricted.matches(log));
+    CHECK(restricted.matchesName("minecraft:diamond_ore"));
+    CHECK(!restricted.matchesName("minecraft:deepslate_diamond_ore"));
+}
+
+TEST(explore_sparse_allowlist_targets_distant_chunks_without_ring_enumeration) {
+    SettingsGuard settings;
+    Settings::get().worldExploringChunkOffset = 0;
+    TestWorld world(1);
+    test::TestPlayer player;
+    Baritone bot(player, [](const std::string&, bool) {}); bot.tick(world.snapshot());
+    bot.explore().setFilter({WorldSnapshot::key(12000, -12000)}, true);
+    bot.explore().explore(0, 0);
+    auto start = std::chrono::steady_clock::now();
+    auto command = bot.explore().onTick(false, true);
+    auto ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
+    CHECK(command && command->goal && command->goal->isInGoal(12000 * 16 + 8, 1, -12000 * 16 + 8));
+    CHECK(bot.explore().isActive());
+    std::printf("      sparse explore allowlist: %.3f ms\n", ms);
+}
+
+TEST(cache_background_save_keeps_concurrent_updates_and_zero_search_does_not_load_regions) {
+    SettingsGuard settings;
+    Settings::get().cachedChunksExpirySeconds = -1;
+    TempDir tmp;
+    auto cache = makeCache(tmp.path);
+    for (int x = 0; x < 64; ++x) {
+        auto chunk = std::make_shared<CachedChunk>(x, 0, -64, 384);
+        for (std::size_t i = 0; i < chunk->bits().size(); ++i) chunk->bits()[i] = static_cast<uint8_t>(i % 251);
+        cache->put(chunk);
+    }
+    cache->saveAsync();
+    auto latest = std::make_shared<CachedChunk>(0, 0, -64, 384);
+    latest->setType(1, 1, 1, PathingBlockType::Water);
+    cache->put(latest);
+    cache->saveAsync(); // does not wait for an earlier writer
+    cache->saveNow();  // explicit barrier also persists edits made during the first save
+    cache.reset();
+    auto loaded = makeCache(tmp.path);
+    CHECK(loaded->loadedRegions() == 0);
+    CHECK(loaded->locationsOf([](const std::string&) { return true; }, {}, 0, 1).empty());
+    CHECK(loaded->loadedRegions() == 0);
+    CHECK(loaded->chunk(0, 0)->type(1, 1, 1) == PathingBlockType::Water);
+}
+
+TEST(farm_respects_breaking_permission_and_selection_for_drops) {
+    SettingsGuard settings;
+    Settings::get().mineGoalUpdateInterval = 0;
+    Settings::get().allowBreak = false;
+    Settings::get().allowBreakAnyway.clear();
+    Settings::get().farmUsingSelection = true;
+    TestWorld world(1); world.set(2, 1, 0, auditCrop(true));
+    test::TestPlayer player;
+    EntityInfo item; item.isItem = true; item.itemName = "minecraft:wheat"; item.position = {10.5, 1, 0.5};
+    player.nearby = {item};
+    Baritone bot(player, [](const std::string&, bool) {}); bot.tick(world.snapshot());
+    bot.selections().add({{0, 0, 0}, {3, 3, 3}});
+    bot.farm().farm(0, {});
+    for (int i = 0; i < 100 && bot.farm().isActive(); ++i) {
+        bot.controls() = {};
+        auto command = bot.farm().onTick(false, true);
+        if (bot.controls().target.rotation) player.facing = *bot.controls().target.rotation;
+        CHECK(!bot.controls().input(Input::ClickLeft));
+        CHECK(!command || !command->goal || !command->goal->isInGoal(10, 1, 0));
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    CHECK(!bot.farm().isActive());
+}
+
+TEST(builder_active_scan_is_cancelled_and_restarted_for_new_schematic) {
+    SettingsGuard settings;
+    Settings::get().buildInLayers = false;
+    TestWorld world(4);
+    test::TestPlayer player;
+    Baritone bot(player, [](const std::string&, bool) {}); bot.tick(world.snapshot());
+    bot.builder().build("large", std::make_shared<FillSchematic>(BlockPos{64, 64, 64}, DesiredBlock::air()), {0, 1, 0});
+    bot.builder().onTick(false, true);
+    CHECK(bot.builder().isActive());
+    bot.cancelEverything(); CHECK(!bot.builder().isActive());
+    bot.builder().build("small", std::make_shared<FillSchematic>(BlockPos{1, 1, 1}, DesiredBlock::air()), {0, 1, 0});
+    bot.builder().onTick(false, true);
+    CHECK(!bot.builder().isActive());
+}
+
+TEST(background_schematic_loader_reports_errors_and_discards_cancelled_results) {
+    NbtWriter w; w.bigEndian = true;
+    w.named(10, "Schematic");
+    w.named(2, "Width"); w.i16(1); w.named(2, "Height"); w.i16(1); w.named(2, "Length"); w.i16(1);
+    w.named(10, "Palette"); w.named(3, "minecraft:stone"); w.i32(0); w.end();
+    w.named(7, "BlockData"); w.i32(1); w.u8(0); w.end();
+    const auto path = writeTemp("baritone_background_load.schem", w.out);
+    SchematicLoadJob job;
+    CHECK(job.start(path));
+    CHECK(!job.start(path));
+    job.cancel();
+    std::optional<SchematicLoadJob::Result> result;
+    for (int i = 0; i < 1000 && !result; ++i) {
+        result = job.poll();
+        if (!result) std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    CHECK(result && result->cancelled && result->schematic && result->error.empty());
+    CHECK(!job.running());
+    std::filesystem::remove(path);
+    CHECK(job.start(path));
+    result.reset();
+    for (int i = 0; i < 1000 && !result; ++i) {
+        result = job.poll();
+        if (!result) std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    CHECK(result && !result->cancelled && !result->schematic && !result->error.empty());
+    CHECK(job.start(path)); job.wait(); CHECK(!job.running());
+}
+
+TEST(nbt_deterministic_mutations_do_not_crash_or_allocate_invalid_lengths) {
+    std::mt19937 rng(9371);
+    for (int trial = 0; trial < 2000; ++trial) {
+        std::vector<uint8_t> input(rng() % 256);
+        for (auto& byte : input) byte = static_cast<uint8_t>(rng());
+        if (input.size() >= 3 && trial % 2 == 0) { input[0] = 10; input[1] = input[2] = 0; }
+        for (bool little : {false, true}) {
+            try { nbt::parse(input, little); } catch (const std::exception&) {}
+        }
+    }
+}
+
+TEST(compressed_schematic_corruption_is_rejected) {
+    for (auto bytes : {std::vector<uint8_t>(kGzipDynamic, kGzipDynamic + sizeof kGzipDynamic),
+                       std::vector<uint8_t>(kZlibFixed, kZlibFixed + sizeof kZlibFixed)}) {
+        bytes.back() ^= 1; // gzip uncompressed size or zlib Adler checksum
+        bool rejected = false;
+        try { decompressIfNeeded(bytes); } catch (const std::runtime_error&) { rejected = true; }
+        CHECK(rejected);
+    }
+}
+
 TEST(performance_random_terrain) {
     const Blocks& b = Blocks::get();
     TestWorld w(8);  // 256x256
@@ -1290,10 +1581,16 @@ TEST(performance_random_terrain) {
 
 }  // namespace
 
-int main() {
+int main(int argc, char** argv) {
+    std::string filter;
+    if (argc == 3 && std::string_view(argv[1]) == "--filter") filter = argv[2];
+    else if (argc != 1) { std::printf("Usage: baritone_tests [--filter substring]\n"); return 2; }
     Blocks::get();
     int failed = 0;
+    std::size_t executed = 0;
     for (const TestCase& t : tests()) {
+        if (!filter.empty() && std::string_view(t.name).find(filter) == std::string_view::npos) continue;
+        ++executed;
         try {
             t.fn();
             std::printf("  PASS  %s\n", t.name);
@@ -1305,6 +1602,6 @@ int main() {
             failed++;
         }
     }
-    std::printf("\n%zu tests, %d failed\n", tests().size(), failed);
-    return failed == 0 ? 0 : 1;
+    std::printf("\n%zu tests, %d failed\n", executed, failed);
+    return executed && failed == 0 ? 0 : 1;
 }

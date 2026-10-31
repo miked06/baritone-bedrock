@@ -49,6 +49,7 @@ public:
     bool hasWaterBucket, hasThrowaway, canSprint;
     double placeBlockCost;
     bool allowBreak;
+    bool allowPlace, allowPlaceInFluidsSource, allowPlaceInFluidsFlow;
     std::unordered_set<std::string> allowBreakAnyway;
     bool allowParkour, allowParkourPlace, allowJumpAtBuildLimit, allowParkourAscend;
     bool allowWalkOnMagmaBlocks;

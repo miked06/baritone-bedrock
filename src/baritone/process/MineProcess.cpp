@@ -25,7 +25,7 @@ void MineProcess::mine(int quantity, BlockFilter filter) {
             baritone_.logDirect("Cannot mine with allowBreak false unless the block is in allowBreakAnyway", true);
             return;
         }
-        filter = BlockFilter(allowed);
+        filter = filter.restrictedTo({allowed.begin(), allowed.end()});
     }
     filter_ = std::move(filter);
     desiredQuantity_ = quantity;

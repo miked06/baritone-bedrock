@@ -26,6 +26,8 @@ Baritone Bedrock is a native C++ rewrite of Baritone that runs **inside** the Wi
 
 The pathfinding engine, movements and processes started as a port of Baritone Java 1.21.11 and have been compared against Java 26.3. See the [feature comparison](docs/FEATURE_COMPARISON.md) for both inventories, the implemented behavior and the remaining platform differences.
 
+The [stability audit](docs/STABILITY_AUDIT.md) records automated coverage, native performance measurements and the gameplay scenarios that still need validation. Use `#perf on` / `#perf off` to measure bot work on your machine.
+
 > [!IMPORTANT]
 > **Supported game version: Minecraft Bedrock 26.60 for Windows** (package `1.26.6005.0`).
 > The DLL checks the package version before installing hooks and refuses unsupported builds. Other versions need updated signatures, offsets and calling conventions (see [Updating to a new game version](docs/DEVELOPMENT.md#updating-to-a-new-game-version)).

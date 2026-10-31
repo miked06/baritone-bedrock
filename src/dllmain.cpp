@@ -30,7 +30,7 @@ DWORD WINAPI mainThread(LPVOID) {
     bool compatible = gameversion::check() && sigs::resolveAll();
     bool started = compatible && hooks::initialize() && Bot::get().start();
     if (!started) {
-        logger::error("Initialisation failed, unloading. Is the game version supported?");
+        logger::error("Initialization failed, unloading. Is the game version supported?");
     } else {
         logger::info("Ready. Type #help in the chat.");
         while (!Bot::get().unloadRequested() && WaitForSingleObject(unloadEvent, 100) == WAIT_TIMEOUT) {

@@ -16,6 +16,7 @@
 #include "core/Notify.h"
 #include "core/DevPipe.h"
 #include "core/Log.h"
+#include "core/Perf.h"
 #include "core/Paths.h"
 #include "core/Watchdog.h"
 #include "hooks/GameHooks.h"
@@ -48,10 +49,16 @@ bool Bot::start() {
 }
 
 void Bot::stop() {
+    {
+        std::lock_guard lock(diagnosticMutex_);
+        diagnosticsStopped_ = true;
+        if (diagnosticJob_.valid()) diagnosticJob_.wait();
+    }
     watchdog::stop();
     devpipe::stop();
     notify::shutdown();
     cancelAll();
+    schematicLoad_.wait();
     updateFocusOverride(false);
     platform::PathRenderer::get().shutdown();
     if (baritone_) baritone_->shutdown();
@@ -66,6 +73,7 @@ void Bot::saveSettings() {
 }
 
 void Bot::cancelAll() {
+    cancelSchematicLoad();
     stopClickSelection();
     player_.cancelDisconnectRequest();
     walkTicks_ = 0;
@@ -180,15 +188,70 @@ void Bot::walkFor(int ticks, bool sprint) {
     walkSprint_ = sprint;
 }
 
+void Bot::loadSchematicAsync(std::string file, baritone::BlockPos origin, bool preview) {
+    if (schematicLoad_.running()) throw std::invalid_argument("A schematic is still loading; wait for it to finish or use #stop to discard it");
+    if (!player_.valid()) throw std::invalid_argument("Enter a world first");
+    cancelAll();
+    loadingSchematicName_ = std::filesystem::path(file).filename().string();
+    loadingSchematicOrigin_ = origin;
+    loadingSchematicPreview_ = preview;
+    loadingSchematicGeneration_ = worldGeneration_;
+    schematicLoad_.start(std::move(file));
+    chat::info("Loading " + loadingSchematicName_ + " in the background. Wait for Loaded before editing or building; #stop discards the result");
+}
+
+void Bot::runDiagnosticAsync(std::function<void()> task) {
+    std::lock_guard lock(diagnosticMutex_);
+    if (diagnosticsStopped_) throw std::invalid_argument("The bot is unloading");
+    if (diagnosticJob_.valid() && diagnosticJob_.wait_for(std::chrono::seconds(0)) != std::future_status::ready)
+        throw std::invalid_argument("A diagnostic calculation is already running; wait for its result");
+    diagnosticJob_ = std::async(std::launch::async, [task = std::move(task)] {
+        try { task(); }
+        catch (const std::exception& error) { chat::error(std::string("Diagnostic calculation failed: ") + error.what()); }
+    });
+}
+
+void Bot::pollSchematicLoad() {
+    auto result = schematicLoad_.poll();
+    if (!result) return;
+    if (perf::enabled()) perf::record(perf::Metric::BackgroundLoad, result->milliseconds);
+    if (result->cancelled || loadingSchematicGeneration_ != worldGeneration_ || !player_.valid()) return;
+    if (!result->error.empty()) {
+        chat::error(std::format("Could not read {}: {}", loadingSchematicName_, result->error));
+        return;
+    }
+    const auto size = result->schematic->size();
+    const auto warnings = result->schematic->warnings();
+    try {
+        if (loadingSchematicPreview_)
+            schematics_.load(loadingSchematicName_, std::move(result->schematic), loadingSchematicOrigin_);
+        else
+            baritone_->builder().build(loadingSchematicName_, std::move(result->schematic), loadingSchematicOrigin_, true);
+    } catch (const std::exception& error) {
+        chat::error(std::format("Could not place {}: {}", loadingSchematicName_, error.what()));
+        return;
+    }
+    chat::info(std::format("Loaded {} ({}x{}x{}), origin {}", loadingSchematicName_, size.x, size.y, size.z, loadingSchematicOrigin_));
+    for (const auto& warning : warnings) chat::error("Schematic note: " + warning);
+    if (loadingSchematicPreview_) {
+        chat::info("Preview: cyan = missing, red = wrong block, orange = remove, gray = unloaded. Matching blocks are hidden");
+        chat::info("Preview shows up to 512 differences within 16 blocks; the blue outline covers the full placement");
+        chat::info("Use #schematic move/rotate/mirror/layer, #schematic materials, then #schematic build");
+    }
+}
+
 void Bot::onFrame() {
+    perf::Scope timing(perf::Metric::BotFrame);
     watchdog::heartbeat();
     auto* client = sdk::ClientInstance::get();
     auto* player = client ? client->localPlayer() : nullptr;
     if (player != lastPlayer_) {
+        ++worldGeneration_;
+        cancelSchematicLoad();
         if (player) logger::info("Entered a world (LocalPlayer {})", static_cast<void*>(player));
         else logger::info("Left the world");
         lastPlayer_ = player;
-        if (!player) {
+        {
             player_.bind(nullptr, nullptr);  // first: the old LocalPlayer is gone
             player_.setLevel(nullptr);
             worldName_.clear();
@@ -201,6 +264,7 @@ void Bot::onFrame() {
         }
     }
     while (auto line = devpipe::poll()) commands_.execute(*line);
+    pollSchematicLoad();
     if (player) {
         updateClickSelection();
         chat::flush();
@@ -216,6 +280,7 @@ void Bot::onFrame() {
 }
 
 void Bot::onTick(void* level) {
+    perf::Scope timing(perf::Metric::BotTick);
     ++ticks_;
     level_ = level;
     auto* client = sdk::ClientInstance::get();
@@ -263,11 +328,13 @@ void Bot::onTick(void* level) {
     wasSleeping_ = sleeping;
 
     auto& tracker = platform::WorldTracker::get();
-    tracker.tick(*region, *player);
+    { perf::Scope scanTiming(perf::Metric::WorldScan); tracker.tick(*region, *player); }
     sdk::BlockPos feet = sdk::BlockPos::floor(player->feet());
-    tracker.refreshAround({feet.x, feet.y, feet.z}, 4);  // live view for the movements
+    { perf::Scope refreshTiming(perf::Metric::LocalRefresh); tracker.refreshAround({feet.x, feet.y, feet.z}, 4); }
 
     if (schematicDimension_ && *schematicDimension_ != tracker.dimension()) {
+        ++worldGeneration_;
+        cancelAll();
         schematics_.clear();
         schematicPreview_.clear();
     }
@@ -287,7 +354,10 @@ void Bot::onTick(void* level) {
         return;
     }
 
-    if (!clickSelection_.active()) baritone_->tick(tracker.snapshot());
+    if (!clickSelection_.active()) {
+        perf::Scope coreTiming(perf::Metric::CoreTick);
+        baritone_->tick(tracker.snapshot());
+    }
     const baritone::MovementState& out = baritone_->controls();
     applyOutput(out, !clickSelection_.active() && (out.inputs.any() || out.target.rotation.has_value()));
 
@@ -312,6 +382,7 @@ void Bot::onTick(void* level) {
     frame.build = baritone_->builder().bounds();
     if (schematics_.loaded() && schematics_.previewEnabled()) {
         if (ticks_ % 10 == 0 || schematicPreviewRevision_ != schematics_.revision()) {
+            perf::Scope previewTiming(perf::Metric::Preview);
             schematicPreview_ = schematics_.preview(*tracker.snapshot(), {feet.x, feet.y, feet.z}, 16, 512);
             if (schematicPreviewRevision_ != schematics_.revision())
                 logger::debug("Schematic preview: {} difference boxes, origin {}", schematicPreview_.size(), schematics_.origin());

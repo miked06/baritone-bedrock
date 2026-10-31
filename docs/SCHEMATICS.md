@@ -9,6 +9,11 @@ Put your files in `%LOCALAPPDATA%\BaritoneBedrock\schematics\`, enter a world, t
 ```text
 #schematic list
 #schematic load "My house.litematic" ~5 ~ ~
+```
+
+Wait for the **Loaded** message, then adjust and build:
+
+```text
 #schematic rotate 90
 #schematic mirror none
 #schematic move ~ ~ ~3
@@ -16,7 +21,9 @@ Put your files in `%LOCALAPPDATA%\BaritoneBedrock\schematics\`, enter a world, t
 #schematic build
 ```
 
-Loading displays a preview and stops existing bot activity. It does not build or change blocks. `#schematic build` starts construction; `#pause`, `#resume` and `#stop` control it. Editing/unloading a placement stops a running build. Invalid files leave the previous placement intact.
+Loading stops existing bot activity and reads/decompresses/converts the file on a background worker. A successful load displays a preview; it does not build or change blocks. Wait for **Loaded** before editing or building: those commands are rejected while a load is pending. Only one file loads at a time. `#stop` discards a pending result, and `#schematic clear` also clears the current placement; the worker finishes safely before another load can start. Invalid files leave the previous placement intact.
+
+`#schematic build` starts construction; `#pause`, `#resume` and `#stop` control it. Editing/unloading a placement stops a running build. Direct `#build <file>` also loads in the background, then starts its build automatically. Leaving the world or changing dimensions discards pending results and stops building.
 
 The workspace holds one placement. `#schematica` and `#litematica` with no arguments build that placement. With a filename, either command loads a preview; their subcommands also work, for example `#litematica load house.litematic`. `#litematica 1` builds the single loaded placement. `#schem` and `#blueprint` are aliases of `#schematic`.
 
@@ -62,7 +69,9 @@ The workspace owns its spatial transforms and active layer mask. `buildSchematic
 | `.litematic` | Litematica regions, negative region dimensions, multi-region gaps, bit-packed indices spanning long boundaries. |
 | `.schematic` | Legacy MCEdit numeric IDs/metadata; Sponge files using this extension are also detected. |
 
-Imports validate dimensions and palette references. NBT collections are checked against available input and an allocation budget before reservation. Input files and decompressed streams are capped at 256 MiB; schematic volumes at 64 million blocks. NBT allocation limits can reject a smaller but unusually expensive representation. Material counts use a palette histogram, including active layers, to avoid copying a block-state string for every position in a large file.
+Imports validate dimensions and palette references. Gzip/zlib checksums, lengths and headers are validated; concatenated gzip members and trailing compressed data are rejected. NBT collections are checked against available input and an allocation budget before reservation. Input files and decompressed streams are capped at 256 MiB; schematic volumes at 64 million blocks. NBT allocation limits can reject a smaller but unusually expensive representation. Material counts use a palette histogram, including active layers, to avoid copying a block-state string for every position in a large file.
+
+The builder scans large placements incrementally: at most 4096 full-scan positions per tick, with a soft two-millisecond budget checked every 64 positions. Local rescans and other bot work are additional. A partially scanned placement is never reported complete. This reduces stalls at the cost of waiting across ticks to confirm a large build. See [the stability audit](STABILITY_AUDIT.md) for measured coverage and limits.
 
 Java names and supported orientation properties are translated to Bedrock; not every Java block state has a matching Bedrock placement. Orientation support includes logs/pillars, stairs, slab halves and the supported furnace/chest/pumpkin directions. Redstone state, double-slab item handling, waterlogging, multi-block placement rules, containers/sign contents, entities and arbitrary block-entity data are not fully reproduced. The loader reports known discarded metadata, secondary fluid layers and unknown legacy IDs. A Java numeric mod block ID has no automatic Bedrock equivalent.
 

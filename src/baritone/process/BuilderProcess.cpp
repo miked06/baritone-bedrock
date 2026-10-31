@@ -218,6 +218,7 @@ void BuilderProcess::build(std::string name, SchematicPtr schematic, BlockPos or
     numRepeats_ = 0;
     observedCompleted_.clear();
     incorrectPositions_.reset();
+    fullScanPending_ = false;
     ticks_ = 0;
     clickedLeftLastTick_ = false;
     badSpots_.clear();
@@ -226,6 +227,7 @@ void BuilderProcess::build(std::string name, SchematicPtr schematic, BlockPos or
 
 void BuilderProcess::onLostControl() {
     incorrectPositions_.reset();
+    fullScanPending_ = false;
     failedCalcs_ = 0;
     name_.clear();
     schematic_.reset();
@@ -367,12 +369,13 @@ void BuilderProcess::customizeContext(CalculationContext& ctx) {
 bool BuilderProcess::recalc(CalculationContext& ctx) {
     if (!incorrectPositions_) {
         incorrectPositions_.emplace();
+        fullScanPending_ = false;
         fullRecalc(ctx);
-        if (incorrectPositions_->empty()) return false;
+    } else {
+        recalcNearby(ctx);
+        if (fullScanPending_ || incorrectPositions_->empty()) fullRecalc(ctx);
     }
-    recalcNearby(ctx);
-    if (incorrectPositions_->empty()) fullRecalc(ctx);
-    return !incorrectPositions_->empty();
+    return fullScanPending_ || !incorrectPositions_->empty();
 }
 
 void BuilderProcess::trim() {
@@ -396,42 +399,53 @@ void BuilderProcess::recalcNearby(CalculationContext& ctx) {
                 BlockPos pos{x, y, z};
                 if (valid(current, desired, false)) {
                     incorrectPositions_->erase(pos);
-                    observedCompleted_.insert(pos.longHash());
+                    observedCompleted_.insert(pos);
                 } else {
                     incorrectPositions_->insert(pos);
-                    observedCompleted_.erase(pos.longHash());
+                    observedCompleted_.erase(pos);
                 }
             }
 }
 
 void BuilderProcess::fullRecalc(CalculationContext& ctx) {
-    incorrectPositions_.emplace();
-    BlockPos size = schematic_->size();
-    int incorrectSize = Settings::get().incorrectSize;
-    for (int y = 0; y < size.y; y++)
-        for (int z = 0; z < size.z; z++)
-            for (int x = 0; x < size.x; x++) {
-                int bx = x + origin_.x, by = y + origin_.y, bz = z + origin_.z;
-                const BlockProps& current = ctx.props(bx, by, bz);
-                auto desired = getSchematic(bx, by, bz, current);
-                if (!desired) continue;
-                int64_t hash = BlockPos::longHash(bx, by, bz);
-                if (ctx.isLoadedLive(bx, bz)) {  // in render distance, not just in the cache
-                    if (valid(current, desired, false)) {
-                        observedCompleted_.insert(hash);
-                    } else {
-                        incorrectPositions_->insert({bx, by, bz});
-                        observedCompleted_.erase(hash);
-                        if (static_cast<int>(incorrectPositions_->size()) > incorrectSize) return;
-                    }
-                    continue;
-                }
-                // out of render distance: assume it still needs work unless seen done
-                if (!observedCompleted_.contains(hash)) {
-                    incorrectPositions_->insert({bx, by, bz});
-                    if (static_cast<int>(incorrectPositions_->size()) > incorrectSize) return;
-                }
+    const BlockPos size = schematic_->size();
+    auto [firstY, lastY] = layerBounds();
+    firstY = std::max(0, firstY);
+    lastY = std::min(size.y - 1, lastY);
+    if (!fullScanPending_ || scanFirstY_ != firstY || scanLastY_ != lastY) {
+        incorrectPositions_.emplace();
+        fullScanCursor_ = 0;
+        fullScanPending_ = true;
+        scanFirstY_ = firstY;
+        scanLastY_ = lastY;
+    }
+    const auto volume = static_cast<std::size_t>(size.x) * std::max(0, lastY - firstY + 1) * size.z;
+    const auto end = std::min(volume, fullScanCursor_ + scanBudget_);
+    const auto start = fullScanCursor_;
+    const int incorrectSize = std::max(0, Settings::get().incorrectSize);
+    while (fullScanCursor_ < end) {
+        if (fullScanCursor_ > start && (fullScanCursor_ & 63) == 0 && std::chrono::steady_clock::now() >= scanDeadline_) break;
+        const auto i = fullScanCursor_++;
+        --scanBudget_;
+        const int x = static_cast<int>(i % size.x), z = static_cast<int>((i / size.x) % size.z),
+                  y = firstY + static_cast<int>(i / (static_cast<std::size_t>(size.x) * size.z));
+        const BlockPos position{x + origin_.x, y + origin_.y, z + origin_.z};
+        const BlockProps& current = ctx.props(position.x, position.y, position.z);
+        auto desired = getSchematic(position.x, position.y, position.z, current);
+        if (!desired) continue;
+        if (ctx.isLoadedLive(position.x, position.z)) {
+            if (valid(current, desired, false)) observedCompleted_.insert(position);
+            else {
+                incorrectPositions_->insert(position);
+                observedCompleted_.erase(position);
             }
+        } else if (!observedCompleted_.contains(position)) {
+            // Out of render distance: assume unfinished unless observed complete.
+            incorrectPositions_->insert(position);
+        }
+        if (static_cast<int>(incorrectPositions_->size()) > incorrectSize) { fullScanPending_ = false; return; }
+    }
+    fullScanPending_ = fullScanCursor_ < volume;
 }
 
 // ---- acting near the player -----------------------------------------------------------
@@ -449,7 +463,8 @@ std::optional<std::pair<BlockPos, Rotation>> BuilderProcess::toBreakNearPlayer(E
                 const BlockProps& current = ec.calc.props(x, y, z);
                 auto desired = getSchematic(x, y, z, current);
                 if (!desired) continue;
-                if (!isAir(current) && !isLiquid(current) && !valid(current, desired, false) && !current.unbreakable) {
+                if (!isAir(current) && !isLiquid(current) && !valid(current, desired, false) && !current.unbreakable &&
+                    (ec.calc.allowBreak || ec.calc.allowBreakAnyway.contains(current.name)) && !ec.calc.isDisallowedBreaking(current)) {
                     BlockPos pos{x, y, z};
                     if (auto rot = movement_helper::reachable(ec, pos)) return std::pair{pos, *rot};
                 }
@@ -460,7 +475,12 @@ std::optional<std::pair<BlockPos, Rotation>> BuilderProcess::toBreakNearPlayer(E
 // Places `block` at `pos` if a face that gives the right orientation is in reach (Java
 // possibleToPlace + hasAnyItemThatWouldPlace, with Bedrock's orientation rules).
 bool BuilderProcess::tryPlace(const BlockPos& pos, const DesiredBlock& block, ExecContext& ec, bool act) {
+    const auto& settings = Settings::get();
+    if (!settings.allowPlace) return false;
     CalculationContext& ctx = ec.calc;
+    const auto& current = ctx.props(pos.x, pos.y, pos.z);
+    if (current.hasFluid() && ((current.fluidLevel == 0 && !settings.allowPlaceInFluidsSource) ||
+        (current.fluidLevel != 0 && !settings.allowPlaceInFluidsFlow))) return false;
     double reach = baritone_.player().blockReachDistance();
     bool ignoreDirection = Settings::get().buildIgnoreDirection;
     for (Direction d : kAllFaces) {
@@ -655,6 +675,8 @@ GoalPtr BuilderProcess::assemble(CalculationContext& ctx, bool wholeInventory, b
 // ---- tick -----------------------------------------------------------------------------
 
 std::optional<PathingCommand> BuilderProcess::onTick(bool calcFailed, bool isSafeToCancel) {
+    scanBudget_ = 4096;
+    scanDeadline_ = std::chrono::steady_clock::now() + std::chrono::milliseconds(2);
     return tick(calcFailed, isSafeToCancel, 0);
 }
 
@@ -700,6 +722,10 @@ std::optional<PathingCommand> BuilderProcess::tick(bool calcFailed, bool isSafeT
         baritone_.logDirect(std::format("Repeating build of {}: new origin {}", repeat, origin_), false);
         return tick(calcFailed, isSafeToCancel, recursions + 1);
     }
+    // A partial scan with no mismatches is not proof the build is complete.
+    // Yield to the next tick instead of scanning millions of matching cells now.
+    if (fullScanPending_ && incorrectPositions_->empty())
+        return PathingCommand{nullptr, PathingCommandType::RequestPause};
     if (s.distanceTrim) trim();
 
     if (auto toBreak = toBreakNearPlayer(ec); toBreak && isSafeToCancel && baritone_.player().onGround()) {

@@ -24,6 +24,7 @@ public:
     const std::unordered_set<std::string>& dropNames() const { return drops_; }
     const std::unordered_set<std::string>& names() const { return names_; }
     std::string toString() const;
+    BlockFilter restrictedTo(const std::unordered_set<std::string>& allowedNames) const;
 
     static std::string normalize(std::string name);
 

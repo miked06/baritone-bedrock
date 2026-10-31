@@ -24,6 +24,7 @@
 #include "baritone/pathing/movement/MovementHelper.h"
 #include "baritone/schematic/Schematic.h"
 #include "command/SchematicCommands.h"
+#include "core/Perf.h"
 #include "baritone/utils/RayTrace.h"
 #include "core/Bot.h"
 #include "platform/WorldTracker.h"
@@ -206,6 +207,16 @@ void hexDump(std::string_view name, const void* obj, int size) {
 }  // namespace
 
 void registerAll(CommandManager& manager, Bot& bot) {
+    manager.add({{"perf"}, "perf [on|off|reset]", "Dev: capture bounded frame, tick and overlay timing samples", [](const Args& args) {
+        if (args.size() > 1) throw CommandError("Usage: #perf [on|off|reset]");
+        if (!args.empty()) {
+            if (args[0] == "on") { perf::reset(); perf::setEnabled(true); }
+            else if (args[0] == "off") perf::setEnabled(false);
+            else if (args[0] == "reset") perf::reset();
+            else throw CommandError("Usage: #perf [on|off|reset]");
+        }
+        for (const auto& line : perf::report()) chat::info(line);
+    }});
     registerSchematicCommands(manager, bot);
     manager.setCompletionProvider([&bot, &manager](const Args& words) -> Args {
         if (words.size() < 2) return {};
@@ -984,15 +995,7 @@ void registerAll(CommandManager& manager, Bot& bot) {
                      } else if (args.size() != 1) {
                          throw CommandError("Usage: #build <name> [x y z]");
                      }
-                     baritone::SchematicPtr schematic;
-                     try {
-                         schematic = baritone::loadSchematic(file.string());
-                     } catch (const std::exception& e) {
-                         throw CommandError(std::format("Could not read {}: {}", file.filename().string(), e.what()));
-                     }
-                     baritone::BlockPos s = schematic->size();
-                     bot.baritone().builder().build(file.filename().string(), schematic, origin, true);
-                     chat::info(std::format("Schematic {} loaded ({}x{}x{}), origin: {}", file.filename().string(), s.x, s.y, s.z, origin));
+                     bot.loadSchematicAsync(file.string(), origin, false);
                  }});
 
     // Java ExecutionControlCommands
@@ -1306,9 +1309,9 @@ void registerAll(CommandManager& manager, Bot& bot) {
         }
         auto snap = platform::WorldTracker::get().snapshot();
         if (!snap) throw CommandError("No world snapshot available");
-        chat::info(std::format("Calculating a path from {} to {}...", start, goal->toString()));
         baritone::PlayerAbilities abilities = Bot::get().baritone().inventory().abilities();
-        std::thread([snap, start, goal, abilities] {
+        Bot::get().runDiagnosticAsync([snap, start, goal, abilities] {
+            chat::info(std::format("Calculating a path from {} to {}...", start, goal->toString()));
             auto t0 = std::chrono::steady_clock::now();
             auto ctx = std::make_unique<baritone::CalculationContext>(snap, abilities, true);
             baritone::AStarPathFinder finder(start, goal, std::move(ctx), {});
@@ -1330,7 +1333,7 @@ void registerAll(CommandManager& manager, Bot& bot) {
                 moves += ' ';
             }
             logger::info("path: {}", moves);
-        }).detach();
+        });
     }});
 
     manager.add({{"nbt"}, "nbt [dx dy dz]", "Dev: show block states (relative to feet)", [](const Args& args) {
@@ -1663,7 +1666,7 @@ void registerAll(CommandManager& manager, Bot& bot) {
     }});
 
     manager.add({{"unload"}, "unload", "Unload the DLL cleanly", [&bot](const Args&) {
-        chat::info("Dechargement...");
+        chat::info("Unloading...");
         bot.cancelAll();
         bot.requestUnload();
     }});

@@ -1,5 +1,6 @@
 #pragma once
 #include <array>
+#include <atomic>
 #include <filesystem>
 #include <functional>
 #include <memory>
@@ -66,6 +67,7 @@ public:
 
     // Writes the modified regions on a worker thread (game thread).
     void saveAsync();
+    bool isSaving() const { return saverBusy_.load(std::memory_order_acquire); }
     // Writes everything now and waits (leaving the world, unload).
     void saveNow();
     // Unloads saved regions further than `distance` regions from the player (pruneRegionsFromRAM).
@@ -99,6 +101,7 @@ private:
     std::unordered_map<int64_t, std::shared_ptr<CachedRegion>> regions_;
     std::unordered_set<int64_t> onDisk_;  // region files not loaded
     std::thread saver_;
+    std::atomic<bool> saverBusy_{false};
 };
 
 }  // namespace baritone

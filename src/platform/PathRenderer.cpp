@@ -11,6 +11,7 @@
 #include "sdk/Render.h"
 #include "platform/WorldTracker.h"
 #include "core/Log.h"
+#include "core/Perf.h"
 
 namespace platform {
 
@@ -261,6 +262,7 @@ void PathRenderer::shutdown() {
 }
 
 void PathRenderer::render(sdk::LevelRenderer* renderer, sdk::ScreenContext* screen) {
+    perf::Scope timing(perf::Metric::Overlay);
     const Settings& s = Settings::get();
     std::vector<Line> lines;
     std::shared_ptr<const std::vector<baritone::CachedFace>> cachedMesh;

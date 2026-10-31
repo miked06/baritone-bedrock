@@ -289,10 +289,24 @@ void CachedWorld::writeJobs(const std::vector<Job>& jobs) const {
 }
 
 void CachedWorld::saveAsync() {
-    if (saver_.joinable()) saver_.join();
+    if (saver_.joinable()) {
+        if (isSaving()) return; // dirty updates remain queued for the next save
+        saver_.join();
+    }
     std::vector<Job> jobs = collectDirty();
     if (jobs.empty()) return;
-    saver_ = std::thread([this, jobs = std::move(jobs)] { writeJobs(jobs); });
+    saverBusy_.store(true, std::memory_order_release);
+    try {
+        saver_ = std::thread([this, jobs = std::move(jobs)] {
+            writeJobs(jobs);
+            saverBusy_.store(false, std::memory_order_release);
+        });
+    } catch (...) {
+        saverBusy_.store(false, std::memory_order_release);
+        std::unique_lock lock(mutex_);
+        for (auto& [key, region] : regions_) region->setDirty(true);
+        throw;
+    }
 }
 
 void CachedWorld::saveNow() {
@@ -301,6 +315,7 @@ void CachedWorld::saveNow() {
 }
 
 void CachedWorld::prune(int playerCx, int playerCz, int distance) {
+    if (isSaving()) return; // defer eviction rather than stalling the game thread
     if (saver_.joinable()) saver_.join();  // a pruned region is re-read from its file: it must be written
     int prx = playerCx >> 5, prz = playerCz >> 5;
     std::unique_lock lock(mutex_);
@@ -313,6 +328,7 @@ void CachedWorld::prune(int playerCx, int playerCz, int distance) {
 }
 
 void CachedWorld::pruneOutside(const BlockPos& center, int distanceBlocks) {
+    if (isSaving()) return;
     if (saver_.joinable()) saver_.join();
     const double radius = std::max(0, distanceBlocks);
     std::unique_lock lock(mutex_);
@@ -331,6 +347,7 @@ void CachedWorld::pruneOutside(const BlockPos& center, int distanceBlocks) {
 std::vector<BlockPos> CachedWorld::locationsOf(const std::function<bool(const std::string&)>& match,
                                                const BlockPos& center, std::size_t max, int maxRegionDistance) {
     std::vector<BlockPos> out;
+    if (max == 0 || maxRegionDistance < 0) return out;
     int crx = floorDiv(center.x, 512), crz = floorDiv(center.z, 512);
     for (int rx = crx - maxRegionDistance; rx <= crx + maxRegionDistance; ++rx) {
         for (int rz = crz - maxRegionDistance; rz <= crz + maxRegionDistance; ++rz) {

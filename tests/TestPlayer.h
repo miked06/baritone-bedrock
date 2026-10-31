@@ -11,14 +11,20 @@ public:
     std::array<baritone::HotbarStack, 4> equipment{};
     int selected = 0;
     int disconnectRequests = 0;
+    baritone::Vec3d feet{0.5, 1, 0.5}, motion{};
+    baritone::Rotation facing{};
+    std::vector<baritone::EntityInfo> nearby;
+    bool grounded = true;
+    int useRequests = 0;
+    bool useHeldItem() override { ++useRequests; return true; }
     bool requestDisconnect() override { ++disconnectRequests; return true; }
     std::optional<std::pair<int, int>> lastSwap;
     bool valid() const override { return true; }
-    baritone::Vec3d position() const override { return {0.5, 1, 0.5}; }
-    baritone::Vec3d eyePosition() const override { return {0.5, 2.62, 0.5}; }
-    baritone::Vec3d velocity() const override { return {}; }
-    baritone::Rotation rotation() const override { return {}; }
-    bool onGround() const override { return true; }
+    baritone::Vec3d position() const override { return feet; }
+    baritone::Vec3d eyePosition() const override { return feet + baritone::Vec3d{0, 1.62, 0}; }
+    baritone::Vec3d velocity() const override { return motion; }
+    baritone::Rotation rotation() const override { return facing; }
+    bool onGround() const override { return grounded; }
     bool isSneaking() const override { return false; }
     bool isInWater() const override { return false; }
     double blockReachDistance() const override { return 4.5; }
@@ -36,7 +42,7 @@ public:
         for (const auto& item : inventory) if (item.name == name) count += item.count;
         return count;
     }
-    std::vector<baritone::EntityInfo> entities() const override { return {}; }
+    std::vector<baritone::EntityInfo> entities() const override { return nearby; }
     bool startOrContinueBreaking(const baritone::BlockPos&, baritone::Direction) override { return false; }
     void stopBreaking() override {}
     void useItemOn(const baritone::BlockPos&, baritone::Direction, const baritone::Vec3d&) override {}

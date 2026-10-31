@@ -2,6 +2,7 @@
 
 #include <format>
 #include <limits>
+#include <algorithm>
 
 #include "baritone/Baritone.h"
 #include "baritone/Settings.h"
@@ -63,6 +64,29 @@ std::vector<GoalPtr> ExploreProcess::closestUnexploredChunks() {
     std::size_t count = static_cast<std::size_t>(std::max(1, std::min(countRemain(), Settings::get().exploreChunkSetMinimumSize)));
     int offset = Settings::get().worldExploringChunkOffset << 4;
     std::vector<BlockPos> centers;
+    if (filter_ && invertFilter_) {
+        // A sparse allow-list may name chunks thousands of chunks away. Do not
+        // enumerate every intervening diamond (or falsely stop at distance 9999).
+        struct Candidate { int cx, cz; int64_t distance; };
+        std::vector<Candidate> candidates;
+        for (int64_t key : *filter_) {
+            const int cx = static_cast<int>(key >> 32), cz = static_cast<int>(static_cast<uint32_t>(key));
+            if (!world.wasExplored(cx, cz)) candidates.push_back({cx, cz,
+                std::abs(static_cast<int64_t>(cx) - chunkX) + std::abs(static_cast<int64_t>(cz) - chunkZ)});
+        }
+        std::ranges::sort(candidates, [](const auto& a, const auto& b) {
+            return std::tie(a.distance, a.cx, a.cz) < std::tie(b.distance, b.cx, b.cz);
+        });
+        if (candidates.size() > count) candidates.resize(count);
+        std::vector<GoalPtr> goals;
+        for (const auto& c : candidates) {
+            const int64_t x = static_cast<int64_t>(c.cx) * 16 + 8 + (c.cx < chunkX ? -offset : offset);
+            const int64_t z = static_cast<int64_t>(c.cz) * 16 + 8 + (c.cz < chunkZ ? -offset : offset);
+            if (x >= INT32_MIN && x <= INT32_MAX && z >= INT32_MIN && z <= INT32_MAX)
+                goals.push_back(createGoal(static_cast<int>(x), static_cast<int>(z)));
+        }
+        return goals;
+    }
     for (int dist = distanceCompleted_; dist < 10000; ++dist) {
         for (int dx = -dist; dx <= dist; ++dx) {
             int zval = dist - std::abs(dx);

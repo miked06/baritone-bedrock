@@ -223,6 +223,7 @@ These read the game's memory and help when updating the bot to a new game versio
 | `#cost` | Cost of every movement from the player's position. |
 | `#inv [all]` (`#hotbar`) | Hotbar (or whole inventory) contents. |
 | `#entities` (`#ent`) | Loaded entities. |
+| `#perf [on\|off\|reset]` | Opt-in rolling timings in milliseconds: mean, p95, p99 and maximum for game-frame intervals, bot work, scanning, preview/rendering and background loads. `on` starts a fresh capture; `off` stops and reports; no argument reports the current capture. The last 4096 samples per metric are retained; `n` counts all recorded samples. Disabled by default. |
 | `#nbt [dx dy dz]` | Block states of a block near the player. |
 | `#ecs <Component...>` / `#ecsdump <Component> [bytes]` | Does the player have these EnTT components / raw content of one. |
 | `#attrs` | Player attributes (health, hunger, speed...). |

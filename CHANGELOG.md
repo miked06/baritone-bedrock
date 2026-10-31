@@ -2,6 +2,26 @@
 
 All notable changes to Baritone Bedrock. Versions follow [semantic versioning](https://semver.org/).
 
+## 1.4.1
+
+Stability/performance fixes for Minecraft Bedrock 26.60 (`1.26.6005.0`). See [the audit report](docs/STABILITY_AUDIT.md) for the measured scope and remaining gameplay validation.
+
+### Fixed
+
+- Read and decompress schematic files on a background worker; prevent stale placement edits/builds while loading, discard cancelled results and stop builds across world/dimension changes. Report placement failures without claiming a successful load.
+- Yield large builder scans across ticks and compact completed positions into section bitmaps. Enforce breaking/placing permissions, including placement cost overrides and fluid restrictions.
+- Start farming even when periodic scans are disabled; respect breaking, planting and selection settings without destroying cached scan results.
+- Search sparse exploration allowlists directly instead of enumerating huge rings around distant targets.
+- Avoid joining a busy cache writer during periodic save/prune requests; retain concurrently changed chunks for the next save. Skip zero-limit cache searches.
+- Preserve block-state selectors and exact ore allowlists when restricting mining permissions.
+- Reject corrupt gzip/zlib checksums, sizes and headers in schematic imports.
+- Track the `#calc` worker, reject concurrent diagnostic calculations and join it before DLL unload.
+
+### Added
+
+- Opt-in `#perf` timings with fixed-size sample buffers, disabled by default.
+- Regression coverage for these failures, layered/repeated builder scans, cancellation, cache updates and deterministic malformed NBT inputs.
+
 ## 1.4.0
 
 Supports **Minecraft Bedrock 26.60 for Windows x64**, package **`1.26.6005.0`**. Download `BaritoneBedrock.dll` from the release assets; the `.pdb` file is optional for crash diagnostics.

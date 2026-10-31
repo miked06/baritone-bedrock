@@ -121,6 +121,19 @@ bool BlockFilter::matches(const BlockProps& p) const {
     });
 }
 
+BlockFilter BlockFilter::restrictedTo(const std::unordered_set<std::string>& allowedNames) const {
+    BlockFilter result;
+    for (const auto& selector : selectors_) {
+        if (!allowedNames.contains(selector.name)) continue;
+        result.selectors_.push_back(selector);
+        result.names_.insert(selector.name);
+        result.drops_.insert(selector.name);
+        if (auto it = dropTable().find(selector.name); it != dropTable().end())
+            result.drops_.insert(it->second.begin(), it->second.end());
+    }
+    return result;
+}
+
 std::vector<BlockPos> scanLoadedChunks(const WorldSnapshot& world, const BlockFilter& filter, const BlockPos& center,
                                        std::size_t max, int maxChunkRadius) {
     if (max == 0 || filter.empty() || maxChunkRadius < 0) return {};
