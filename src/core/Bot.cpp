@@ -192,6 +192,9 @@ void Bot::onFrame() {
             player_.bind(nullptr, nullptr);  // first: the old LocalPlayer is gone
             player_.setLevel(nullptr);
             worldName_.clear();
+            schematics_.clear();
+            schematicPreview_.clear();
+            schematicDimension_.reset();
             platform::PathRenderer::get().clear();
             cancelAll();
             platform::WorldTracker::get().reset();
@@ -264,6 +267,12 @@ void Bot::onTick(void* level) {
     sdk::BlockPos feet = sdk::BlockPos::floor(player->feet());
     tracker.refreshAround({feet.x, feet.y, feet.z}, 4);  // live view for the movements
 
+    if (schematicDimension_ && *schematicDimension_ != tracker.dimension()) {
+        schematics_.clear();
+        schematicPreview_.clear();
+    }
+    schematicDimension_ = tracker.dimension();
+
     if (walkTicks_ > 0) {
         --walkTicks_;
         input_.set(Key::MoveForward, walkTicks_ > 0);
@@ -301,6 +310,18 @@ void Bot::onTick(void* level) {
     frame.clickStart = clickSelection_.dragStart();
     frame.selections = selectionBoxes();
     frame.build = baritone_->builder().bounds();
+    if (schematics_.loaded() && schematics_.previewEnabled()) {
+        if (ticks_ % 10 == 0 || schematicPreviewRevision_ != schematics_.revision()) {
+            schematicPreview_ = schematics_.preview(*tracker.snapshot(), {feet.x, feet.y, feet.z}, 16, 512);
+            if (schematicPreviewRevision_ != schematics_.revision())
+                logger::debug("Schematic preview: {} difference boxes, origin {}", schematicPreview_.size(), schematics_.origin());
+            schematicPreviewRevision_ = schematics_.revision();
+        }
+        frame.schematicBounds = schematics_.bounds();
+        frame.schematicPreview = schematicPreview_;
+    } else {
+        schematicPreview_.clear();
+    }
     frame.elytraPath = baritone_->elytra().path();
     frame.elytraAim = baritone_->elytra().aim();
     frame.elytraLanding = baritone_->elytra().landing();

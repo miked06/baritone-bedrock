@@ -8,6 +8,7 @@
 
 #include "baritone/Settings.h"
 #include "baritone/world/BlockProps.h"
+#include "baritone/utils/CommandLine.h"
 #include "core/Chat.h"
 #include "core/Log.h"
 
@@ -44,8 +45,8 @@ const Command* CommandManager::find(std::string_view name) const {
 std::vector<std::string> CommandManager::complete(std::string_view input) const {
     while (!input.empty() && input.front() == ' ') input.remove_prefix(1);
     std::vector<std::string> words;
-    for (auto word : std::views::split(input, ' '))
-        if (!std::ranges::empty(word)) words.emplace_back(word.begin(), word.end());
+    try { words = baritone::commandArguments(input, true); }
+    catch (const std::invalid_argument&) { return {}; }
     if (words.empty() || input.ends_with(' ')) words.emplace_back();
     const std::string prefix = lower(words.back());
     std::vector<std::string> candidates;
@@ -95,6 +96,14 @@ std::vector<std::string> CommandManager::complete(std::string_view input) const 
         else if (name == "wp" && words.size() == 2) candidates = {"list", "save", "info", "delete", "clear", "restore", "goal", "goto"};
         else if (name == "elytra" && words.size() == 2) candidates = {"reset", "repack", "supported"};
         else if (name == "click" && words.size() == 2) candidates = {"cancel", "here"};
+        else if (name == "schematic" || name == "schematica" || name == "litematica") {
+            if (words.size() == 2) candidates = {"list", "load", "info", "move", "rotate", "mirror", "layer", "preview", "materials", "build", "clear"};
+            else if (words.size() == 3 && lower(words[1]) == "rotate") candidates = {"0", "90", "180", "270"};
+            else if (words.size() == 3 && lower(words[1]) == "mirror") candidates = {"none", "x", "z"};
+            else if (words.size() == 3 && lower(words[1]) == "preview") candidates = {"on", "off"};
+            else if (words.size() == 3 && lower(words[1]) == "layer") candidates = {"all"};
+            else if (words.size() == 3 && lower(words[1]) == "move") candidates = {"here"};
+        }
         else if (name == "sel") {
             if (words.size() == 2) candidates = {"pos1", "pos2", "clear", "undo", "set", "walls", "shell", "sphere", "hsphere", "cylinder", "hcylinder", "cleararea", "replace", "copy", "paste", "expand", "contract", "shift"};
             else if (words[1] == "expand" || words[1] == "contract" || words[1] == "shift")
@@ -149,9 +158,8 @@ bool CommandManager::runCommand(std::string_view msg, bool echo) {
     msg = trim(msg);
     if (msg.empty()) return runCommand("help", echo);
     Args words;
-    for (auto part : std::views::split(msg, ' ')) {
-        if (!std::ranges::empty(part)) words.emplace_back(std::ranges::begin(part), std::ranges::end(part));
-    }
+    try { words = baritone::commandArguments(msg); }
+    catch (const std::invalid_argument& error) { chat::error(error.what()); return true; }
     const std::string& name = words.front();
     std::string_view rest = msg.substr(std::min(msg.size(), name.size()));
     Args args(words.begin() + 1, words.end());

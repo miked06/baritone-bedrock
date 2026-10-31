@@ -327,7 +327,7 @@ SchematicPtr parseLegacySchematic(const nbt::Tag& root) {
     const nbt::Tag* data = root.get("Data");
     const nbt::Tag* add = root.get("AddBlocks");
     if (!blocks || !blocks->intArray() || !data || !data->intArray()) throw std::runtime_error("Missing Blocks or Data");
-    std::size_t total = static_cast<std::size_t>(w) * h * l;
+    const std::size_t total = schematicVolume({w, h, l});
     if (w == 0 || h == 0 || l == 0 || blocks->intArray()->size() < total || data->intArray()->size() < total) {
         throw std::runtime_error("inconsistent size");
     }
@@ -339,6 +339,7 @@ SchematicPtr parseLegacySchematic(const nbt::Tag& root) {
     std::vector<DesiredBlock> palette;
     std::vector<int> paletteOf(4096 * 16, -1);
     std::vector<int> indices(total, -1);
+    bool unknownBlocks = false;
     for (std::size_t i = 0; i < total; ++i) {
         int id = static_cast<int>(ids[i]) & 0xFF;
         if (high && i / 2 < high->size()) {  // AddBlocks: 4 extra bits per block, two blocks per byte
@@ -350,12 +351,16 @@ SchematicPtr parseLegacySchematic(const nbt::Tag& root) {
         if (paletteOf[key] < 0) {
             paletteOf[key] = static_cast<int>(palette.size());
             palette.push_back(legacyBlock(id, d));
+            if (id != 217 && palette.back().kind == DesiredBlock::Kind::Any) unknownBlocks = true;
         }
         // index (y * length + z) * width + x
         int x = static_cast<int>(i % w), z = static_cast<int>((i / w) % l), y = static_cast<int>(i / (static_cast<std::size_t>(w) * l));
         indices[(static_cast<std::size_t>(x) * h + y) * l + z] = paletteOf[key];
     }
-    return std::make_shared<StaticSchematic>(BlockPos{w, h, l}, std::move(palette), std::move(indices));
+    std::vector<std::string> warnings;
+    if (unknownBlocks) warnings.emplace_back("Unknown legacy numeric block IDs are ignored; use a modern .schem export for those blocks");
+    warnings.emplace_back("Legacy conversion does not restore entities or block-entity data (containers, signs, etc.)");
+    return std::make_shared<StaticSchematic>(BlockPos{w, h, l}, std::move(palette), std::move(indices), std::move(warnings));
 }
 
 }  // namespace baritone

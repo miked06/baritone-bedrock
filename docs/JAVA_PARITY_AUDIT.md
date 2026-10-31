@@ -2,6 +2,8 @@
 
 Reference: [cabaletta/baritone, branch 26.3, commit 25111daedf1d59e6a8dfb5a3e61885cdb8d953df](https://github.com/cabaletta/baritone/tree/25111daedf1d59e6a8dfb5a3e61885cdb8d953df), inspected on 2026-10-31. Bedrock target: Windows package `1.26.6005.0` (26.60).
 
+This document records the **1.3.0** audit. The current inventories and 1.4 additions are in [FEATURE_COMPARISON.md](FEATURE_COMPARISON.md), [COMMAND_INVENTORY.md](COMMAND_INVENTORY.md) and [SCHEMATICS.md](SCHEMATICS.md). In particular, `#schematica`/`#litematica` now operate on the native Bedrock workspace placement instead of returning an unavailable-mod error. The 1.4 renderer also corrects the current/dark shader color pointer and upload flag; earlier visual checks below did not establish correct per-batch color upload.
+
 The original port followed Java 1.21.11. This audit compares the current reference's command registrations, settings, inventory/tool logic, movement context, block selectors, schematic masks, cache behavior, rendering, click interactions and elytra diagnostics. It records source comparison and runtime checks separately. It is not a claim that every combination of movements, processes and settings has been exhaustively tested.
 
 ## Reproduce the structural comparison

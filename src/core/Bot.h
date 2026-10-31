@@ -9,6 +9,7 @@
 #include "baritone/Baritone.h"
 #include "baritone/cache/Waypoints.h"
 #include "baritone/selection/ClickSelection.h"
+#include "baritone/schematic/SchematicWorkspace.h"
 #include "command/CommandManager.h"
 #include "core/InputOverride.h"
 #include "core/LookBehavior.h"
@@ -47,6 +48,7 @@ public:
     baritone::InventoryBehavior& inventory() { return baritone_->inventory(); }
     platform::GamePlayerContext& player() { return player_; }
     baritone::WaypointStore& waypoints() { return waypoints_; }
+    baritone::SchematicWorkspace& schematics() { return schematics_; }
     const std::string& worldName() const { return worldName_; }
 
     // #sel pos1 waiting for its pos2 (the selections themselves are in baritone().selections()).
@@ -106,6 +108,10 @@ private:
     void releaseControl();
     void updateClickSelection();
     baritone::ClickSelection clickSelection_;
+    baritone::SchematicWorkspace schematics_;
+    std::vector<baritone::SchematicWorkspace::PreviewCell> schematicPreview_;
+    uint64_t schematicPreviewRevision_ = 0;
+    std::optional<int> schematicDimension_;
     std::optional<baritone::BlockPos> clickTarget_;
     uint64_t clickSelectionStartedAt_ = 0;
     bool clickCaptureStarted_ = false;

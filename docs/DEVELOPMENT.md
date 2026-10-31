@@ -61,7 +61,7 @@ Target: Microsoft Store package `1.26.6005.0`, compared with the previous `1.26.
 - `InteractPacket`: size `0x58`, action `+0x30`, target runtime id `+0x38`, optional position `+0x40`, serialization mode `+0x50` (5). The native handler uses priority 2/reliability 1. `LocalPlayer::sendNetworkPacket` is vtable `0xE4`.
 - Pause bot actions while its temporary inventory screen opens and the server answers. Close only that screen, using `LocalPlayer+0xEEC` (`{-1, true}`) and vtable `0xDC` (`deleteContainerManager`); normalTick consumes the close flag. Do not close an inventory the user opened. The class declarations and close sequence were cross-checked with [LeviLamina's client SDK](https://github.com/LiteLDev/LeviLamina/blob/main/src-client/mc/client/player/LocalPlayer.cpp); packet action/status names are in [Mojang's protocol reference](https://mojang.github.io/bedrock-protocol-docs/1.26.60/packets/item-stack-response-packet/).
 - World name: `LevelData+0x2B0`; hit result pointer: `Level+0x1F0`. BlockSource, block-state NBT and attribute lookups were checked in game.
-- Rendering requires more than new signatures: `ScreenContext` tessellator is `+0xB0` and shader color is `+0x38` (`+0x30` is fog color). The former tessellator offset `+0xB8` now points at a lifetime control block; passing it to Tessellator functions corrupts that block and crashes a later frame.
+- Rendering requires more than new signatures: `ScreenContext` tessellator is `+0xB0`. The 1.4 correction identifies current shader color at `+0x30` and dark shader color at `+0x38`; see the shader-color section below. The former tessellator offset `+0xB8` now points at a lifetime control block; passing it to Tessellator functions corrupts that block and crashes a later frame.
 - `Tessellator::color` now uses `(this, float r, float g, float b, float a)`. The render player/origin fields moved to `LevelRenderer+0x480` and `LevelRendererPlayer+0x658`.
 
 Validation: 39 offline core tests, package detection, all eight hooks, player/world diagnostics, short navigation over uneven terrain, goal rendering, survival block placement/breaking with tool selection and durability, entity listing, empty/nonempty inventory transfers in both directions, automatic pickaxe retrieval with `allowInventory`, preservation of a manually opened inventory, a one-block selection build with automatic material retrieval, and unload/reinjection. A complete farming, schematic-building, elytra and water-clutch campaign has not been repeated on 26.60.
@@ -116,6 +116,12 @@ Things that are not obvious and cost time to find:
 - In creative, two jump presses within ~10 ticks toggle flight.
 - A falling block entity only shows for about one tick in the entity list.
 - The Windows console blocks writes while text is selected (QuickEdit); the bot turns QuickEdit off so a click in its console cannot freeze the game.
+
+## Schematic workspace and shader color (1.4)
+
+The 1.4 schematic/render changes are described in [SCHEMATICS.md](SCHEMATICS.md) and [FEATURE_COMPARISON.md](FEATURE_COMPARISON.md). The preview reads exact live snapshot chunks and produces a bounded difference set; the renderer consumes a copied frame. The workspace passes an already transformed schematic to `BuilderProcess::build(..., false, false)` so file rotations/orientation offsets are not applied twice.
+
+For Bedrock 26.60, `ScreenContext` embeds `mce::MeshContext` at `+0x10`. `currentShaderColor` is the pointer at `ScreenContext+0x30`; `+0x38` points to **currentShaderDarkColor**, not the current color. A native `ShaderColor` contains RGBA at `+0` and its upload-dirty byte at `+0x10`. Drawing/restoring a color must set that byte. This layout is corroborated by [MeshContext](https://github.com/LiteLDev/LeviLamina/blob/main/src-client/mc/deps/minecraft_renderer/renderer/MeshContext.h) and [ShaderColor](https://github.com/LiteLDev/LeviLamina/blob/main/src-client/mc/deps/renderer/ShaderColor.h), and by native color-store/dirty instruction pairs in the 26.60 dump (for example RVA `0xA0ADA4`). Native `MeshHelpers::renderMeshImmediately` at `0x5AD5F90` advances the ScreenContext argument by `0x10` before the mesh render call. Prior notes that call `+0x30` fog color or use `+0x38` as the draw color are superseded by this correction.
 
 ## Releasing
 

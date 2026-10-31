@@ -24,7 +24,7 @@
 
 Baritone Bedrock is a native C++ rewrite of Baritone that runs **inside** the Windows version of Minecraft Bedrock as a single DLL. No resource pack, no behavior pack, no server plugin: inject the DLL and type `#goto 1000 64 -200` in the chat.
 
-The pathfinding engine, the movements, the processes and all the settings follow Baritone's Java code (1.21.11) closely, so the commands and settings you know from Java Edition work the same way.
+The pathfinding engine, movements and processes started as a port of Baritone Java 1.21.11 and have been compared against Java 26.3. See the [feature comparison](docs/FEATURE_COMPARISON.md) for both inventories, the implemented behavior and the remaining platform differences.
 
 > [!IMPORTANT]
 > **Supported game version: Minecraft Bedrock 26.60 for Windows** (package `1.26.6005.0`).
@@ -45,7 +45,8 @@ The pathfinding engine, the movements, the processes and all the settings follow
 | 💧 **Water bucket clutch** | Falls of up to 20 blocks are planned with a water bucket: the bot places the water just before landing and picks it back up. |
 | 👣 **Follow, explore, more** | `#follow`, `#explore`, `#tunnel`, `#surface`, `#axis`, `#click`, `#come`, waypoints (`#wp`, automatic `death` and `bed` waypoints), `#find`... |
 | 🎨 **Rendering** | The path, the goal, the blocks to break or place and the selections are drawn in the world with the game's own renderer. |
-| ⚙️ **Settings** | All of Baritone's settings, with the same names and defaults, saved between sessions. See [docs/SETTINGS.md](docs/SETTINGS.md). |
+| ⚙️ **Settings** | Java user-setting names, platform-specific defaults where needed, named profiles and persistence. See [docs/SETTINGS.md](docs/SETTINGS.md). |
+| 🧱 **Schematic preview** | Built-in Bedrock alternative to an open Schematica/Litematica placement: load, preview, move, rotate, mirror, select layers, count materials and build. See [docs/SCHEMATICS.md](docs/SCHEMATICS.md). |
 
 ## Getting started
 
@@ -69,6 +70,8 @@ Type commands in the chat, starting with `#`. They are handled locally and never
 > All built-in messages, command help, notifications and diagnostics are in English.
 
 Version 1.3.0 adds state-filtered block searches, interactive click goals/selections, settings profiles, completion suggestions, disconnect on arrival, depth/cached-terrain rendering and elytra cache/diagnostic controls. See the [comparison with Baritone Java 26.3](docs/JAVA_PARITY_AUDIT.md) for the changes, checks and remaining platform differences.
+
+Version 1.4.0 adds the [schematic workspace](docs/SCHEMATICS.md). Use `#schematic load "house.litematic" ~5 ~ ~` to preview, adjust it with `#schematic move/rotate/mirror/layer`, then run `#schematic build`. `#schematica` and `#litematica` now build the loaded Bedrock placement instead of returning an unavailable-mod error. The [two feature lists](docs/FEATURE_COMPARISON.md) and [complete command inventories](docs/COMMAND_INVENTORY.md) distinguish implemented features from adaptations and remaining gaps.
 
 ### First commands
 

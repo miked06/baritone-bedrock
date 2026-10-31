@@ -2,6 +2,8 @@
 
 Baritone Bedrock was originally ported from [Baritone Java](https://github.com/cabaletta/baritone) 1.21.11. Version 1.3.0 was compared with Java 26.3 at commit `25111daedf1d59e6a8dfb5a3e61885cdb8d953df`. The [feature audit](JAVA_PARITY_AUDIT.md) records added behavior, verification and remaining gaps.
 
+For the 1.4 feature inventories and per-feature qualifications, see [FEATURE_COMPARISON.md](FEATURE_COMPARISON.md). The new [schematic workspace](SCHEMATICS.md) provides an open-placement workflow inside Bedrock.
+
 ## What matches
 
 - **Commands**: every Baritone command and alias exists (`goto`, `goal`, `path`, `mine`, `follow`, `farm`, `explore`, `build`, `sel`, `wp`, `elytra`, `tunnel`, `axis`, `surface`, `invert`, `thisway`, `click`, `come`, `pickup`, `find`, `blacklist`, `eta`, `proc`, `pause`/`resume`/`paused`, `cancel`, `forcecancel`, `set`, `modified`, `reset`, `help`, `repack`, `saveall`, `reloadall`, `render`, `gc`, `version`...).
@@ -46,7 +48,7 @@ Baritone Bedrock was originally ported from [Baritone Java](https://github.com/c
 | Setting / feature | Why |
 |---|---|
 | `elytraNetherSeed`, `elytraPredictTerrain` | A Bedrock terrain generator is not implemented. Java's generator produces different terrain. Flight plans with observed/cached chunks and replans as chunks load. |
-| `#litematica`, `#schematica` | These mods do not exist on Bedrock. `#build` reads their files directly. |
+| `#litematica`, `#schematica` | Adapted in 1.4: load/preview files and build the open Bedrock workspace placement. Java mod binaries are not loaded. |
 | `logger`, `notifier`, `toaster` | Java API callbacks, not user settings. |
 
 ## Additions

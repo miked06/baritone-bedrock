@@ -2,6 +2,7 @@
 // The game's immediate-mode 3D drawing: Tessellator + MeshHelpers, used from the
 // LevelRenderer::renderLevel hook.
 #include <cstdint>
+#include <cstddef>
 #include <memory>
 
 #include "sdk/Math.h"
@@ -11,6 +12,15 @@ namespace sdk {
 struct Color {
     float r, g, b, a;
 };
+
+// Native ShaderColor: the renderer only uploads a changed uniform when dirty
+// is set. Writing the four floats alone can keep an unrelated previous color.
+struct ShaderColor {
+    Color color;
+    bool dirty;
+    void set(Color value) { color = value; dirty = true; }
+};
+static_assert(offsetof(ShaderColor, dirty) == 0x10);
 
 enum class Primitive : int { Quad = 1, TriangleFan = 2, TriangleStrip = 3, LineList = 4 };
 
@@ -26,7 +36,7 @@ class MaterialPtr;  // shared material handle owned by the game
 class ScreenContext {
 public:
     Tessellator* tessellator() const;
-    Color* shaderColor() const;
+    ShaderColor* shaderColor() const;
 };
 
 class LevelRenderer {

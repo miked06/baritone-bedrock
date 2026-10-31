@@ -26,6 +26,9 @@
 #include "baritone/schematic/Inflate.h"
 #include "baritone/schematic/Orientation.h"
 #include "baritone/schematic/Schematic.h"
+#include "baritone/schematic/SchematicWorkspace.h"
+#include "baritone/schematic/NbtReader.h"
+#include "baritone/utils/CommandLine.h"
 #include "InflateData.h"
 
 using namespace baritone;
@@ -1144,6 +1147,126 @@ TEST(elytra_collision_debug_records_the_tested_sweep) {
     CHECK(!samples.empty());
     CHECK(samples.back().collided);
     CHECK(samples.back().position.z < 2.5);
+}
+
+TEST(schematic_workspace_preview_is_bounded_and_uses_live_states) {
+    const auto& blocks = Blocks::get();
+    TestWorld world(1);
+    world.set(0, 1, 0, blocks.stone); // correct: hidden
+    world.set(2, 1, 0, blocks.dirt);  // wrong: red
+    world.set(3, 1, 0, blocks.stone); // clear: orange
+    auto source = std::make_shared<StaticSchematic>(BlockPos{5, 1, 1},
+        std::vector{DesiredBlock::block("minecraft:stone"), DesiredBlock::air(), DesiredBlock::any()},
+        std::vector{0, 0, 0, 1, 2});
+    SchematicWorkspace work;
+    work.load("test", source, {0, 1, 0});
+    using D = SchematicWorkspace::Difference;
+    auto preview = work.preview(*world.snapshot(), {0, 1, 0});
+    CHECK(preview.size() == 3);
+    CHECK(preview[0].pos == (BlockPos{1, 1, 0}) && preview[0].difference == D::Missing);
+    CHECK(preview[1].difference == D::Wrong);
+    CHECK(preview[2].difference == D::Remove);
+    CHECK(work.preview(*world.snapshot(), {0, 1, 0}, 16, 1).size() == 1);
+    CHECK(work.preview(*world.snapshot(), {1000, 1, 0}).empty());
+    work.move({15, 1, 0});
+    preview = work.preview(*world.snapshot(), {15, 1, 0});
+    CHECK(preview.size() == 4 && preview[1].difference == D::Unloaded);
+    work.setPreview(false);
+    CHECK(work.preview(*world.snapshot(), {15, 1, 0}).empty());
+}
+
+TEST(schematic_workspace_transforms_materials_layers_and_build_share_placement) {
+    SettingsGuard settings;
+    auto log = DesiredBlock::block("minecraft:oak_log");
+    log.states = {{"pillar_axis", "x"}};
+    auto source = std::make_shared<StaticSchematic>(BlockPos{2, 2, 1},
+        std::vector{log, DesiredBlock::air(), DesiredBlock::any()}, std::vector{0, 1, 2, 0});
+    SchematicWorkspace work;
+    work.load("logs", source, {5, 2, 7});
+    work.rotate(1);
+    work.mirror(2);
+    CHECK(work.schematic()->size() == (BlockPos{1, 2, 2}));
+    auto material = work.materials();
+    CHECK(material.blocks["minecraft:oak_log"] == 2 && material.air == 1 && material.ignored == 1);
+    work.layer(std::pair{1, 1});
+    material = work.materials();
+    CHECK(material.blocks["minecraft:oak_log"] == 1 && material.ignored == 2);
+    // Global file transforms must not transform the already previewed placement again.
+    Settings::get().buildSchematicRotation = "CLOCKWISE_90";
+    Settings::get().schematicOrientationX = true;
+    test::TestPlayer player;
+    Baritone bot(player, [](const std::string&, bool) {});
+    bot.builder().build(work.name(), work.schematic(), work.origin(), false, false);
+    CHECK(bot.builder().bounds() == std::optional(work.bounds()));
+    work.layer(std::nullopt);
+    CHECK(work.materials().blocks["minecraft:oak_log"] == 2);
+    bool rejected = false;
+    try { work.layer(std::pair{2, 2}); } catch (const std::invalid_argument&) { rejected = true; }
+    CHECK(rejected && !work.layers());
+    work.clear();
+    CHECK(!work.loaded() && !work.schematic());
+}
+
+TEST(schematic_invalid_dimensions_and_indices_are_rejected) {
+    auto invalid = [](auto make) {
+        bool rejected = false;
+        try { make(); } catch (const std::exception&) { rejected = true; }
+        CHECK(rejected);
+    };
+    invalid([] { schematicVolume({INT32_MAX, INT32_MAX, INT32_MAX}); });
+    invalid([] { schematicVolume({0, 1, 1}); });
+    invalid([] { StaticSchematic s({1, 1, 1}, {DesiredBlock::air()}, {99}); });
+    invalid([] { StaticSchematic s({2, 1, 1}, {DesiredBlock::air()}, {0}); });
+    SchematicWorkspace work;
+    work.load("old", std::make_shared<FillSchematic>(BlockPos{2, 1, 1}, DesiredBlock::air()), {0, 0, 0});
+    invalid([&] { work.load("bad", nullptr, {}); });
+    CHECK(work.name() == "old");
+    invalid([&] { work.move({INT32_MAX, 0, 0}); });
+    CHECK(work.origin() == (BlockPos{}));
+}
+
+TEST(command_arguments_support_quoted_schematic_names_and_windows_paths) {
+    CHECK(commandArguments("schematic load \"castle big.schem\" ~1 ~ ~-2") ==
+        (std::vector<std::string>{"schematic", "load", "castle big.schem", "~1", "~", "~-2"}));
+    CHECK(commandArguments("build \"C:\\My Builds\\house.schem\"")[1] == "C:\\My Builds\\house.schem");
+    CHECK(commandArguments("find oak_log[pillar_axis=\"x\"]")[1] == "oak_log[pillar_axis=\"x\"]");
+    bool rejected = false;
+    try { commandArguments("build \"missing end"); } catch (const std::invalid_argument&) { rejected = true; }
+    CHECK(rejected);
+    CHECK(commandArguments("build \"not finished", true)[1] == "not finished");
+}
+
+TEST(nbt_invalid_collection_lengths_are_rejected_before_allocation) {
+    for (uint8_t type : {uint8_t{7}, uint8_t{9}, uint8_t{11}, uint8_t{12}}) {
+        for (int32_t count : {-1, INT32_MAX}) {
+            NbtWriter w;
+            w.named(10, ""); w.named(type, "bad");
+            if (type == 9) w.u8(10);
+            w.i32(count); w.end();
+            bool rejected = false;
+            try { nbt::parse(w.out, true); } catch (const std::runtime_error&) { rejected = true; }
+            CHECK(rejected);
+        }
+    }
+}
+
+TEST(sponge_v3_nested_palette_and_invalid_indices) {
+    auto make = [](uint8_t index) {
+        NbtWriter w; w.bigEndian = true;
+        w.named(10, ""); w.named(10, "Schematic");
+        w.named(3, "Version"); w.i32(3);
+        w.named(2, "Width"); w.i16(1); w.named(2, "Height"); w.i16(1); w.named(2, "Length"); w.i16(1);
+        w.named(10, "Blocks"); w.named(10, "Palette"); w.named(3, "minecraft:stone"); w.i32(0); w.end();
+        w.named(7, "Data"); w.i32(1); w.u8(index); w.end(); w.end(); w.end();
+        return w.out;
+    };
+    auto path = writeTemp("baritone_v3.schem", make(0));
+    CHECK(loadSchematic(path)->desired(0, 0, 0, "").name == "minecraft:stone");
+    writeTemp("baritone_v3.schem", make(2));
+    bool rejected = false;
+    try { loadSchematic(path); } catch (const std::runtime_error&) { rejected = true; }
+    CHECK(rejected);
+    std::filesystem::remove(path);
 }
 
 TEST(performance_random_terrain) {

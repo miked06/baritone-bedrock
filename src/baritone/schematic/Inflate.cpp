@@ -1,6 +1,7 @@
 #include "baritone/schematic/Inflate.h"
 
 #include <array>
+#include <algorithm>
 #include <stdexcept>
 
 namespace baritone {
@@ -8,6 +9,7 @@ namespace baritone {
 namespace {
 
 constexpr int kMaxBits = 15;
+constexpr std::size_t kMaxOutput = 256ull * 1024 * 1024;
 
 [[noreturn]] void corrupt(const char* what) {
     throw std::runtime_error(std::string("invalid compressed data: ") + what);
@@ -96,6 +98,7 @@ void inflateBlock(BitReader& in, std::vector<uint8_t>& out, const Huffman& lenco
     for (;;) {
         int sym = lencode.decode(in);
         if (sym < 256) {
+            if (out.size() == kMaxOutput) corrupt("decompressed data exceeds 256 MiB");
             out.push_back(static_cast<uint8_t>(sym));
         } else if (sym == 256) {
             return;
@@ -108,6 +111,7 @@ void inflateBlock(BitReader& in, std::vector<uint8_t>& out, const Huffman& lenco
             std::size_t dist = kDistBase[dsym] + static_cast<std::size_t>(in.bits(kDistExtra[dsym]));
             if (dist > out.size()) corrupt("distance too far back");
             std::size_t from = out.size() - dist;
+            if (static_cast<std::size_t>(len) > kMaxOutput - out.size()) corrupt("decompressed data exceeds 256 MiB");
             for (int i = 0; i < len; ++i) out.push_back(out[from + i]);
         }
     }
@@ -171,7 +175,7 @@ void dynamicCodes(BitReader& in, Huffman& lencode, Huffman& distcode) {
 std::vector<uint8_t> inflateRaw(const uint8_t* data, std::size_t size, std::size_t* consumed) {
     BitReader in(data, size);
     std::vector<uint8_t> out;
-    out.reserve(size * 4);
+    out.reserve(std::min(size, std::size_t{1024 * 1024}));
     bool last;
     do {
         last = in.bits(1) != 0;
@@ -181,6 +185,7 @@ std::vector<uint8_t> inflateRaw(const uint8_t* data, std::size_t size, std::size
             int len = in.byte() | (in.byte() << 8);
             int nlen = in.byte() | (in.byte() << 8);
             if (len != (~nlen & 0xFFFF)) corrupt("uncompressed block");
+            if (static_cast<std::size_t>(len) > kMaxOutput - out.size()) corrupt("decompressed data exceeds 256 MiB");
             for (int i = 0; i < len; ++i) out.push_back(in.byte());
         } else if (type == 1) {
             const auto& [lencode, distcode] = fixedCodes();

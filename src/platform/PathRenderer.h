@@ -9,6 +9,7 @@
 #include "baritone/pathing/goals/Goal.h"
 #include "baritone/cache/CachedMesh.h"
 #include "baritone/elytra/ElytraPhysics.h"
+#include "baritone/schematic/SchematicWorkspace.h"
 
 namespace sdk {
 class LevelRenderer;
@@ -25,6 +26,8 @@ public:
 
     struct Frame {
         std::optional<baritone::BlockPos> clickTarget, clickStart;
+        std::optional<std::pair<baritone::BlockPos, baritone::BlockPos>> schematicBounds;
+        std::vector<baritone::SchematicWorkspace::PreviewCell> schematicPreview;
         std::vector<baritone::BlockPos> path, next, calculating;
         std::size_t pathPosition = 0;                        // drawn from 3 movements before it
         std::vector<baritone::BlockPos> mostRecent;           // colorMostRecentConsidered

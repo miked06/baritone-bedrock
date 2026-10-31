@@ -10,12 +10,58 @@
 
 namespace baritone {
 
+std::size_t schematicVolume(BlockPos size) {
+    constexpr uint64_t limit = 64ull * 1024 * 1024;
+    uint64_t volume = 1;
+    for (int side : {size.x, size.y, size.z}) {
+        if (side <= 0 || static_cast<uint64_t>(side) > limit / volume)
+            throw std::invalid_argument("Invalid schematic dimensions (maximum 64 million blocks)");
+        volume *= side;
+    }
+    return static_cast<std::size_t>(volume);
+}
+
+StaticSchematic::StaticSchematic(BlockPos size, std::vector<DesiredBlock> palette, std::vector<int> indices,
+                                 std::vector<std::string> warnings)
+    : size_(size), palette_(std::move(palette)), indices_(std::move(indices)), warnings_(std::move(warnings)) {
+    if (indices_.size() != schematicVolume(size_)) throw std::invalid_argument("Inconsistent schematic index count");
+    for (int index : indices_)
+        if (index < -1 || (index >= 0 && static_cast<std::size_t>(index) >= palette_.size()))
+            throw std::invalid_argument("Schematic refers to an undefined palette index");
+}
+
 DesiredBlock StaticSchematic::desired(int x, int y, int z, const BlockProps&) const {
+    if (!inBounds(x, y, z)) return DesiredBlock::any();
     std::size_t i = (static_cast<std::size_t>(x) * size_.y + y) * size_.z + z;
     if (i >= indices_.size()) return DesiredBlock::any();
     int idx = indices_[i];
     if (idx < 0 || idx >= static_cast<int>(palette_.size())) return DesiredBlock::any();
     return palette_[idx];
+}
+
+SchematicMaterials StaticSchematic::materialCounts(int firstY, int lastY) const {
+    SchematicMaterials result;
+    if (lastY == -1) lastY = size_.y - 1;
+    if (firstY < 0 || lastY < firstY || lastY >= size_.y) throw std::invalid_argument("Invalid schematic layer range");
+    std::vector<uint64_t> counts(palette_.size());
+    result.ignored = static_cast<uint64_t>(size_.x) * size_.z * (size_.y - (lastY - firstY + 1));
+    for (int x = 0; x < size_.x; ++x) {
+        const auto start = (static_cast<std::size_t>(x) * size_.y + firstY) * size_.z;
+        const auto end = (static_cast<std::size_t>(x) * size_.y + lastY + 1) * size_.z;
+        for (auto i = start; i < end; ++i) {
+            const int index = indices_[i];
+            if (index == -1) ++result.ignored;
+            else ++counts[index];
+        }
+    }
+    for (std::size_t i = 0; i < counts.size(); ++i) {
+        if (!counts[i]) continue;
+        const auto& block = palette_[i];
+        if (block.kind == DesiredBlock::Kind::Block) result.blocks[block.name] += counts[i];
+        else if (block.kind == DesiredBlock::Kind::Air) result.air += counts[i];
+        else result.ignored += counts[i];
+    }
+    return result;
 }
 
 SchematicPtr loadMcStructure(const std::string& path) {
@@ -26,11 +72,13 @@ SchematicPtr loadMcStructure(const std::string& path) {
         throw std::runtime_error("Invalid .mcstructure file (missing size/structure)");
     }
     const auto& sl = *sizeTag->list();
-    BlockPos size{static_cast<int>(sl[0].integer().value_or(0)), static_cast<int>(sl[1].integer().value_or(0)),
-                  static_cast<int>(sl[2].integer().value_or(0))};
-    if (size.x <= 0 || size.y <= 0 || size.z <= 0 || static_cast<int64_t>(size.x) * size.y * size.z > 64 * 1024 * 1024) {
-        throw std::runtime_error("Invalid schematic size");
-    }
+    auto side = [](const nbt::Tag& tag) {
+        auto value = tag.integer().value_or(0);
+        if (value <= 0 || value > INT32_MAX) throw std::runtime_error("Invalid schematic size");
+        return static_cast<int>(value);
+    };
+    BlockPos size{side(sl[0]), side(sl[1]), side(sl[2])};
+    schematicVolume(size);
 
     // palette.default.block_palette: [{name, states, version}]
     const nbt::Tag* palette = structure->get("palette");
@@ -40,7 +88,8 @@ SchematicPtr loadMcStructure(const std::string& path) {
     std::vector<DesiredBlock> pal;
     for (const nbt::Tag& entry : *blockPalette->list()) {
         const nbt::Tag* name = entry.get("name");
-        std::string n = name && name->string() ? *name->string() : "minecraft:air";
+        if (!name || !name->string() || name->string()->empty()) throw std::runtime_error("Missing block palette name");
+        std::string n = *name->string();
         if (n == "minecraft:air") {
             pal.push_back(DesiredBlock::air());
         } else if (n == "minecraft:structure_void") {
@@ -63,14 +112,33 @@ SchematicPtr loadMcStructure(const std::string& path) {
     const nbt::Tag& layer0 = (*indicesTag->list())[0];
     std::vector<int> indices;
     if (auto* arr = layer0.intArray()) {
-        for (int64_t v : *arr) indices.push_back(static_cast<int>(v));
+        for (int64_t v : *arr) {
+            if (v < -1 || v >= static_cast<int64_t>(pal.size())) throw std::runtime_error("Invalid block palette index");
+            indices.push_back(static_cast<int>(v));
+        }
     } else if (auto* list = layer0.list()) {
-        for (const nbt::Tag& v : *list) indices.push_back(static_cast<int>(v.integer().value_or(-1)));
+        for (const nbt::Tag& v : *list) {
+            const auto value = v.integer();
+            if (!value || *value < -1 || *value >= static_cast<int64_t>(pal.size())) throw std::runtime_error("Invalid block palette index");
+            indices.push_back(static_cast<int>(*value));
+        }
     }
     if (indices.size() != static_cast<std::size_t>(size.x) * size.y * size.z) {
         throw std::runtime_error("Inconsistent index count");
     }
-    return std::make_shared<StaticSchematic>(size, std::move(pal), std::move(indices));
+    std::vector<std::string> warnings;
+    if (const auto* entities = structure->get("entities"); entities && entities->list() && !entities->list()->empty())
+        warnings.emplace_back("Entities are not built by the survival builder");
+    if (const auto* data = def->get("block_position_data"); data && data->compound() && !data->compound()->empty())
+        warnings.emplace_back("Block-entity data (containers, signs, etc.) is not restored");
+    if (indicesTag->list()->size() > 1) {
+        const auto& water = (*indicesTag->list())[1];
+        bool filled = false;
+        if (auto arr = water.intArray()) for (auto i : *arr) filled |= i != -1;
+        if (auto list = water.list()) for (const auto& i : *list) filled |= i.integer().value_or(-1) != -1;
+        if (filled) warnings.emplace_back("Secondary water/fluid layers are not placed");
+    }
+    return std::make_shared<StaticSchematic>(size, std::move(pal), std::move(indices), std::move(warnings));
 }
 
 MaskSchematic::Mask sphereMask(BlockPos size, bool filled) {

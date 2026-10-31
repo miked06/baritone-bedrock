@@ -23,6 +23,7 @@
 #include "baritone/pathing/calc/AStarPathFinder.h"
 #include "baritone/pathing/movement/MovementHelper.h"
 #include "baritone/schematic/Schematic.h"
+#include "command/SchematicCommands.h"
 #include "baritone/utils/RayTrace.h"
 #include "core/Bot.h"
 #include "platform/WorldTracker.h"
@@ -205,6 +206,7 @@ void hexDump(std::string_view name, const void* obj, int size) {
 }  // namespace
 
 void registerAll(CommandManager& manager, Bot& bot) {
+    registerSchematicCommands(manager, bot);
     manager.setCompletionProvider([&bot, &manager](const Args& words) -> Args {
         if (words.size() < 2) return {};
         const auto* command = manager.find(words[0]);
@@ -212,6 +214,9 @@ void registerAll(CommandManager& manager, Bot& bot) {
         const std::string& name = command->names.front();
         const std::string action = lowerCase(words[1]);
         Args result;
+        const bool schematicFile = (name == "build" && words.size() == 2) ||
+            ((name == "schematic" || name == "schematica" || name == "litematica") && words.size() == 3 && action == "load") ||
+            ((name == "schematica" || name == "litematica") && words.size() == 2);
         if (name == "follow" && words.size() == 3 && bot.player().valid()) {
             for (const auto& entity : bot.player().entities()) {
                 if (action == "player" && entity.isPlayer) result.push_back(entity.name);
@@ -227,14 +232,14 @@ void registerAll(CommandManager& manager, Bot& bot) {
                 result.push_back(waypoint.tag);
             }
             result.insert(result.end(), {"home", "base", "death", "bed", "spawn", "user"});
-        } else if ((name == "build" && words.size() == 2) ||
+        } else if (schematicFile ||
                    (name == "set" && words.size() == 3 && (action == "load" || action == "ld" || action == "save"))) {
-            auto folder = name == "build" ? paths::dataDir() / "schematics" : paths::dataDir();
+            auto folder = schematicFile ? paths::dataDir() / "schematics" : paths::dataDir();
             std::error_code error;
             for (const auto& entry : std::filesystem::directory_iterator(folder, error)) {
                 if (!entry.is_regular_file(error)) continue;
                 std::string extension = lowerCase(entry.path().extension().string());
-                if (name == "build" ? extension == ".schem" || extension == ".schematic" || extension == ".litematic" || extension == ".mcstructure"
+                if (schematicFile ? extension == ".schem" || extension == ".schematic" || extension == ".litematic" || extension == ".mcstructure"
                                     : extension == ".txt") result.push_back(entry.path().filename().string());
             }
         }
@@ -1437,11 +1442,17 @@ void registerAll(CommandManager& manager, Bot& bot) {
     // Java HelpCommand: "help [page]" lists the commands, "help <command>" details one
     manager.add({{"complete"}, "complete [command or setting prefix...]", "Suggest commands, settings and arguments", [&manager](const Args& args) {
         std::string input;
-        for (const auto& word : args) input += (input.empty() ? "" : " ") + word;
+        for (const auto& word : args) input += (input.empty() ? "" : " ") +
+            (word.find(' ') == std::string::npos ? word : "\"" + word + "\"");
+        const auto* completing = args.empty() ? nullptr : manager.find(args[0]);
+        const bool schematicArgument = completing && args.size() == 2 &&
+            (completing->names.front() == "schematic" || completing->names.front() == "schematica" || completing->names.front() == "litematica") &&
+            (args.back() == "load" || args.back() == "rotate" || args.back() == "mirror" || args.back() == "layer" ||
+             args.back() == "move" || args.back() == "preview");
         if (!args.empty() && ((args.size() == 1 && manager.find(args[0])) || baritone::findSetting(args.back()) ||
             (args[0] == "set" && (args.back() == "toggle" || args.back() == "reset" || args.back() == "load" || args.back() == "save")) ||
             (args[0] == "follow" && (args.back() == "player" || args.back() == "entity")) ||
-            (args[0] == "wp" && args.size() == 2))) input += ' ';
+            (args[0] == "wp" && args.size() == 2) || schematicArgument)) input += ' ';
         const auto suggestions = manager.complete(input);
         if (suggestions.empty()) { chat::info("No completions"); return; }
         chat::info(std::format("{} suggestions:", suggestions.size()));
@@ -1529,17 +1540,6 @@ void registerAll(CommandManager& manager, Bot& bot) {
         platform::WorldTracker::get().markAllStale();
         chat::info("Done");
     }});
-
-    // Java LitematicaCommand / SchematicaCommand: build what those mods have open. They don't
-    // exist on Bedrock: the files are built with #build.
-    manager.add({{"litematica"}, "litematica [number]", "Litematica is unavailable on Bedrock: use #build <file.litematic>",
-                 [](const Args&) {
-                     throw CommandError("Litematica is unavailable on Bedrock. Put the .litematic file in the schematics folder and type #build <name>");
-                 }});
-    manager.add({{"schematica"}, "schematica", "Schematica is unavailable on Bedrock: use #build <file.schematic>",
-                 [](const Args&) {
-                     throw CommandError("Schematica is unavailable on Bedrock. Put the .schematic file in the schematics folder and type #build <name>");
-                 }});
 
     manager.add({{"unfault"}, "unfault", "Re-enable the bot after a caught error", [](const Args&) {
         safe::resetFault();

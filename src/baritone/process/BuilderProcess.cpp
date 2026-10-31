@@ -173,7 +173,7 @@ constexpr Direction kAllFaces[] = {Direction::Down, Direction::North, Direction:
 
 // ---- setup ------------------------------------------------------------------------
 
-void BuilderProcess::build(std::string name, SchematicPtr schematic, BlockPos origin, bool fromFile) {
+void BuilderProcess::build(std::string name, SchematicPtr schematic, BlockPos origin, bool fromFile, bool applyTransforms) {
     const Settings& s = Settings::get();
     name_ = std::move(name);
     BlockPos rawSize = schematic->size();
@@ -183,12 +183,16 @@ void BuilderProcess::build(std::string name, SchematicPtr schematic, BlockPos or
         schematic = std::make_shared<SelectionSchematic>(std::move(schematic), origin, baritone_.selections().all());
     }
     // Java build(schematic): substitutes (in placeable/valid), mirror, rotation, skip mask
-    if (int m = mirrorMode(s.buildSchematicMirror)) schematic = std::make_shared<MirroredSchematic>(std::move(schematic), m);
-    if (int t = rotationTurns(s.buildSchematicRotation)) schematic = std::make_shared<RotatedSchematic>(std::move(schematic), t);
+    if (applyTransforms) {
+        if (int m = mirrorMode(s.buildSchematicMirror)) schematic = std::make_shared<MirroredSchematic>(std::move(schematic), m);
+        if (int t = rotationTurns(s.buildSchematicRotation)) schematic = std::make_shared<RotatedSchematic>(std::move(schematic), t);
+    }
     schematic = std::make_shared<SkipBlocksSchematic>(std::move(schematic));
-    if (s.schematicOrientationX) origin.x += rawSize.x;
-    if (s.schematicOrientationY) origin.y += rawSize.y;
-    if (s.schematicOrientationZ) origin.z += rawSize.z;
+    if (applyTransforms) {
+        if (s.schematicOrientationX) origin.x += rawSize.x;
+        if (s.schematicOrientationY) origin.y += rawSize.y;
+        if (s.schematicOrientationZ) origin.z += rawSize.z;
+    }
     schematic_ = std::move(schematic);
     schematic_->reset();
     origin_ = origin;

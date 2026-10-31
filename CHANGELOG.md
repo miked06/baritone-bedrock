@@ -2,6 +2,41 @@
 
 All notable changes to Baritone Bedrock. Versions follow [semantic versioning](https://semver.org/).
 
+## 1.4.0
+
+Supports **Minecraft Bedrock 26.60 for Windows x64**, package **`1.26.6005.0`**. Download `BaritoneBedrock.dll` from the release assets; the `.pdb` file is optional for crash diagnostics.
+
+### Added
+
+- Built-in schematic workspace: preview without building, origin editing, rotation/mirror, active layers, material-position counts and construction of the exact placement. `#schematica` / `#litematica` now use this Bedrock alternative instead of reporting an unavailable mod.
+- Color-coded translucent preview differences and bounds, with bounded live-chunk comparisons; placement state clears between worlds/dimensions.
+- Separate Java and Bedrock feature inventories, per-feature qualifications and reproducible complete command inventories.
+- Quoted command arguments for schematic filenames with spaces; conversion/data-loss notes for imported structures.
+
+### Fixed
+
+- Validate schematic volumes, palette indices and Sponge varints; reject truncated/negative NBT collection lengths before allocation. Check Litematica region overflow and invalid packed indices.
+- Keep an existing placement after a failed load; report file errors in chat.
+- Use the native current shader color rather than its dark-color companion, and mark color uniforms dirty when drawing/restoring them.
+
+### Preview, then build
+
+Put schematic files in `%LOCALAPPDATA%\BaritoneBedrock\schematics\`, then use:
+
+```text
+#schematic load "house.litematic" ~5 ~ ~
+#schematic rotate 90
+#schematic materials
+#schematic build
+```
+
+### Validation and limits
+
+- Windows x64 RelWithDebInfo build and **59 passing core tests**. Preview, placement editing, invalid-file handling and a one-block automatic build were checked in an existing Minecraft world; the test block was removed and settings restored.
+- The preview uses colored translucent cubes and outlines, capped at 512 differences within 16 blocks, rather than textured block models. Java mod binaries, arbitrary block-entity/entity data and every Java block state are not reproduced.
+- This is not full Java behavioral parity: seed-based Nether terrain prediction, native chat Tab insertion and rich Java chat integration remain unimplemented. Large-build and long-distance flight campaigns have not been fully revalidated.
+- See the [schematic guide](https://github.com/miked06/baritone-bedrock/blob/v1.4.0/docs/SCHEMATICS.md) and [Java/Bedrock feature comparison](https://github.com/miked06/baritone-bedrock/blob/v1.4.0/docs/FEATURE_COMPARISON.md) for the exact scope.
+
 ## 1.3.0
 
 Compared against Baritone Java 26.3 at `25111daedf1d59e6a8dfb5a3e61885cdb8d953df`. See [the feature audit](docs/JAVA_PARITY_AUDIT.md) for scope, verification and remaining differences.

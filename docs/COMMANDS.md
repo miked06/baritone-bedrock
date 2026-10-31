@@ -85,6 +85,14 @@ When no ore is known, the bot goes down to a mining level and branch-mines: `leg
 |---|---|
 | `#build` | List the files in the `schematics` folder. |
 | `#build <file> [x y z]` | Build a schematic at your position, or at `x y z`. |
+| `#schematic load <file> [x y z]` | Preview a file without building. Quote filenames containing spaces. Aliases: `schem`, `blueprint`. |
+| `#schematic list [page]` / `#schematic info` | List supported files / inspect the loaded placement. |
+| `#schematic move x y z` / `#schematic move here` | Move relative to the current placement with `~`, or place it at your feet. |
+| `#schematic rotate <degrees>` / `#schematic mirror <none\|x\|z>` | Set the placement's rotation (multiples of 90) / reflected axis. |
+| `#schematic layer <all\|y\|yMin yMax>` | Restrict both preview and build to local zero-based layers. |
+| `#schematic preview <on\|off>` / `#schematic materials [page]` | Toggle the ghost / count material block positions. |
+| `#schematic build` / `#schematic clear` | Build the previewed placement / stop and unload it. |
+| `#schematica` / `#litematica` | Build the loaded Bedrock placement. With a filename, load a preview; schematic subcommands also work. |
 | `#sel pos1 [x y z]` / `#sel pos2 [x y z]` | Set the corners of a selection (your position by default). Each `pos2` adds a selection: you can have several. |
 | `#sel clear` / `#sel undo` | Remove all selections / the last corner or selection. |
 | `#sel set <block>` | Fill the selections. |
@@ -98,6 +106,8 @@ When no ore is known, the bot goes down to a mining level and branch-mines: `leg
 | `#sel expand\|contract\|shift [a\|newest\|oldest] <direction> <n>` | Grow, shrink or move one or all selections (`north`, `south`, `east`, `west`, `up`, `down`). |
 
 Supported schematic formats, put in `%LOCALAPPDATA%\BaritoneBedrock\schematics\`:
+
+For the recommended preview-first workflow, color legend, transformations and limits, see [SCHEMATICS.md](SCHEMATICS.md). `#build <file>` remains the direct-build workflow with global file-transform settings.
 
 | Format | Origin |
 |---|---|
@@ -184,7 +194,7 @@ Setting: `chunkCaching` (on by default).
 | `#complete [prefix...]` | Suggest commands, settings and arguments. Examples: `#complete go`, `#complete set toggle allow`, `#complete set allowBreak`, `#complete find oak_log[pillar_`. |
 | `#unload` | Unload the DLL cleanly. |
 | `#unfault` | Turn the bot back on after it caught an internal error. |
-| `#litematica`, `#schematica` | These Java mods do not exist on Bedrock: use `#build <file>`. |
+| `#litematica`, `#schematica` | Native Bedrock placement bridge; see [schematic preview and building](SCHEMATICS.md). The Java mods themselves are not loaded. |
 
 ## Settings
 

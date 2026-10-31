@@ -25,7 +25,8 @@ public:
     using Process::Process;
 
     // fromFile: Java's build(File) path, which applies mapArtMode and buildOnlySelection.
-    void build(std::string name, SchematicPtr schematic, BlockPos origin, bool fromFile = false);
+    // applyTransforms=false is for an already transformed workspace placement.
+    void build(std::string name, SchematicPtr schematic, BlockPos origin, bool fromFile = false, bool applyTransforms = true);
     void pause() { paused_ = true; }
     void resume() { paused_ = false; }
     bool isPaused() const { return paused_; }

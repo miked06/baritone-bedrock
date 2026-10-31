@@ -51,6 +51,7 @@ public:
             case 6: t.value = std::bit_cast<double>(read<uint64_t>()); break;
             case 7: {  // byte array
                 int32_t n = read<int32_t>();
+                checkCount(n, 1, sizeof(int64_t));
                 std::vector<int64_t> v;
                 v.reserve(n);
                 for (int32_t i = 0; i < n; ++i) v.push_back(read<int8_t>());
@@ -61,6 +62,9 @@ public:
             case 9: {  // list
                 uint8_t elemType = read<uint8_t>();
                 int32_t n = read<int32_t>();
+                static constexpr std::size_t minimum[] = {0, 1, 2, 4, 8, 4, 8, 4, 2, 5, 1, 4, 4};
+                if (elemType > 12 || (elemType == 0 && n != 0)) throw std::runtime_error("NBT: invalid list type");
+                checkCount(n, minimum[elemType], sizeof(Tag));
                 List list;
                 list.reserve(n > 0 ? n : 0);
                 for (int32_t i = 0; i < n; ++i) list.push_back(readPayload(elemType, depth + 1));
@@ -80,6 +84,7 @@ public:
             }
             case 11: {  // int array
                 int32_t n = read<int32_t>();
+                checkCount(n, 4, sizeof(int64_t));
                 std::vector<int64_t> v;
                 v.reserve(n);
                 for (int32_t i = 0; i < n; ++i) v.push_back(read<int32_t>());
@@ -88,6 +93,7 @@ public:
             }
             case 12: {  // long array
                 int32_t n = read<int32_t>();
+                checkCount(n, 8, sizeof(int64_t));
                 std::vector<int64_t> v;
                 v.reserve(n);
                 for (int32_t i = 0; i < n; ++i) v.push_back(read<int64_t>());
@@ -100,6 +106,14 @@ public:
     }
 
 private:
+    void checkCount(int32_t n, std::size_t minimumBytes, std::size_t allocationBytes) {
+        if (n < 0 || (minimumBytes && static_cast<std::size_t>(n) > (data_.size() - pos_) / minimumBytes))
+            throw std::runtime_error("NBT: invalid or truncated collection length");
+        const std::size_t count = static_cast<std::size_t>(n);
+        if (allocationBytes && count > allocationBudget_ / allocationBytes)
+            throw std::runtime_error("NBT: collection allocation limit exceeded");
+        allocationBudget_ -= count * allocationBytes;
+    }
     template <typename T>
     static T byteswap(T v) {
         if constexpr (sizeof(T) == 1) return v;
@@ -111,6 +125,7 @@ private:
     const std::vector<uint8_t>& data_;
     bool little_;
     std::size_t pos_ = 0;
+    std::size_t allocationBudget_ = 512ull * 1024 * 1024;
 };
 
 }  // namespace
@@ -127,6 +142,10 @@ Tag parse(const std::vector<uint8_t>& data, bool littleEndian, std::string* root
 std::vector<uint8_t> readFile(const std::string& path) {
     std::ifstream in(path, std::ios::binary);
     if (!in) throw std::runtime_error("Cannot open " + path);
+    in.seekg(0, std::ios::end);
+    auto size = in.tellg();
+    if (size < 0 || size > 256ll * 1024 * 1024) throw std::runtime_error("Schematic file exceeds the 256 MiB input limit");
+    in.seekg(0);
     return {std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()};
 }
 

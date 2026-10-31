@@ -170,7 +170,7 @@ SchematicPtr parseSponge(const nbt::Tag& root) {
     int w = static_cast<int>(intOf(s->get("Width"), "Width")) & 0xFFFF;
     int h = static_cast<int>(intOf(s->get("Height"), "Height")) & 0xFFFF;
     int l = static_cast<int>(intOf(s->get("Length"), "Length")) & 0xFFFF;
-    if (w == 0 || h == 0 || l == 0) invalid("empty schematic");
+    const std::size_t total = schematicVolume({w, h, l});
 
     const nbt::Tag* palette = s->get("Palette");
     const nbt::Tag* data = s->get("BlockData");
@@ -181,32 +181,45 @@ SchematicPtr parseSponge(const nbt::Tag& root) {
     if (!palette || !palette->compound() || !data || !data->intArray()) invalid("Missing Palette or BlockData");
 
     std::vector<DesiredBlock> pal;
+    std::unordered_set<int64_t> defined;
     for (const auto& [state, idx] : *palette->compound()) {
         auto i = idx.integer();
         if (!i || *i < 0 || *i > 1'000'000) invalid("invalid palette index");
+        if (!defined.insert(*i).second) invalid("duplicate palette index");
         if (pal.size() <= static_cast<std::size_t>(*i)) pal.resize(*i + 1, DesiredBlock::any());
         pal[*i] = javaToBedrock(state);
     }
 
     // varint encoded, index (y * length + z) * width + x
     const auto& bytes = *data->intArray();
-    std::size_t total = static_cast<std::size_t>(w) * h * l;
     std::vector<int> indices(total, -1);
     std::size_t pos = 0;
     for (std::size_t i = 0; i < total; ++i) {
-        int value = 0, shift = 0;
+        uint32_t value = 0;
+        int shift = 0;
         for (;;) {
             if (pos >= bytes.size()) invalid("BlockData too short");
             int b = static_cast<int>(bytes[pos++]) & 0xFF;
-            value |= (b & 0x7F) << shift;
+            if (shift == 28 && (b & 0xF0)) invalid("invalid varint");
+            value |= static_cast<uint32_t>(b & 0x7F) << shift;
             if (!(b & 0x80)) break;
             shift += 7;
             if (shift > 28) invalid("invalid varint");
         }
+        if (!defined.contains(value)) invalid("BlockData refers to an undefined palette index");
         int x = static_cast<int>(i % w), z = static_cast<int>((i / w) % l), y = static_cast<int>(i / (static_cast<std::size_t>(w) * l));
         indices[(static_cast<std::size_t>(x) * h + y) * l + z] = value;
     }
-    return std::make_shared<StaticSchematic>(BlockPos{w, h, l}, std::move(pal), std::move(indices));
+    if (pos != bytes.size()) invalid("BlockData has trailing block indices");
+    std::vector<std::string> warnings;
+    const nbt::Tag* blockEntities = s->get("BlockEntities");
+    if (const auto* blocks = s->get("Blocks"); blocks && blocks->isCompound()) blockEntities = blocks->get("BlockEntities");
+    if (blockEntities && blockEntities->list() && !blockEntities->list()->empty())
+        warnings.emplace_back("Block-entity data (containers, signs, etc.) is not restored");
+    if (const auto* entities = s->get("Entities"); entities && entities->list() && !entities->list()->empty())
+        warnings.emplace_back("Entities are not built by the survival builder");
+    warnings.emplace_back("Java conversion reproduces block names and supported orientation states; other properties can differ on Bedrock");
+    return std::make_shared<StaticSchematic>(BlockPos{w, h, l}, std::move(pal), std::move(indices), std::move(warnings));
 }
 
 // Litematica: one or more regions, block states packed in a long array.
@@ -220,21 +233,35 @@ SchematicPtr parseLitematic(const nbt::Tag& root) {
         const std::vector<int64_t>* states;
     };
     std::vector<Region> list;
+    std::vector<std::string> warnings;
     BlockPos lo{INT32_MAX, INT32_MAX, INT32_MAX}, hi{INT32_MIN, INT32_MIN, INT32_MIN};
     for (const auto& [name, r] : *regions->compound()) {
+        for (const char* key : {"TileEntities", "Entities"})
+            if (const auto* values = r.get(key); values && values->list() && !values->list()->empty()) {
+                const std::string warning = "Entities and block-entity data (containers, signs, etc.) are not restored";
+                if (std::ranges::find(warnings, warning) == warnings.end()) warnings.push_back(warning);
+            }
         const nbt::Tag* pos = r.get("Position");
         const nbt::Tag* size = r.get("Size");
         const nbt::Tag* pal = r.get("BlockStatePalette");
         const nbt::Tag* states = r.get("BlockStates");
         if (!pos || !size || !pal || !pal->list() || !states || !states->intArray()) invalid("region " + name + " is incomplete");
-        BlockPos p{static_cast<int>(intOf(pos->get("x"), "x")), static_cast<int>(intOf(pos->get("y"), "y")),
-                   static_cast<int>(intOf(pos->get("z"), "z"))};
-        BlockPos s{static_cast<int>(intOf(size->get("x"), "x")), static_cast<int>(intOf(size->get("y"), "y")),
-                   static_cast<int>(intOf(size->get("z"), "z"))};
+        auto coordinate = [&](const nbt::Tag* tag, const char* axis) {
+            auto value = intOf(tag, axis);
+            if (value <= INT32_MIN || value > INT32_MAX) invalid("region coordinate out of range");
+            return static_cast<int>(value);
+        };
+        BlockPos p{coordinate(pos->get("x"), "x"), coordinate(pos->get("y"), "y"), coordinate(pos->get("z"), "z")};
+        BlockPos s{coordinate(size->get("x"), "x"), coordinate(size->get("y"), "y"), coordinate(size->get("z"), "z")};
+        schematicVolume({std::abs(s.x), std::abs(s.y), std::abs(s.z)});
+        for (auto [at, side] : {std::pair{p.x, s.x}, {p.y, s.y}, {p.z, s.z}}) {
+            const int64_t low = side < 0 ? static_cast<int64_t>(at) + side + 1 : at;
+            if (low < INT32_MIN || low + std::abs(side) > INT32_MAX) invalid("region bounds overflow");
+        }
         // a negative size extends towards negative coordinates from the position
-        BlockPos min{s.x < 0 ? p.x + s.x + 1 : p.x, s.y < 0 ? p.y + s.y + 1 : p.y, s.z < 0 ? p.z + s.z + 1 : p.z};
+        auto minimum = [](int at, int side) { return static_cast<int>(side < 0 ? static_cast<int64_t>(at) + side + 1 : at); };
+        BlockPos min{minimum(p.x, s.x), minimum(p.y, s.y), minimum(p.z, s.z)};
         BlockPos abs{std::abs(s.x), std::abs(s.y), std::abs(s.z)};
-        if (abs.x == 0 || abs.y == 0 || abs.z == 0) continue;
         Region reg{min, abs, {}, states->intArray()};
         for (const nbt::Tag& entry : *pal->list()) {
             const nbt::Tag* n = entry.get("Name");
@@ -243,15 +270,19 @@ SchematicPtr parseLitematic(const nbt::Tag& root) {
                 for (const auto& [k, v] : *pr->compound())
                     if (v.string()) props.emplace(k, *v.string());
             }
-            reg.palette.push_back(n && n->string() ? javaToBedrock(*n->string(), props) : DesiredBlock::any());
+            if (!n || !n->string()) invalid("Missing block palette Name");
+            reg.palette.push_back(javaToBedrock(*n->string(), props));
         }
+        if (reg.palette.empty()) invalid("Empty block palette");
         lo = {std::min(lo.x, min.x), std::min(lo.y, min.y), std::min(lo.z, min.z)};
         hi = {std::max(hi.x, min.x + abs.x), std::max(hi.y, min.y + abs.y), std::max(hi.z, min.z + abs.z)};
         list.push_back(std::move(reg));
     }
     if (list.empty()) invalid("empty regions");
+    if (static_cast<int64_t>(hi.x) - lo.x > INT32_MAX || static_cast<int64_t>(hi.y) - lo.y > INT32_MAX || static_cast<int64_t>(hi.z) - lo.z > INT32_MAX)
+        invalid("region extent overflow");
     BlockPos total{hi.x - lo.x, hi.y - lo.y, hi.z - lo.z};
-    if (static_cast<int64_t>(total.x) * total.y * total.z > 64 * 1024 * 1024) invalid("schematic too large");
+    schematicVolume(total);
 
     std::vector<DesiredBlock> palette;  // merged
     std::vector<int> indices(static_cast<std::size_t>(total.x) * total.y * total.z, -1);
@@ -271,7 +302,7 @@ SchematicPtr parseLitematic(const nbt::Tag& root) {
             uint64_t v = static_cast<uint64_t>(longs[a]) >> off;
             if (a != b) v |= static_cast<uint64_t>(longs[b]) << (64 - off);
             int idx = static_cast<int>(v & mask);
-            if (idx >= static_cast<int>(r.palette.size())) continue;
+            if (idx >= static_cast<int>(r.palette.size())) invalid("BlockStates refers to an undefined palette index");
             // index (y * sizeZ + z) * sizeX + x
             int x = static_cast<int>(i % r.size.x), z = static_cast<int>((i / r.size.x) % r.size.z),
                 y = static_cast<int>(i / (static_cast<std::size_t>(r.size.x) * r.size.z));
@@ -279,7 +310,8 @@ SchematicPtr parseLitematic(const nbt::Tag& root) {
             indices[(static_cast<std::size_t>(wx) * total.y + wy) * total.z + wz] = base + idx;
         }
     }
-    return std::make_shared<StaticSchematic>(total, std::move(palette), std::move(indices));
+    warnings.emplace_back("Java conversion reproduces block names and supported orientation states; other properties can differ on Bedrock");
+    return std::make_shared<StaticSchematic>(total, std::move(palette), std::move(indices), std::move(warnings));
 }
 
 }  // namespace
@@ -296,7 +328,7 @@ SchematicPtr loadSchematic(const std::string& path) {
         if (root.get("Palette") || root.get("Schematic")) return parseSponge(root);  // some tools use this extension
         return parseLegacySchematic(root);                                          // MCEdit, ids before 1.13
     }
-    invalid("unknown extension (.mcstructure, .schem, .litematic)");
+    invalid("unknown extension (.mcstructure, .schem, .litematic, .schematic)");
 }
 
 }  // namespace baritone

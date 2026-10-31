@@ -12,7 +12,7 @@ namespace sdk {
 
 namespace {
 
-constexpr std::ptrdiff_t kScreenContext_shaderColor = 0x38;  // Color* (0x30 is fog color)
+constexpr std::ptrdiff_t kScreenContext_shaderColor = 0x30;  // MeshContext.currentShaderColor; +0x38 is currentShaderDarkColor
 constexpr std::ptrdiff_t kScreenContext_tessellator = 0xB0;
 constexpr std::ptrdiff_t kLevelRenderer_player = 0x480;      // LevelRendererPlayer*
 constexpr std::ptrdiff_t kLevelRendererPlayer_origin = 0x658;
@@ -49,8 +49,8 @@ Tessellator* ScreenContext::tessellator() const {
     return mem::member<Tessellator*>(this, kScreenContext_tessellator);
 }
 
-Color* ScreenContext::shaderColor() const {
-    return mem::member<Color*>(this, kScreenContext_shaderColor);
+ShaderColor* ScreenContext::shaderColor() const {
+    return mem::member<ShaderColor*>(this, kScreenContext_shaderColor);
 }
 
 Vec3 LevelRenderer::origin() const {

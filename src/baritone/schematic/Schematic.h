@@ -1,5 +1,6 @@
 #pragma once
 #include <functional>
+#include <cstdint>
 #include <map>
 #include <memory>
 #include <string>
@@ -33,6 +34,7 @@ public:
     virtual ~Schematic() = default;
     virtual BlockPos size() const = 0;
     virtual void reset() const {}
+    virtual std::vector<std::string> warnings() const { return {}; }
     // `current` is the block in the world now (used by #sel replace).
     virtual DesiredBlock desired(int x, int y, int z, const BlockProps& current) const = 0;
     // Convenience for callers that only have a name. State-aware masks use the
@@ -49,6 +51,14 @@ public:
 };
 
 using SchematicPtr = std::shared_ptr<const Schematic>;
+
+struct SchematicMaterials {
+    std::map<std::string, uint64_t> blocks;
+    uint64_t air = 0, ignored = 0;
+};
+
+// Validate before allocating file dimensions or iterating a placement.
+std::size_t schematicVolume(BlockPos size);
 
 // #sel set/fill, #sel cleararea: the whole box is one block (or air).
 class FillSchematic : public Schematic {
@@ -172,15 +182,18 @@ private:
 class StaticSchematic : public Schematic {
 public:
     using Schematic::desired;
-    StaticSchematic(BlockPos size, std::vector<DesiredBlock> palette, std::vector<int> indices)
-        : size_(size), palette_(std::move(palette)), indices_(std::move(indices)) {}
+    StaticSchematic(BlockPos size, std::vector<DesiredBlock> palette, std::vector<int> indices,
+                    std::vector<std::string> warnings = {});
     BlockPos size() const override { return size_; }
     DesiredBlock desired(int x, int y, int z, const BlockProps&) const override;
+    std::vector<std::string> warnings() const override { return warnings_; }
+    SchematicMaterials materialCounts(int firstY = 0, int lastY = -1) const;
 
 private:
     BlockPos size_;
     std::vector<DesiredBlock> palette_;
     std::vector<int> indices_;  // (x * sizeY + y) * sizeZ + z, -1 = keep what's there
+    std::vector<std::string> warnings_;
 };
 
 // Java MaskSchematic: the inner schematic where the mask is set, "anything" elsewhere.

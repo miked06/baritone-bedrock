@@ -5,7 +5,8 @@
 namespace baritone {
 
 // DEFLATE decoder (RFC 1951), enough to read gzip'ed NBT files (.schem, .litematic,
-// .schematic) without a zlib dependency. Throws std::runtime_error on corrupt data.
+// .schematic) without a zlib dependency. Output is bounded to 256 MiB.
+// Throws std::runtime_error on corrupt or oversized data.
 std::vector<uint8_t> inflateRaw(const uint8_t* data, std::size_t size, std::size_t* consumed = nullptr);
 
 // gzip (RFC 1952) or zlib (RFC 1950) stream; anything else is returned unchanged.

@@ -49,6 +49,14 @@ sdk::Color color(const baritone::Color& c, float alpha = kLineAlpha) {
 constexpr baritone::Color kBuildColor{255, 255, 255};   // ours: the schematic being built
 constexpr baritone::Color kElytraColor{255, 255, 0};    // ours: the elytra path
 
+sdk::Color schematicTint(baritone::SchematicWorkspace::Difference difference, float alpha) {
+    using D = baritone::SchematicWorkspace::Difference;
+    if (difference == D::Missing) return {0.1f, 0.9f, 1, alpha};
+    if (difference == D::Wrong) return {1, 0.15f, 0.15f, alpha};
+    if (difference == D::Remove) return {1, 0.65f, 0.1f, alpha};
+    return {0.6f, 0.6f, 0.6f, alpha * 0.5f};
+}
+
 void addBox(std::vector<Line>& out, Vec3d lo, Vec3d hi, sdk::Color c) {
     const Vec3d v[8] = {{lo.x, lo.y, lo.z}, {hi.x, lo.y, lo.z}, {hi.x, lo.y, hi.z}, {lo.x, lo.y, hi.z},
                         {lo.x, hi.y, lo.z}, {hi.x, hi.y, lo.z}, {hi.x, hi.y, hi.z}, {lo.x, hi.y, hi.z}};
@@ -256,10 +264,12 @@ void PathRenderer::render(sdk::LevelRenderer* renderer, sdk::ScreenContext* scre
     const Settings& s = Settings::get();
     std::vector<Line> lines;
     std::shared_ptr<const std::vector<baritone::CachedFace>> cachedMesh;
+    std::vector<baritone::SchematicWorkspace::PreviewCell> schematicCells;
     {
         std::lock_guard lock(mutex_);
         const Frame& f = frame_;
         cachedMesh = f.cachedMesh;
+        schematicCells = f.schematicPreview;
         // Java PathRenderer.render
         if (s.renderGoal && f.goal) {
             int budget = 100;
@@ -356,18 +366,33 @@ void PathRenderer::render(sdk::LevelRenderer* renderer, sdk::ScreenContext* scre
             addRegion(lines, *f.clickStart, *f.clickTarget, {1, 0.2f, 0.2f, 0.6f});
         widen(lines, clickLines, s.selectionLineWidth);
         depthMode(lines, clickLines, true);
+        const std::size_t schematicLines = lines.size();
+        if (f.schematicBounds) addRegion(lines, f.schematicBounds->first, f.schematicBounds->second, {0.6f, 0.8f, 1, 0.35f});
+        for (const auto& cell : f.schematicPreview) {
+            addBlockBox(lines, cell.pos, schematicTint(cell.difference, 0.75f), 0.003);
+        }
+        // Wire ghosts remain visible through existing terrain. The bounded
+        // placement preview has its own on/off switch, independent of path lines.
+        widen(lines, schematicLines, 1);
+        depthMode(lines, schematicLines, true);
     }
     if ((lines.empty() && !cachedMesh) || !renderer || !screen) return;
 
     sdk::Tessellator* tess = screen->tessellator();
     sdk::Vec3 origin = renderer->origin();
-    sdk::Color* shader = screen->shaderColor();
+    sdk::ShaderColor* shader = screen->shaderColor();
+    static bool loggedSchematic = false;
+    if (!schematicCells.empty() && !loggedSchematic) {
+        logger::debug("Schematic render: {} boxes, camera origin {} {} {}, tessellator {}, shader {}",
+            schematicCells.size(), origin.x, origin.y, origin.z, static_cast<void*>(tess), static_cast<void*>(shader));
+        loggedSchematic = true;
+    }
     if (!tess || !shader) return;
     struct RestoreColor {
-        sdk::Color* target;
+        sdk::ShaderColor* target;
         sdk::Color saved;
-        ~RestoreColor() { *target = saved; }
-    } restore{shader, *shader};
+        ~RestoreColor() { target->set(saved); }
+    } restore{shader, shader->color};
 
     auto put = [&](const Vec3d& v, const sdk::Color& c) {
         tess->color(c);
@@ -377,6 +402,28 @@ void PathRenderer::render(sdk::LevelRenderer* renderer, sdk::ScreenContext* scre
     // and disables depth testing (vanilla materials/ui.material). It also draws
     // the remembered terrain as a translucent ghost of its 2-bit representation.
     sdk::MaterialPtr* overlay = sdk::material("ui_fill_color");
+    if (overlay && !schematicCells.empty()) {
+        using D = baritone::SchematicWorkspace::Difference;
+        constexpr int faces[6][4] = {{0, 1, 2, 3}, {4, 5, 6, 7}, {0, 1, 5, 4}, {3, 2, 6, 7}, {0, 3, 7, 4}, {1, 2, 6, 5}};
+        for (auto difference : {D::Missing, D::Wrong, D::Remove, D::Unloaded}) {
+            const auto count = std::ranges::count_if(schematicCells, [=](const auto& c) { return c.difference == difference; });
+            if (!count) continue;
+            auto tint = schematicTint(difference, 0.04f);
+            shader->set(tint);
+            tess->begin(sdk::Primitive::Quad, static_cast<int>(count * 48));
+            for (const auto& cell : schematicCells) {
+                if (cell.difference != difference) continue;
+                const Vec3d p{static_cast<double>(cell.pos.x), static_cast<double>(cell.pos.y), static_cast<double>(cell.pos.z)};
+                const Vec3d corners[8] = {p, p + Vec3d{1, 0, 0}, p + Vec3d{1, 0, 1}, p + Vec3d{0, 0, 1},
+                    p + Vec3d{0, 1, 0}, p + Vec3d{1, 1, 0}, p + Vec3d{1, 1, 1}, p + Vec3d{0, 1, 1}};
+                for (const auto& face : faces) {
+                    for (int i = 0; i < 4; ++i) put(corners[face[i]], tint);
+                    for (int i = 3; i >= 0; --i) put(corners[face[i]], tint);
+                }
+            }
+            sdk::renderMeshImmediately(screen, tess, overlay);
+        }
+    }
     if (s.renderCachedChunks && cachedMesh && overlay) {
         const float alpha = static_cast<float>(std::clamp(s.cachedChunksOpacity, 0.0, 1.0));
         for (auto type : {baritone::PathingBlockType::Solid, baritone::PathingBlockType::Water, baritone::PathingBlockType::Avoid}) {
@@ -386,7 +433,7 @@ void PathRenderer::render(sdk::LevelRenderer* renderer, sdk::ScreenContext* scre
             std::size_t count = 0;
             for (const auto& face : *cachedMesh) if (face.type == type) ++count;
             if (!count || alpha == 0) continue;
-            *shader = tint;
+            shader->set(tint);
             tess->begin(sdk::Primitive::Quad, static_cast<int>(count * 8));
             for (const auto& face : *cachedMesh) {
                 if (face.type != type) continue;
@@ -407,7 +454,7 @@ void PathRenderer::render(sdk::LevelRenderer* renderer, sdk::ScreenContext* scre
         auto [ignoreDepth, r, g, b, a, thick] = key;
         sdk::MaterialPtr* mat = ignoreDepth ? overlay : sdk::material("selection_box");
         if (!mat) continue;
-        *shader = {r, g, b, a};
+        shader->set({r, g, b, a});
         tess->begin(thick ? sdk::Primitive::Quad : sdk::Primitive::LineList, static_cast<int>(batch.size() * (thick ? 16 : 2)));
         for (const Line* line : batch) {
             const Line& l = *line;
