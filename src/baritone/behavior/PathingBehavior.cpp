@@ -239,14 +239,14 @@ void PathingBehavior::findPathInNewThread(const BlockPos& start, bool talkAboutI
         PathCalculationResult result = finder->calculate(primary, failure);
         std::lock_guard plan(planLock_);
         if (Settings::get().chatDebug) {
-            static constexpr const char* types[] = {"succes", "segment", "echec", "annule", "exception"};
+            static constexpr const char* types[] = {"success", "segment", "failure", "cancelled", "exception"};
             auto t = static_cast<std::size_t>(result.type);
-            notify_(std::format("Calcul {} -> {} : {}, {} positions, {} noeuds{}", start, goal->toString().substr(0, 60),
+            notify_(std::format("Calculation {} -> {}: {}, {} positions, {} nodes{}", start, goal->toString().substr(0, 60),
                                 t < std::size(types) ? types[t] : "?", result.path ? result.path->length() : 0,
                                 result.path ? result.path->numNodesConsidered() : 0,
                                 result.path && current_ == nullptr &&
                                         std::ranges::find(result.path->positions(), expectedSegmentStart_) == result.path->positions().end()
-                                    ? std::format(" (rejete: ne passe pas par {})", expectedSegmentStart_)
+                                    ? std::format(" (rejected: does not pass through {})", expectedSegmentStart_)
                                     : result.error.empty() ? "" : " (" + result.error + ")"),
                     false);
         }
@@ -259,7 +259,7 @@ void PathingBehavior::findPathInNewThread(const BlockPos& start, bool talkAboutI
                     etaStart_ = start;  // resetEstimatedTicksToGoal(start)
                     ticksElapsedSoFar_ = 0;
                     if (talkAboutIt && Settings::get().chatDebug) {
-                        notify_(std::format("{} : {} blocs, {} noeuds", goal->isInGoal(result.path->dest()) ? "Chemin" : "Segment",
+                        notify_(std::format("{}: {} blocks, {} nodes", goal->isInGoal(result.path->dest()) ? "Path" : "Segment",
                                             result.path->length(), result.path->numNodesConsidered()),
                                 false);
                     }
@@ -269,7 +269,7 @@ void PathingBehavior::findPathInNewThread(const BlockPos& start, bool talkAboutI
             }
         } else if (result.type == PathResultType::Failure || result.type == PathResultType::Exception) {
             if (!current_) calcFailed_ = true;
-            if (result.type == PathResultType::Exception) notify_("Erreur pendant le calcul : " + result.error, true);
+            if (result.type == PathResultType::Exception) notify_("Error during calculation: " + result.error, true);
         }
         std::lock_guard calc(calcLock_);
         if (inProgress_ == finder) inProgress_.reset();
@@ -343,7 +343,7 @@ void PathingBehavior::tickPath() {
 
     if (current_->failed() || current_->finished()) {
         if (current_->failed() && current_->failReason() && Settings::get().chatDebug) {
-            notify_("Segment annule : " + *current_->failReason(), true);
+            notify_("Segment cancelled: " + *current_->failReason(), true);
         }
         current_.reset();
         output_ = MovementState{};

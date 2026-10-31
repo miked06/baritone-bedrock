@@ -23,7 +23,7 @@ public:
 
     template <typename T>
     T read() {
-        if (pos_ + sizeof(T) > data_.size()) throw std::runtime_error("NBT: fin de fichier inattendue");
+        if (pos_ + sizeof(T) > data_.size()) throw std::runtime_error("NBT: unexpected end of file");
         T v;
         std::memcpy(&v, data_.data() + pos_, sizeof(T));
         pos_ += sizeof(T);
@@ -33,14 +33,14 @@ public:
 
     std::string readString() {
         uint16_t len = read<uint16_t>();
-        if (pos_ + len > data_.size()) throw std::runtime_error("NBT: chaine tronquee");
+        if (pos_ + len > data_.size()) throw std::runtime_error("NBT: truncated string");
         std::string s(reinterpret_cast<const char*>(data_.data() + pos_), len);
         pos_ += len;
         return s;
     }
 
     Tag readPayload(uint8_t type, int depth) {
-        if (depth > 512) throw std::runtime_error("NBT: trop imbrique");
+        if (depth > 512) throw std::runtime_error("NBT: nesting too deep");
         Tag t;
         switch (type) {
             case 1: t.value = static_cast<int64_t>(read<int8_t>()); break;
@@ -94,7 +94,7 @@ public:
                 t.value = std::move(v);
                 break;
             }
-            default: throw std::runtime_error("NBT: type inconnu " + std::to_string(type));
+            default: throw std::runtime_error("NBT: unknown type " + std::to_string(type));
         }
         return t;
     }
@@ -118,7 +118,7 @@ private:
 Tag parse(const std::vector<uint8_t>& data, bool littleEndian, std::string* rootName) {
     Reader r(data, littleEndian);
     uint8_t type = r.read<uint8_t>();
-    if (type != 10) throw std::runtime_error("NBT: la racine n'est pas un compound");
+    if (type != 10) throw std::runtime_error("NBT: root is not a compound");
     std::string name = r.readString();
     if (rootName) *rootName = name;
     return r.readPayload(10, 0);
@@ -126,7 +126,7 @@ Tag parse(const std::vector<uint8_t>& data, bool littleEndian, std::string* root
 
 std::vector<uint8_t> readFile(const std::string& path) {
     std::ifstream in(path, std::ios::binary);
-    if (!in) throw std::runtime_error("Impossible d'ouvrir " + path);
+    if (!in) throw std::runtime_error("Cannot open " + path);
     return {std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()};
 }
 

@@ -6,6 +6,7 @@
 
 #include "baritone/Baritone.h"
 #include "baritone/Settings.h"
+#include "baritone/cache/CachedWorld.h"
 #include "baritone/elytra/ElytraPhysics.h"
 
 namespace baritone {
@@ -56,10 +57,10 @@ std::optional<std::string> ElytraProcess::pathTo(const GoalPtr& goal) {
         dest = block->pos();
         knownY = true;
     } else {
-        return "Le goal doit etre un GoalXZ ou un GoalBlock";
+        return "The goal must be a GoalXZ or GoalBlock";
     }
-    if (knownY && !isSupportedPos(dest)) return "Le goal doit etre dans les limites du vol a l'elytre";
-    if (!isSupportedPos(baritone_.playerFeet())) return "Le joueur doit etre dans les limites du vol a l'elytre";
+    if (knownY && !isSupportedPos(dest)) return "The goal must be within elytra flight bounds";
+    if (!isSupportedPos(baritone_.playerFeet())) return "The player must be within elytra flight bounds";
     bool flying = destination_ && state_ != State::Takeoff;
     start(dest, knownY);
     if (flying) toldToJump_ = true;
@@ -104,10 +105,13 @@ void ElytraProcess::onLostControl() {
     failedTakeoffs_ = 0;
     lastPos_.reset();
     simulation_.clear();
+    raytraces_.clear();
+    hitboxSamples_.clear();
+    lastCacheCull_ = {};
 }
 
 std::string ElytraProcess::displayName() const {
-    return destination_ ? std::format("Elytre vers {} {}", destination_->x, destination_->z) : "Elytre";
+    return destination_ ? std::format("Flying with elytra to {} {}", destination_->x, destination_->z) : "Elytra";
 }
 
 void ElytraProcess::finish(const char* message, bool error) {
@@ -198,6 +202,7 @@ void ElytraProcess::requestPath(const BlockPos& from) {
     elytra::ElytraPathFinder::Options options;
     options.clearance = st.elytraAllowTightSpaces ? 0 : 1;
     options.useCache = st.elytraUseCache;
+    options.customAllocator = st.elytraCustomAllocator;
     if (baritone_.world()->dimension() == 1 && st.elytraAllowAboveRoof) options.maxY = baritone_.world()->maxY() + 64;
     if (dist > kLandingDistance * 2) {
         // cruise: well above the ground on the way, the landing spiral brings us down
@@ -211,7 +216,7 @@ void ElytraProcess::requestPath(const BlockPos& from) {
         goal = {from.x + static_cast<int>(dx * k), cruise, from.z + static_cast<int>(dz * k)};
     }
     finder_ = std::make_shared<elytra::ElytraPathFinder>(baritone_.world(), options);
-    if (st.elytraChatSpam) baritone_.logDirect(std::format("Elytre : chemin {} -> {}", from, goal), false);
+    if (st.elytraChatSpam) baritone_.logDirect(std::format("Elytra: path {} -> {}", from, goal), false);
     auto finder = finder_;
     calc_ = std::async(std::launch::async, [finder, from, goal] { return finder->calculate(from, goal, 3.0, 500); });
     lastPathTick_ = ticks_;
@@ -237,11 +242,14 @@ std::optional<Vec3d> ElytraProcess::steeringTarget(const Vec3d& pos) {
         }
     }
     double margin = Settings::get().elytraMinimumAvoidance;
+    raytraces_.clear();
     std::optional<Vec3d> target;
     for (std::size_t i = closest; i < path_.size(); ++i) {
         Vec3d c = Vec3d::center(path_[i]);
         if ((c - pos).lengthSq() > 50.0 * 50.0) break;
-        if (elytra::clearLine(bsi, pos, c, margin)) target = c;
+        bool clear = elytra::clearLine(bsi, pos, c, margin);
+        if (Settings::get().elytraRenderRaytraces && raytraces_.size() < 128) raytraces_.push_back({pos, c, !clear});
+        if (clear) target = c;
         else if (target) break;
     }
     if (!target) target = Vec3d::center(path_[std::min(closest + 1, path_.size() - 1)]);
@@ -259,6 +267,7 @@ Rotation ElytraProcess::solvePitch(const Vec3d& pos, const Vec3d& vel, const Vec
     double bestScore = 1e18;
     collisionFree = false;
     const Settings& st = Settings::get();
+    hitboxSamples_.clear();
     int simTicks = std::max(1, st.elytraSimulationTicks);
     float range = static_cast<float>(st.elytraPitchRange);  // Java: deviation from the line of sight
     for (int pass = 0; pass < 2 && !collisionFree; ++pass) {
@@ -267,7 +276,8 @@ Rotation ElytraProcess::solvePitch(const Vec3d& pos, const Vec3d& vel, const Vec
         if (lo > hi) std::swap(lo, hi);
         for (float pitch = lo; pitch <= hi; pitch += 5) {
             Rotation r = toward.withPitch(pitch);
-            auto sim = elytra::simulate(bsi, {pos, vel}, r, simTicks, boostTicks_);
+            auto sim = elytra::simulate(bsi, {pos, vel}, r, simTicks, boostTicks_,
+                                        st.elytraRenderHitboxRaytraces ? &hitboxSamples_ : nullptr);
             if (!sim) continue;
             double score = 1e18;
             for (const Vec3d& p : *sim) score = std::min(score, (p - target).lengthSq());
@@ -338,7 +348,7 @@ void ElytraProcess::trySwapElytra() {
     }
     if (p.useHeldItem()) {
         swapAt_ = ticks_;
-        if (s.elytraChatSpam || s.chatDebug) baritone_.logDirect("Elytre : echange de l'elytre usee", false);
+        if (s.elytraChatSpam || s.chatDebug) baritone_.logDirect("Elytra: replacing worn elytra", false);
     }
 }
 
@@ -357,7 +367,7 @@ bool ElytraProcess::useFirework() {
         return true;
     }
     if (ticks_ - lastFireworkHint_ >= 100) {
-        baritone_.logDirect("Elytre : lance une fusee (clic droit), je garde le cap", false);
+        baritone_.logDirect("Elytra: using a firework (right click), maintaining course", false);
         lastFireworkHint_ = ticks_;
     }
     boostTicks_ = 10;
@@ -366,6 +376,13 @@ bool ElytraProcess::useFirework() {
 
 std::optional<PathingCommand> ElytraProcess::onTick(bool, bool) {
     if (!destination_ || !baritone_.world() || !baritone_.liveContext()) return std::nullopt;
+    const auto now = std::chrono::steady_clock::now();
+    if (std::chrono::duration_cast<std::chrono::seconds>(now - lastCacheCull_).count() >=
+        std::max<int64_t>(0, Settings::get().elytraTimeBetweenCacheCullSecs)) {
+        if (auto cache = baritone_.world()->cache())
+            cache->pruneOutside(baritone_.playerFeet(), Settings::get().elytraCacheCullDistance);
+        lastCacheCull_ = now;
+    }
     {
         // Java: these settings change the path, plan it again from scratch
         const Settings& st = Settings::get();
@@ -374,7 +391,7 @@ std::optional<PathingCommand> ElytraProcess::onTick(bool, bool) {
         else if (allowAboveBuildLimit_ != st.elytraAllowAboveBuildLimit) changed = "elytraAllowAboveBuildLimit";
         else if (allowAboveRoof_ != st.elytraAllowAboveRoof && baritone_.world()->dimension() == 1) changed = "elytraAllowAboveRoof";
         if (changed) {
-            baritone_.logDirect(std::format("Reglage {} modifie, chemin recalcule depuis zero", changed), false);
+            baritone_.logDirect(std::format("Setting {} changed; recalculating the path from scratch", changed), false);
             resetState();
             if (!destination_) return std::nullopt;
         }
@@ -390,7 +407,7 @@ std::optional<PathingCommand> ElytraProcess::onTick(bool, bool) {
     if (setbackTicks_ > 0) --setbackTicks_;
     if (lastPos_ && (pos - *lastPos_).lengthSq() > std::max(16.0, 4 * vel.lengthSq() + 4)) {
         setbackTicks_ = Settings::get().elytraFireworkSetbackUseDelay;
-        if (Settings::get().elytraChatSpam) baritone_.logDirect("Elytre : recul du serveur detecte", true);
+        if (Settings::get().elytraChatSpam) baritone_.logDirect("Elytra: server position correction detected", true);
     }
     lastPos_ = pos;
     {
@@ -409,7 +426,7 @@ std::optional<PathingCommand> ElytraProcess::onTick(bool, bool) {
             clickedAt_ = -1;
         } else if (clickedAt_ >= 0 && ticks_ - clickedAt_ > 15) {
             ++failedClicks_;  // the click did not fire a rocket
-            if (s.chatDebug) baritone_.logDirect(std::format("Elytre : clic sans fusee ({})", failedClicks_));
+            if (s.chatDebug) baritone_.logDirect(std::format("Elytra: click without a firework ({})", failedClicks_));
             clickedAt_ = -1;
             boostTicks_ = 0;
         }
@@ -425,11 +442,11 @@ std::optional<PathingCommand> ElytraProcess::onTick(bool, bool) {
                 // came down far from the destination: wait for the next take off
                 if (ticks_ - flyStartTick_ < 40 && ++failedTakeoffs_ >= 5) {
                     // Java AUTO_JUMP_FAILURE_MSG
-                    finish("Elytre : impossible de decoller d'ici. Pars d'un endroit plus haut, pres d'un surplomb, "
-                           "ou desactive elytraAutoJump et decolle toi-meme", true);
+                    finish("Elytra: cannot take off here. Start higher up, near an overhang, "
+                           "or disable elytraAutoJump and take off manually", true);
                     return std::nullopt;
                 }
-                baritone_.logDirect(std::format("Elytre : pose a {:.0f} blocs du but, redecolle pour continuer", toDestination), true);
+                baritone_.logDirect(std::format("Elytra: landed {:.0f} blocks from the goal; take off again to continue", toDestination), true);
                 state_ = State::Takeoff;
                 toldToJump_ = true;
                 path_.clear();
@@ -440,7 +457,7 @@ std::optional<PathingCommand> ElytraProcess::onTick(bool, bool) {
                 GoalPtr goal = knownY_ ? GoalPtr(std::make_shared<GoalBlock>(*destination_))
                                        : GoalPtr(std::make_shared<GoalXZ>(destination_->x, destination_->z));
                 bool arrived = goal->isInGoal(baritone_.playerFeet());
-                finish(arrived ? "Elytre : arrive" : "Elytre : atterri, fin du trajet a pied", false);
+                finish(arrived ? "Elytra: arrived" : "Elytra: landed; finishing the journey on foot", false);
                 if (!arrived) baritone_.customGoal().setGoalAndPath(goal);
                 return std::nullopt;
             }
@@ -455,14 +472,14 @@ std::optional<PathingCommand> ElytraProcess::onTick(bool, bool) {
         if (!s.elytraAutoJump) {
             // the player takes off: wait without touching the keys, take over once gliding
             if (!toldToJump_) {
-                baritone_.logDirect("Elytre : decolle (saut puis saut en l'air), je prends la main des que tu planes", false);
+                baritone_.logDirect("Elytra: take off (jump, then jump again in midair); control resumes once you are gliding", false);
                 toldToJump_ = true;
             }
             return PathingCommand{nullptr, PathingCommandType::Defer};  // keys left to the player
         }
         if (p.onGround() && shouldLandForSafety()) {  // Java LOCATE_JUMP
-            finish("Elytre : pas de decollage, l'elytre est presque cassee ou il n'y a presque plus de fusees "
-                   "(atterrissage d'urgence immediat sinon)", true);
+            finish("Elytra: takeoff blocked; elytra nearly broken or fireworks nearly depleted "
+                   "(would otherwise require an immediate emergency landing)", true);
             return std::nullopt;
         }
         if (p.onGround() && p.hotbar(p.selectedSlot()).name != kFirework && fireworkCount() > 0) {
@@ -480,7 +497,7 @@ std::optional<PathingCommand> ElytraProcess::onTick(bool, bool) {
         // in the air: once falling, one more short press opens the elytra (single presses only,
         // a double tap toggles creative flight)
         if (++takeoffTicks_ > 80) {
-            finish("Elytre : impossible de planer (elytre equipee ?)", true);
+            finish("Elytra: cannot glide (is elytra equipped?)", true);
             return std::nullopt;
         }
         if (vel.y < 0 && ticks_ - lastJumpPress_ >= 8) {  // after the double tap window, still in the air
@@ -495,7 +512,7 @@ std::optional<PathingCommand> ElytraProcess::onTick(bool, bool) {
         flyStartTick_ = ticks_;
         // hold the fireworks right away: the first one is often needed within a few ticks
         baritone_.inventory().selectItem([](const HotbarStack& h) { return h.name == kFirework; }, true);
-        baritone_.logDirect(std::format("Elytre : en vol vers {} {} ({} fusees)", destination_->x, destination_->z, fireworkCount()), false);
+        baritone_.logDirect(std::format("Elytra: flying toward {} {} ({} fireworks)", destination_->x, destination_->z, fireworkCount()), false);
         // Java START_FLYING: a firework at once, a jump from the ground is only ~1 block high
         if (s.elytraAutoJump && boostTicks_ == 0 && p.hotbar(p.selectedSlot()).name == kFirework) useFirework();
     }
@@ -504,19 +521,19 @@ std::optional<PathingCommand> ElytraProcess::onTick(bool, bool) {
     trySwapElytra();
     if (state_ == State::Flying && !emergency_ && shouldLandForSafety()) {
         if (s.elytraAllowEmergencyLand) {
-            baritone_.logDirect(std::format("Elytre : atterrissage d'urgence - elytre presque cassee ou presque plus de fusees ({})", fireworks), true);
+            baritone_.logDirect(std::format("Elytra: emergency landing - elytra nearly broken or fireworks nearly depleted ({})", fireworks), true);
             // Java: a safe landing spot (solid ground, no water) a bit ahead, reached with the
             // normal approach and landing spiral rather than a dive
             emergency_ = true;
             double flat = std::max(1e-3, std::hypot(vel.x, vel.z));
             Vec3d ahead{pos.x + vel.x / flat * 50, pos.y, pos.z + vel.z / flat * 50};
             auto spot = findSafeLandingSpot(ahead, static_cast<int>(pos.y));
-            if (spot) baritone_.logDirect(std::format("Elytre : point d'atterrissage sur {}", *spot), false);
+            if (spot) baritone_.logDirect(std::format("Elytra: landing point at {}", *spot), false);
             destination_ = spot.value_or(BlockPos{static_cast<int>(ahead.x), 0, static_cast<int>(ahead.z)});
             knownY_ = spot.has_value();
             path_.clear();
         } else if (!warnedNoEmergency_) {
-            baritone_.logDirect("Elytre : elytre presque cassee ou presque plus de fusees, je continue (elytraAllowEmergencyLand false)", true);
+            baritone_.logDirect("Elytra: elytra nearly broken or fireworks nearly depleted; continuing (elytraAllowEmergencyLand false)", true);
             warnedNoEmergency_ = true;
         }
     }

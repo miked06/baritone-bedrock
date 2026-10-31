@@ -48,7 +48,7 @@ void ExploreProcess::explore(int centerX, int centerZ) {
 }
 
 std::string ExploreProcess::displayName() const {
-    return origin_ ? std::format("Explorer autour de {} {}", origin_->x, origin_->z) : "Explorer";
+    return origin_ ? std::format("Exploring around {} {}", origin_->x, origin_->z) : "Exploring";
 }
 
 bool ExploreProcess::alreadyExplored(const WorldSnapshot& world, int cx, int cz) const {
@@ -87,21 +87,21 @@ std::vector<GoalPtr> ExploreProcess::closestUnexploredChunks() {
 std::optional<PathingCommand> ExploreProcess::onTick(bool calcFailed, bool) {
     if (!origin_ || !baritone_.world()) return std::nullopt;
     if (calcFailed) {
-        baritone_.logDirect("Exploration : aucun chemin, arret", true);
-        if (Settings::get().notificationOnExploreFinished) baritone_.logNotification("Exploration echouee", true);
+        baritone_.logDirect("Exploration: no path; stopping", true);
+        if (Settings::get().notificationOnExploreFinished) baritone_.logNotification("Exploration failed", true);
         onLostControl();
         return std::nullopt;
     }
     if (!Settings::get().disableCompletionCheck && countRemain() == 0) {
-        baritone_.logDirect("Tout est explore", false);
-        if (Settings::get().notificationOnExploreFinished) baritone_.logNotification("Tous les chunks sont explores", false);
+        baritone_.logDirect("Everything has been explored", false);
+        if (Settings::get().notificationOnExploreFinished) baritone_.logNotification("All chunks have been explored", false);
         onLostControl();
         return std::nullopt;
     }
     auto goals = closestUnexploredChunks();
     if (goals.empty()) {
-        baritone_.logDirect("Tout est explore", false);
-        if (Settings::get().notificationOnExploreFinished) baritone_.logNotification("Tous les chunks sont explores", false);
+        baritone_.logDirect("Everything has been explored", false);
+        if (Settings::get().notificationOnExploreFinished) baritone_.logNotification("All chunks have been explored", false);
         onLostControl();
         return std::nullopt;
     }

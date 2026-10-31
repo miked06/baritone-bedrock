@@ -14,6 +14,8 @@ struct FlightState {
     Vec3d pos;  // feet
     Vec3d vel;
 };
+struct DebugRay { Vec3d from, to; bool blocked = false; };
+struct CollisionSample { Vec3d position; bool collided = false; };
 
 inline constexpr double kGlideHeight = 0.6;  // bounding box while gliding
 inline constexpr double kGlideWidth = 0.6;
@@ -26,7 +28,7 @@ bool collides(BlockStateInterface& bsi, const Vec3d& pos);
 
 // Simulates `ticks` ticks holding `look`; the positions, or nullopt on a collision.
 std::optional<std::vector<Vec3d>> simulate(BlockStateInterface& bsi, FlightState s, const Rotation& look, int ticks,
-                                           int boostTicks);
+                                           int boostTicks, std::vector<CollisionSample>* debug = nullptr);
 
 // Is the straight segment a -> b free for the gliding box (with `margin` blocks around)?
 bool clearLine(BlockStateInterface& bsi, const Vec3d& a, const Vec3d& b, double margin);

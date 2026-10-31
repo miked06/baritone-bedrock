@@ -1,0 +1,76 @@
+"""Compare declared commands/settings with a local cabaletta/baritone checkout.
+
+Usage: python tools/paritycheck.py re/baritone-java [--json re/parity.json]
+This is a structural audit, not proof of behavioral parity. See docs/JAVA_PARITY_AUDIT.md.
+"""
+import argparse
+import json
+from pathlib import Path
+import re
+import subprocess
+
+ROOT = Path(__file__).resolve().parents[1]
+TOKENS = re.compile(r'//[^\r\n]*|/\*[\s\S]*?\*/|"(?:\\.|[^"\\])*"|\'(?:\\.|[^\'\\])*\'')
+
+
+def without_comments(source):
+    return TOKENS.sub(lambda m: " " if m[0].startswith(("//", "/*")) else m[0], source)
+
+
+def audit(upstream):
+    defaults = upstream / "src/main/java/baritone/command/defaults"
+    registration = without_comments((defaults / "DefaultCommands.java").read_text(encoding="utf-8"))
+    classes = set(re.findall(r'new (\w+Command)\(baritone\)', registration)) | {"ExecutionControlCommands"}
+    java_commands = set()
+    for name in classes:
+        source = without_comments((defaults / f"{name}.java").read_text(encoding="utf-8"))
+        for match in re.finditer(r'(?:super|new Command)\(baritone,\s*((?:"[^"]+"\s*,?\s*)+)\)', source):
+            java_commands.update(re.findall(r'"([^"]+)"', match[1]))
+    for match in re.finditer(r'new CommandAlias\(baritone,\s*(?:Arrays.asList\(([^)]+)\)|"([^"]+)")', registration):
+        java_commands.update(re.findall(r'"([^"]+)"', match[1]) if match[1] else [match[2]])
+    cpp_commands = set()
+    source = without_comments((ROOT / "src/command/Commands.cpp").read_text(encoding="utf-8"))
+    for match in re.finditer(r'manager.add\(\{\{([^}]+)\}', source):
+        cpp_commands.update(re.findall(r'"([^"]+)"', match[1]))
+
+    java_settings_source = (upstream / "src/api/java/baritone/api/Settings.java").read_text(encoding="utf-8")
+    java_settings = set(re.findall(r'public final Setting<[^\n=]+>\s+(\w+)\s*=', java_settings_source))
+    cpp_settings = set(re.findall(r'X\([^,]+,\s*(\w+),', (ROOT / "src/baritone/Settings.h").read_text(encoding="utf-8")))
+    executable = "\n".join(TOKENS.sub(" ", path.read_text(encoding="utf-8"))
+                           for path in (ROOT / "src").rglob("*")
+                           if path.suffix in (".h", ".cpp") and path.name != "Settings.h")
+    unreferenced = sorted(name for name in cpp_settings if not re.search(r'\b' + re.escape(name) + r'\b', executable))
+    revision = subprocess.run(["git", "-C", str(upstream), "rev-parse", "HEAD"], check=True,
+                              capture_output=True, text=True).stdout.strip()
+    api_only = {"logger", "notifier", "toaster"}
+    return {
+        "upstream": "https://github.com/cabaletta/baritone", "revision": revision,
+        "java_command_names": sorted(java_commands), "bedrock_command_names": sorted(cpp_commands),
+        "missing_command_names": sorted(java_commands - cpp_commands),
+        "java_settings": sorted(java_settings), "bedrock_settings": sorted(cpp_settings),
+        "missing_user_settings": sorted(java_settings - cpp_settings - api_only),
+        "java_only_callbacks": sorted(java_settings & api_only),
+        "bedrock_settings_without_code_references": unreferenced,
+        "note": "Names and code references do not establish behavioral parity or in-game correctness."
+    }
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("upstream", type=Path)
+    parser.add_argument("--json", type=Path)
+    args = parser.parse_args()
+    report = audit(args.upstream)
+    if args.json:
+        args.json.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+    print(f"Java reference: {report['revision']}")
+    print(f"Commands/aliases: Java {len(report['java_command_names'])}, Bedrock {len(report['bedrock_command_names'])}")
+    print("Missing command names:", ", ".join(report["missing_command_names"]) or "none")
+    print("Missing user settings:", ", ".join(report["missing_user_settings"]) or "none")
+    print("Settings without code references:", ", ".join(report["bedrock_settings_without_code_references"]) or "none")
+    print(report["note"])
+    return bool(report["missing_command_names"] or report["missing_user_settings"])
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

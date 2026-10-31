@@ -21,7 +21,7 @@ std::span<Signature* const> all() {
         &Tessellator_begin, &Tessellator_vertex, &Tessellator_color,
         &MeshHelpers_renderImmediately, &RenderMaterialGroup_common,
         &ItemStackNet_beginRequest, &ItemStackNet_addRequestAction, &ItemStackNet_endRequest,
-        &ItemStackRequestTransfer_vtable, &ItemStackNet_handleResponse, &ItemStackBase_copy,
+        &ItemStackRequestTransfer_vtable, &ItemStackNet_handleResponse, &ItemStackBase_copy, &InteractPacket_vtable,
         &GameCore_handleMouseInput, &MouseDevice_instance, &MouseDevice_feed,
         &ItemStackBase_getDamageValue, &CompoundTag_get,
     };
@@ -39,6 +39,7 @@ bool resolveAll() {
 
     bool ok = true;
     for (Signature* sig : all()) {
+        sig->address = 0;
         auto parsed = hat::parse_signature(sig->pattern);
         if (!parsed.has_value()) {
             logger::error("Invalid pattern for {}", sig->name);
@@ -48,6 +49,13 @@ bool resolveAll() {
         auto result = hat::find_pattern(text.begin(), text.end(), parsed.value());
         if (!result.has_result()) {
             logger::error("Signature not found: {}", sig->name);
+            ok = false;
+            continue;
+        }
+        // A pattern shared by two functions is as unsafe as a missing pattern.
+        auto duplicate = hat::find_pattern(result.get() + 1, text.data() + text.size(), parsed.value());
+        if (duplicate.has_result()) {
+            logger::error("Ambiguous signature: {}", sig->name);
             ok = false;
             continue;
         }

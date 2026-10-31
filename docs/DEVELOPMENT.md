@@ -38,12 +38,47 @@ Each Minecraft update moves functions and may change class layouts.
    ```
 
    This writes an unmapped `Minecraft.Windows_<version>.exe` (file offsets = RVAs) that IDA, Ghidra or `tools/relib.py` can open. Never commit it.
-2. **Inject and read the console**: every signature not found is listed (`Signature not found: ...`) and the bot does not start. Fix them in `src/memory/Signatures.h`: find the function again (strings, callers, the previous version's bytes), write a new pattern, check it is unique. Patterns marked `Rel32` resolve a relative call or address at an offset.
-3. **Check the offsets** in `src/sdk/Offsets.h` with `#debug`: position, rotation, held item, dimension, armor, hunger, game target. Wrong values point to the offset to fix. `#vt`, `#hex`, `#hexat`, `#ecsdump` and `#attrs` dump memory read-only to find the new layout.
+2. **Check signatures offline first** (`numpy` is required):
+
+   ```powershell
+   python tools/sigcheck.py re/Minecraft.Windows_1.26.6005.0.exe --json re/signatures.json
+   ```
+
+   Fix patterns in `src/memory/Signatures.h` by comparing functions with the previous dump (strings, callers and matching instruction sequences). Every pattern must match exactly once. `Rel32` resolves a relative call or address at the specified displacement offset. The injected scanner also rejects ambiguous patterns.
+3. **Check layouts and calling conventions before injecting.** These include `src/sdk/Offsets.h`, the client map value in `Game.cpp`, render context fields in `Render.cpp`, and function argument types in the SDK/hooks. Update the exact supported package version in `core/GameVersion.cpp` only after verifying these against the new binary. Then use `#debug` to check position, rotation, held item, dimension, armor, hunger and game target. `#vt`, `#hex`, `#hexat`, `#ecsdump` and `#attrs` dump memory read-only to find the new layout.
 4. **EnTT**: if components are no longer found, the game may use another EnTT revision; update the pinned commit in `cmake/Dependencies.cmake`.
 5. Run the tests and a few in-game checks (`#goto`, `#mine`, `#build`, `#elytra`), then update the version in the README.
 
-## Reverse engineering notes (26.52)
+## Reverse engineering notes (26.60)
+
+Target: Microsoft Store package `1.26.6005.0`, compared with the previous `1.26.5203.0` memory dump. Dumps and exploratory scripts stay in the ignored `re/` directory.
+
+- 13 of the 26 previous signatures stopped matching. The 26 updated patterns plus one new inventory-open pattern all match once in the new `.text` section; their resolved addresses were also checked during injection.
+- `MinecraftGame`'s client map moved to `+0x9D0`. Its value now contains two interface pointers before the `shared_ptr<ClientInstance>` (value size `0x20`, previously `0x18`). Updating just the map offset returns an interface subobject instead of the client.
+- `ClientInstance`: game `+0x1C8`, GUI `+0x668`, region/player vtable indices `0x1D`/`0x1E`. The cursor-grabbed flag moved to `MinecraftGame+0x1F8`.
+- Actor data pointers and the player inventory/game-mode/name fields moved by `+0x28`; the ECS entity context and EnTT revision remain unchanged. The active inventory request moved to manager `+0x68`.
+- Main inventory moves now need the server's inventory screen context. A request addressed to `InventoryContainer` while the screen is closed is rejected with status 49/50; using the hotbar or combined container as an alias does not fix it. Mirror the inventory-key handler (RVA `0x657DA52`): send `InteractPacket` action 6 with the player's runtime id. The server then opens the client inventory. Calling `LocalPlayer::openInventory` directly only opens the client UI and still produces rejected moves.
+- `InteractPacket`: size `0x58`, action `+0x30`, target runtime id `+0x38`, optional position `+0x40`, serialization mode `+0x50` (5). The native handler uses priority 2/reliability 1. `LocalPlayer::sendNetworkPacket` is vtable `0xE4`.
+- Pause bot actions while its temporary inventory screen opens and the server answers. Close only that screen, using `LocalPlayer+0xEEC` (`{-1, true}`) and vtable `0xDC` (`deleteContainerManager`); normalTick consumes the close flag. Do not close an inventory the user opened. The class declarations and close sequence were cross-checked with [LeviLamina's client SDK](https://github.com/LiteLDev/LeviLamina/blob/main/src-client/mc/client/player/LocalPlayer.cpp); packet action/status names are in [Mojang's protocol reference](https://mojang.github.io/bedrock-protocol-docs/1.26.60/packets/item-stack-response-packet/).
+- World name: `LevelData+0x2B0`; hit result pointer: `Level+0x1F0`. BlockSource, block-state NBT and attribute lookups were checked in game.
+- Rendering requires more than new signatures: `ScreenContext` tessellator is `+0xB0` and shader color is `+0x38` (`+0x30` is fog color). The former tessellator offset `+0xB8` now points at a lifetime control block; passing it to Tessellator functions corrupts that block and crashes a later frame.
+- `Tessellator::color` now uses `(this, float r, float g, float b, float a)`. The render player/origin fields moved to `LevelRenderer+0x480` and `LevelRendererPlayer+0x658`.
+
+Validation: 39 offline core tests, package detection, all eight hooks, player/world diagnostics, short navigation over uneven terrain, goal rendering, survival block placement/breaking with tool selection and durability, entity listing, empty/nonempty inventory transfers in both directions, automatic pickaxe retrieval with `allowInventory`, preservation of a manually opened inventory, a one-block selection build with automatic material retrieval, and unload/reinjection. A complete farming, schematic-building, elytra and water-clutch campaign has not been repeated on 26.60.
+
+## Java feature audit (1.3.0)
+
+The pinned Java reference and reproduction commands are in [JAVA_PARITY_AUDIT.md](JAVA_PARITY_AUDIT.md). `tools/paritycheck.py` checks command registrations/settings and reports settings without executable references; behavioral regressions live in the offline suite.
+
+Native additions verified against package `1.26.6005.0`:
+
+- `ClientInstance::requestLeaveGameAsync`: primary vtable `0xD`, RVA `0x6593740`, confirmed by the native string `virtual ClientInstance::requestLeaveGameAsync` and its scheduler/weak-reference callback. Call it from the frame after the level tick; do not destroy the world from `CustomGoalProcess::onTick`.
+- `ui_fill_color`: position-only, blending enabled, depth testing disabled in the shipped `data/resource_packs/vanilla/materials/ui.material`. The position transform works in the level-render context. Batch by uniform shader color, preserve/restore the previous shader color, and keep normal-depth batches on `selection_box`.
+- The existing `MouseDevice::feed` signature is also hooked for physical `#click` input. Synthetic bot clicks call its trampoline directly. Captured events are queued; ray tracing, selection changes and goals run on the frame thread. Opening a menu/focus loss restores ordinary clicks. There are now nine hooks.
+- Cached terrain geometry uses immutable cached chunks on a worker, with bounded output. Explicitly join it before DLL unload; do not wait for a worker from a static destructor during Windows process termination.
+- Bedrock enchantment ids: Depth Strider 7, Efficiency 15, Silk Touch 16, Frost Walker 25; cross-checked with [LeviLamina's Enchant::Type](https://github.com/LiteLDev/LeviLamina/blob/main/src/mc/world/item/enchanting/Enchant.h).
+
+## Earlier reverse engineering notes (26.52)
 
 Things that are not obvious and cost time to find:
 

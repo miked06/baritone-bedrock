@@ -4,6 +4,7 @@
 #include <string>
 
 #include "core/Bot.h"
+#include "core/GameVersion.h"
 #include "core/Log.h"
 #include "core/Paths.h"
 #include "core/Security.h"
@@ -26,7 +27,8 @@ DWORD WINAPI mainThread(LPVOID) {
 
     OpenSecurity security;
     HANDLE unloadEvent = CreateEventW(security.get(), TRUE, FALSE, unloadEventName().c_str());
-    bool started = sigs::resolveAll() && hooks::initialize() && Bot::get().start();
+    bool compatible = gameversion::check() && sigs::resolveAll();
+    bool started = compatible && hooks::initialize() && Bot::get().start();
     if (!started) {
         logger::error("Initialisation failed, unloading. Is the game version supported?");
     } else {
@@ -36,7 +38,8 @@ DWORD WINAPI mainThread(LPVOID) {
     }
 
     logger::info("Unloading...");
-    Bot::get().stop();
+    // stop() accesses game objects; do not call it after a compatibility failure.
+    if (compatible) Bot::get().stop();
     hooks::shutdown();
     platform::WorldTracker::get().reset();  // writes the long-distance cache
     logger::info("Unloaded.");

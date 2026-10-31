@@ -6,6 +6,7 @@
 #include <vector>
 
 #include "baritone/cache/CachedWorld.h"
+#include "baritone/cache/ChunkPackerQueue.h"
 #include "baritone/utils/BlockPos.h"
 #include "baritone/world/WorldSnapshot.h"
 
@@ -55,6 +56,7 @@ public:
     // Stats for #debug
     std::size_t knownStates() const { return blockIds_.size(); }
     double lastChunkScanMs() const { return lastChunkScanMs_; }
+    std::size_t pendingPacks() const { return packQueue_.size(); }
 
     int loadRadius = 8;       // chunks around the player kept in the snapshot
     int refreshRadius = 1;    // chunks re-scanned regularly (catch block changes)
@@ -69,6 +71,8 @@ private:
     void ensureCache();
     void flushCache();
     void packIntoCache(const baritone::ChunkData& chunk);
+    void queueForPacking(std::shared_ptr<const baritone::ChunkData> chunk);
+    baritone::ChunkPackerQueue packQueue_;
     baritone::StateId idOfName(const std::string& name);
 
     std::string world_;

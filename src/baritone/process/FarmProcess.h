@@ -22,7 +22,7 @@ public:
         locations_.reset();
         scan_.wait();
     }
-    std::string displayName() const override { return "Farm"; }
+    std::string displayName() const override { return "Farming"; }
     void shutdown() { scan_.wait(); }
 
     static bool isPlantable(const std::string& item);

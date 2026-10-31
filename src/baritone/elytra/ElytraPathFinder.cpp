@@ -5,6 +5,7 @@
 #include <cmath>
 #include <queue>
 #include <unordered_map>
+#include <memory_resource>
 
 #include "baritone/world/BlockStateInterface.h"
 
@@ -36,12 +37,16 @@ FlightPathResult ElytraPathFinder::calculate(const BlockPos& start, const BlockP
     using Clock = std::chrono::steady_clock;
     auto deadline = Clock::now() + std::chrono::milliseconds(timeoutMs);
     BlockStateInterface bsi(world_);
+    // Java switches its native allocator. This port uses a per-calculation arena;
+    // returned paths own ordinary vectors and never retain pointers into it.
+    std::pmr::monotonic_buffer_resource arena;
+    std::pmr::memory_resource* memory = customAllocator_ ? &arena : std::pmr::new_delete_resource();
     int minY = bsi.minY() + 1, maxY = bsi.maxY() - 2;
     if (world_->dimension() == 1) maxY = bsi.maxY() - 6;  // nether: under the bedrock roof (unknown chunks = air)
     if (maxY_) maxY = *maxY_;
 
     // free cells (with the clearance around them), memoized: the same cells are tested a lot
-    std::unordered_map<BlockPos, bool> freeCache;
+    std::pmr::unordered_map<BlockPos, bool> freeCache{memory};
     auto isFree = [&](const BlockPos& p) {
         if (p.y < minY || p.y > maxY) return false;
         auto it = freeCache.find(p);
@@ -65,10 +70,11 @@ FlightPathResult ElytraPathFinder::calculate(const BlockPos& start, const BlockP
     };
 
     constexpr double kWeight = 1.3;  // a little greedy: open air makes plain A* expand a lot
-    std::vector<Node> nodes;
-    std::unordered_map<BlockPos, int> index;
+    std::pmr::vector<Node> nodes{memory};
+    nodes.reserve(static_cast<std::size_t>(std::clamp(maxNodes, 1, 16384)));
+    std::pmr::unordered_map<BlockPos, int> index{memory};
     using Entry = std::pair<double, int>;
-    std::priority_queue<Entry, std::vector<Entry>, std::greater<>> open;
+    std::priority_queue<Entry, std::pmr::vector<Entry>, std::greater<>> open{std::greater<>{}, std::pmr::vector<Entry>{memory}};
     nodes.push_back({start, 0, -1});
     index[start] = 0;
     open.push({distance(start, goal) * kWeight, 0});

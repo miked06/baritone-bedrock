@@ -22,7 +22,7 @@ struct Color {
     bool operator==(const Color&) const = default;
 };
 
-// Same names, defaults and meaning as Baritone's Settings.java, so #set works the same way.
+// Names follow Baritone's Settings.java; platform/default differences are in docs/PARITY.md.
 // (type, name, default, description)
 #define BARITONE_SETTINGS(X)                                                                                          \
     X(bool, allowBreak, true, "Allow Baritone to break blocks")                                                       \
@@ -109,7 +109,7 @@ struct Color {
     X(bool, forceInternalMining, true, "Path into the ore block itself (more efficient)")                             \
     X(bool, internalMiningAirException, true, "Treat air next to an ore as part of the ore for goals")               \
     X(int, mineDropLoiterDurationMSThanksLouca, 250, "Time to wait for drops after mining a block")                   \
-    X(int, maxScanChunkRadius, 8, "Chunks around the player scanned for blocks (#mine, #goto <bloc>)")               \
+    X(int, maxScanChunkRadius, 8, "Chunks around the player scanned for blocks (#mine, #goto <block>)")               \
     X(int, maxCachedWorldScanCount, 10, "Tracked blocks taken from the long-distance cache per search")              \
     X(bool, chunkCaching, true, "Remember every chunk in 2 bits per block on disk for long-distance pathing")        \
     X(bool, pruneRegionsFromRAM, true, "Unload cached regions far from the player (they stay on disk)")              \
@@ -271,11 +271,11 @@ struct Color {
     X(bool, elytraAutoSwap, true, "Elytra: swap a worn out elytra for another one") \
     X(int, elytraMinimumDurability, 5, "Elytra: durability under which it is swapped") \
     X(int64_t, elytraTimeBetweenCacheCullSecs, 180, "Elytra: seconds between culls of far chunks") \
-    X(int, elytraCacheCullDistance, 5000, "Elytra: chunks further than this are culled") \
+    X(int, elytraCacheCullDistance, 5000, "Elytra: maximum cache distance in blocks") \
     X(bool, elytraAllowLandOnNetherFortress, false, "Elytra: nether bricks are a valid landing block") \
     X(bool, elytraTermsAccepted, false, "Elytra: the user read the elytra warnings") \
     X(bool, elytraChatSpam, false, "Elytra: verbose chat logging") \
-    X(bool, elytraCustomAllocator, true, "Elytra: custom allocator (no effect on Bedrock)") \
+    X(bool, elytraCustomAllocator, true, "Elytra: allocate search memory from an arena") \
     X(bool, elytraAllowTightSpaces, false, "Elytra: allow flying in tight spaces") \
     X(bool, elytraAllowAboveRoof, false, "Elytra: allow flying above the nether roof") \
     X(bool, elytraUseCache, true, "Elytra: use the chunk cache for the flight path") \
@@ -311,8 +311,9 @@ bool isModified(const SettingInfo& info);
 void resetSetting(const SettingInfo& info);
 
 // settings.txt like Baritone's: one "name value" line per modified setting.
-void saveSettings(const std::string& path);
+bool saveSettings(const std::string& path);
 // Returns the number of settings read; unknown or invalid lines are skipped.
-int loadSettings(const std::string& path);
+// -1 if the file could not be opened. Reset only after a successful open.
+int loadSettings(const std::string& path, bool reset = false);
 
 }  // namespace baritone

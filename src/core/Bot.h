@@ -8,6 +8,7 @@
 
 #include "baritone/Baritone.h"
 #include "baritone/cache/Waypoints.h"
+#include "baritone/selection/ClickSelection.h"
 #include "command/CommandManager.h"
 #include "core/InputOverride.h"
 #include "core/LookBehavior.h"
@@ -76,6 +77,8 @@ public:
     void walkFor(int ticks, bool sprint);
     void lookAt(float yaw, float pitch) { manualLook_ = sdk::Vec2{pitch, yaw}; }
     void cancelAll();
+    void startClickSelection();
+    void stopClickSelection();
 
     struct TestAction {
         enum Kind { Break, Place } kind;
@@ -101,6 +104,11 @@ private:
     std::optional<bool> savedCursorGrabbed_;
     void runTestAction();
     void releaseControl();
+    void updateClickSelection();
+    baritone::ClickSelection clickSelection_;
+    std::optional<baritone::BlockPos> clickTarget_;
+    uint64_t clickSelectionStartedAt_ = 0;
+    bool clickCaptureStarted_ = false;
     std::optional<TestAction> testAction_;
     std::vector<std::function<void()>> tickTasks_;
 

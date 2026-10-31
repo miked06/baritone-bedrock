@@ -2,8 +2,10 @@
 #include <future>
 #include <optional>
 #include <vector>
+#include <chrono>
 
 #include "baritone/elytra/ElytraPathFinder.h"
+#include "baritone/elytra/ElytraPhysics.h"
 #include "baritone/Settings.h"
 #include "baritone/process/Process.h"
 #include "baritone/utils/Rotation.h"
@@ -41,6 +43,12 @@ public:
     std::optional<BlockPos> landing() const { return destination_ ? landing_ : std::nullopt; }
     // elytraRenderSimulation: the simulated flight of the chosen pitch
     std::vector<Vec3d> simulation() const { return destination_ && Settings::get().elytraRenderSimulation ? simulation_ : std::vector<Vec3d>{}; }
+    std::vector<elytra::DebugRay> raytraces() const {
+        return destination_ && Settings::get().elytraRenderRaytraces ? raytraces_ : std::vector<elytra::DebugRay>{};
+    }
+    std::vector<elytra::CollisionSample> hitboxSamples() const {
+        return destination_ && Settings::get().elytraRenderHitboxRaytraces ? hitboxSamples_ : std::vector<elytra::CollisionSample>{};
+    }
 
 private:
     enum class State { Takeoff, Flying, Landing };
@@ -81,6 +89,9 @@ private:
     int setbackTicks_ = 0;
     std::optional<Vec3d> lastPos_;
     std::vector<Vec3d> simulation_;
+    std::vector<elytra::DebugRay> raytraces_;
+    std::vector<elytra::CollisionSample> hitboxSamples_;
+    std::chrono::steady_clock::time_point lastCacheCull_{};
     int swapAt_ = -1000;
     // settings the path was planned with (Java: changing one plans again)
     bool allowTight_ = false, allowAboveBuildLimit_ = false, allowAboveRoof_ = false;          // tick of the last elytraAutoSwap click

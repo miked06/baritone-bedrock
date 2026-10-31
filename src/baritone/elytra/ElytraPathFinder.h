@@ -25,11 +25,13 @@ public:
         int clearance = 1;           // free blocks around the path (elytraAllowTightSpaces: 0)
         std::optional<int> maxY;     // highest y (default: under the build limit / nether roof)
         bool useCache = true;        // elytraUseCache: blocks of the long-distance cache count
+        bool customAllocator = true; // elytraCustomAllocator: arena-backed search storage
     };
     ElytraPathFinder(std::shared_ptr<const WorldSnapshot> world, int clearance = 1)
         : world_(std::move(world)), clearance_(clearance) {}
     ElytraPathFinder(std::shared_ptr<const WorldSnapshot> world, Options options)
-        : world_(std::move(world)), clearance_(options.clearance), maxY_(options.maxY), useCache_(options.useCache) {}
+        : world_(std::move(world)), clearance_(options.clearance), maxY_(options.maxY), useCache_(options.useCache),
+          customAllocator_(options.customAllocator) {}
 
     // Path from `start` to within `goalRadius` blocks of `goal`. Thread-safe (own block access).
     FlightPathResult calculate(const BlockPos& start, const BlockPos& goal, double goalRadius, long timeoutMs,
@@ -41,6 +43,7 @@ private:
     int clearance_;
     std::optional<int> maxY_;
     bool useCache_ = true;
+    bool customAllocator_ = true;
     mutable std::atomic<bool> cancelled_{false};
 };
 

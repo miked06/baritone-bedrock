@@ -10,7 +10,7 @@ namespace {
 constexpr int kMaxBits = 15;
 
 [[noreturn]] void corrupt(const char* what) {
-    throw std::runtime_error(std::string("donnees compressees invalides : ") + what);
+    throw std::runtime_error(std::string("invalid compressed data: ") + what);
 }
 
 class BitReader {
@@ -20,7 +20,7 @@ public:
     int bits(int n) {  // LSB first
         int v = bitBuf_;
         while (bitCount_ < n) {
-            if (pos_ >= size_) corrupt("fin inattendue");
+            if (pos_ >= size_) corrupt("unexpected end of data");
             v |= static_cast<int>(data_[pos_++]) << bitCount_;
             bitCount_ += 8;
         }
@@ -33,7 +33,7 @@ public:
         bitCount_ = 0;
     }
     uint8_t byte() {
-        if (pos_ >= size_) corrupt("fin inattendue");
+        if (pos_ >= size_) corrupt("unexpected end of data");
         return data_[pos_++];
     }
     std::size_t position() const { return pos_; }
@@ -81,7 +81,7 @@ struct Huffman {
             first <<= 1;
             code <<= 1;
         }
-        corrupt("code de Huffman");
+        corrupt("Huffman code");
     }
 };
 
@@ -101,12 +101,12 @@ void inflateBlock(BitReader& in, std::vector<uint8_t>& out, const Huffman& lenco
             return;
         } else {
             sym -= 257;
-            if (sym >= 29) corrupt("longueur");
+            if (sym >= 29) corrupt("length");
             int len = kLenBase[sym] + in.bits(kLenExtra[sym]);
             int dsym = distcode.decode(in);
             if (dsym >= 30) corrupt("distance");
             std::size_t dist = kDistBase[dsym] + static_cast<std::size_t>(in.bits(kDistExtra[dsym]));
-            if (dist > out.size()) corrupt("distance trop loin");
+            if (dist > out.size()) corrupt("distance too far back");
             std::size_t from = out.size() - dist;
             for (int i = 0; i < len; ++i) out.push_back(out[from + i]);
         }
@@ -133,11 +133,11 @@ const std::pair<Huffman, Huffman>& fixedCodes() {
 void dynamicCodes(BitReader& in, Huffman& lencode, Huffman& distcode) {
     static constexpr uint8_t order[19] = {16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 4, 12, 3, 13, 2, 14, 1, 15};
     int nlen = in.bits(5) + 257, ndist = in.bits(5) + 1, ncode = in.bits(4) + 4;
-    if (nlen > 286 || ndist > 30) corrupt("nombre de codes");
+    if (nlen > 286 || ndist > 30) corrupt("code count");
     uint8_t lengths[320] = {};
     for (int i = 0; i < ncode; ++i) lengths[order[i]] = static_cast<uint8_t>(in.bits(3));
     Huffman codecode;
-    if (codecode.build(lengths, 19) != 0) corrupt("code des longueurs");
+    if (codecode.build(lengths, 19) != 0) corrupt("code-length code");
     int index = 0;
     while (index < nlen + ndist) {
         int sym = codecode.decode(in);
@@ -148,7 +148,7 @@ void dynamicCodes(BitReader& in, Huffman& lencode, Huffman& distcode) {
         uint8_t value = 0;
         int repeat;
         if (sym == 16) {
-            if (index == 0) corrupt("repetition sans valeur");
+            if (index == 0) corrupt("repeat without a previous value");
             value = lengths[index - 1];
             repeat = 3 + in.bits(2);
         } else if (sym == 17) {
@@ -156,14 +156,14 @@ void dynamicCodes(BitReader& in, Huffman& lencode, Huffman& distcode) {
         } else {
             repeat = 11 + in.bits(7);
         }
-        if (index + repeat > nlen + ndist) corrupt("trop de longueurs");
+        if (index + repeat > nlen + ndist) corrupt("too many code lengths");
         while (repeat--) lengths[index++] = value;
     }
-    if (lengths[256] == 0) corrupt("pas de fin de bloc");
+    if (lengths[256] == 0) corrupt("missing end-of-block code");
     int err = lencode.build(lengths, nlen);
-    if (err < 0 || (err > 0 && nlen - lencode.count[0] != 1)) corrupt("code des litteraux");
+    if (err < 0 || (err > 0 && nlen - lencode.count[0] != 1)) corrupt("literal code");
     err = distcode.build(lengths + nlen, ndist);
-    if (err < 0 || (err > 0 && ndist - distcode.count[0] != 1)) corrupt("code des distances");
+    if (err < 0 || (err > 0 && ndist - distcode.count[0] != 1)) corrupt("distance code");
 }
 
 }  // namespace
@@ -180,7 +180,7 @@ std::vector<uint8_t> inflateRaw(const uint8_t* data, std::size_t size, std::size
             in.alignToByte();
             int len = in.byte() | (in.byte() << 8);
             int nlen = in.byte() | (in.byte() << 8);
-            if (len != (~nlen & 0xFFFF)) corrupt("bloc non compresse");
+            if (len != (~nlen & 0xFFFF)) corrupt("uncompressed block");
             for (int i = 0; i < len; ++i) out.push_back(in.byte());
         } else if (type == 1) {
             const auto& [lencode, distcode] = fixedCodes();
@@ -190,7 +190,7 @@ std::vector<uint8_t> inflateRaw(const uint8_t* data, std::size_t size, std::size
             dynamicCodes(in, lencode, distcode);
             inflateBlock(in, out, lencode, distcode);
         } else {
-            corrupt("type de bloc");
+            corrupt("block type");
         }
     } while (!last);
     if (consumed) *consumed = in.position();
@@ -199,11 +199,11 @@ std::vector<uint8_t> inflateRaw(const uint8_t* data, std::size_t size, std::size
 
 std::vector<uint8_t> decompressIfNeeded(const std::vector<uint8_t>& data) {
     if (data.size() >= 18 && data[0] == 0x1F && data[1] == 0x8B) {  // gzip
-        if (data[2] != 8) corrupt("methode gzip");
+        if (data[2] != 8) corrupt("gzip method");
         uint8_t flags = data[3];
         std::size_t pos = 10;
         auto need = [&](std::size_t n) {
-            if (pos + n > data.size()) corrupt("en-tete gzip");
+            if (pos + n > data.size()) corrupt("gzip header");
         };
         if (flags & 4) {  // FEXTRA
             need(2);

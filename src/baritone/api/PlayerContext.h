@@ -24,6 +24,7 @@ struct HotbarStack {
     int efficiency = 0;    // enchantment levels
     bool silkTouch = false;
     int frostWalker = 0;   // boots
+    int depthStrider = 0;  // boots: affects the cost of walking through water
     bool empty() const { return count == 0 || name.empty(); }
 };
 
@@ -66,9 +67,10 @@ public:
     virtual bool swapSlots(int /*slotA*/, int /*slotB*/) { return false; }
     // A move was sent and the server has not answered yet: the slots are about to change.
     virtual bool inventoryMovePending() const { return false; }
-    // Elytra: gliding right now. Using the held item in the air (a firework) is not supported
-    // on Bedrock yet: the game's own right click path has to be found (calling GameMode::useItem
-    // only fires the rocket on the client, the server rubber-bands the player).
+    // Queue a normal leave-world operation after the current player tick.
+    virtual bool requestDisconnect() { return false; }
+    // Elytra: gliding right now. The platform uses the game's normal right-click path
+    // for fireworks, including its server transaction.
     virtual bool isGliding() const { return false; }
     virtual bool isFlying() const { return false; }  // creative flight
     virtual bool isCreative() const { return false; }  // blocks break instantly

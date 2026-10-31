@@ -52,9 +52,10 @@ bool isLiquid(const BlockProps& p) { return p.type == BlockType::Water || p.type
 // buildSkipBlocks (Java: a mask on the desired block)
 class SkipBlocksSchematic : public Schematic {
 public:
+    void reset() const override { inner_->reset(); }
     explicit SkipBlocksSchematic(SchematicPtr inner) : inner_(std::move(inner)) {}
     BlockPos size() const override { return inner_->size(); }
-    DesiredBlock desired(int x, int y, int z, const std::string& current) const override {
+    DesiredBlock desired(int x, int y, int z, const BlockProps& current) const override {
         DesiredBlock d = inner_->desired(x, y, z, current);
         if (d.kind == DesiredBlock::Kind::Block && contains(Settings::get().buildSkipBlocks, d.name)) return DesiredBlock::any();
         return d;
@@ -67,10 +68,11 @@ private:
 // Java SelectionSchematic (buildOnlySelection): only what is inside a selection
 class SelectionSchematic : public Schematic {
 public:
+    void reset() const override { inner_->reset(); }
     SelectionSchematic(SchematicPtr inner, BlockPos origin, std::vector<Selection> selections)
         : inner_(std::move(inner)), origin_(origin), selections_(std::move(selections)) {}
     BlockPos size() const override { return inner_->size(); }
-    DesiredBlock desired(int x, int y, int z, const std::string& current) const override {
+    DesiredBlock desired(int x, int y, int z, const BlockProps& current) const override {
         BlockPos world = origin_.offset(x, y, z);
         if (std::ranges::none_of(selections_, [&](const Selection& s) { return s.contains(world); })) return DesiredBlock::any();
         return inner_->desired(x, y, z, current);
@@ -188,6 +190,7 @@ void BuilderProcess::build(std::string name, SchematicPtr schematic, BlockPos or
     if (s.schematicOrientationY) origin.y += rawSize.y;
     if (s.schematicOrientationZ) origin.z += rawSize.z;
     schematic_ = std::move(schematic);
+    schematic_->reset();
     origin_ = origin;
     paused_ = false;
     layer_ = s.startAtLayer;
@@ -195,7 +198,7 @@ void BuilderProcess::build(std::string name, SchematicPtr schematic, BlockPos or
     if (s.buildOnlySelection && fromFile) {
         const auto& sels = baritone_.selections().all();
         if (sels.empty()) {
-            baritone_.logDirect("buildOnlySelection est actif mais il n'y a aucune selection", true);
+            baritone_.logDirect("buildOnlySelection is enabled but no selection exists", true);
             stopAtHeight_ = 0;
         } else if (s.buildInLayers) {
             int minim = INT32_MAX, maxim = INT32_MIN;
@@ -229,7 +232,7 @@ void BuilderProcess::onLostControl() {
 }
 
 std::string BuilderProcess::displayName() const {
-    return paused_ ? "Construction en pause" : "Construction de " + name_;
+    return paused_ ? "Building paused" : "Building " + name_;
 }
 
 std::optional<std::pair<BlockPos, BlockPos>> BuilderProcess::bounds() const {
@@ -253,7 +256,7 @@ std::optional<DesiredBlock> BuilderProcess::getSchematic(int x, int y, int z, co
     if (!schematic_->inBounds(rx, ry, rz)) return std::nullopt;
     auto [minY, maxY] = layerBounds();
     if (ry < minY || ry > maxY) return std::nullopt;
-    DesiredBlock d = schematic_->desired(rx, ry, rz, current.name);
+    DesiredBlock d = schematic_->desired(rx, ry, rz, current);
     if (d.kind == DesiredBlock::Kind::Any) return std::nullopt;
     return d;
 }
@@ -324,7 +327,7 @@ void BuilderProcess::customizeContext(CalculationContext& ctx) {
     auto getSchematic = [sch, origin, minY, maxY](int x, int y, int z, const BlockProps& current) -> std::optional<DesiredBlock> {
         int rx = x - origin.x, ry = y - origin.y, rz = z - origin.z;
         if (!sch->inBounds(rx, ry, rz) || ry < minY || ry > maxY) return std::nullopt;
-        DesiredBlock d = sch->desired(rx, ry, rz, current.name);
+        DesiredBlock d = sch->desired(rx, ry, rz, current);
         if (d.kind == DesiredBlock::Kind::Any) return std::nullopt;
         return d;
     };
@@ -626,18 +629,18 @@ GoalPtr BuilderProcess::assemble(CalculationContext& ctx, bool wholeInventory, b
         if (Settings::get().chatDebug) {
             std::string list;
             for (std::size_t i = 0; i < toPlace.size() && i < 6; ++i) list += toPlace[i]->toString() + " ";
-            baritone_.logDirect(std::format("Builder : {} a poser ({}), {} a casser", toPlace.size(), list, toBreak.size()), false);
+            baritone_.logDirect(std::format("Builder: {} to place ({}), {} to break", toPlace.size(), list, toBreak.size()), false);
         }
         return std::make_shared<JankyGoalComposite>(std::make_shared<GoalComposite>(std::move(toPlace)),
                                                     std::make_shared<GoalComposite>(std::move(toBreak)));
     }
     if (toBreak.empty()) {
         if (logMissing && !missing.empty()) {
-            baritone_.logDirect("Materiaux manquants, au moins :", true);
+            baritone_.logDirect("Missing materials, at least:", true);
             for (const auto& [block, count] : missing) baritone_.logDirect(std::format("{}x {}", count, block), true);
         }
         if (logMissing && !flowingLiquids.empty()) {
-            baritone_.logDirect("Liquides impossibles a remplacer, au moins en :", true);
+            baritone_.logDirect("Cannot replace liquids, at least at:", true);
             for (const BlockPos& p : flowingLiquids) baritone_.logDirect(std::format("{}", p), true);
         }
         return nullptr;
@@ -669,7 +672,7 @@ std::optional<PathingCommand> BuilderProcess::tick(bool calcFailed, bool isSafeT
     if (!recalc(ctx)) {
         int lh = std::max(1, s.layerHeight);
         if (s.buildInLayers && layer_ * lh < stopAtHeight_) {
-            baritone_.logDirect(std::format("Couche {}", layer_), false);
+            baritone_.logDirect(std::format("Layer {}", layer_), false);
             layer_++;
             incorrectPositions_.reset();
             return tick(calcFailed, isSafeToCancel, recursions + 1);
@@ -678,16 +681,19 @@ std::optional<PathingCommand> BuilderProcess::tick(bool calcFailed, bool isSafeT
         int max = s.buildRepeatCount;
         numRepeats_++;
         if (repeat == Vec3i{} || (max != -1 && numRepeats_ >= max)) {
-            baritone_.logDirect("Construction terminee", false);
-            if (s.notificationOnBuildFinished) baritone_.logNotification("Construction terminee", false);
+            baritone_.logDirect("Build complete", false);
+            if (s.notificationOnBuildFinished) baritone_.logNotification("Build complete", false);
             onLostControl();
             return std::nullopt;
         }
         layer_ = 0;
         origin_ = origin_ + repeat;
         incorrectPositions_.reset();
-        if (!s.buildRepeatSneaky) observedCompleted_.clear();  // Java schematic.reset()
-        baritone_.logDirect(std::format("Repetition de la construction de {} : nouvelle origine {}", repeat, origin_), false);
+        if (!s.buildRepeatSneaky) {
+            observedCompleted_.clear();
+            schematic_->reset();
+        }
+        baritone_.logDirect(std::format("Repeating build of {}: new origin {}", repeat, origin_), false);
         return tick(calcFailed, isSafeToCancel, recursions + 1);
     }
     if (s.distanceTrim) trim();
@@ -740,12 +746,12 @@ std::optional<PathingCommand> BuilderProcess::tick(bool calcFailed, bool isSafeT
         goal = assemble(ctx, true, true);  // far away: assume the whole inventory can be used
         if (!goal) {
             if (s.skipFailedLayers && s.buildInLayers && layer_ * std::max(1, s.layerHeight) < schematic_->size().y) {
-                baritone_.logDirect(std::format("Couche impossible a construire, je passe a la suivante (couche {})", layer_), true);
+                baritone_.logDirect(std::format("Cannot build layer; skipping to the next one (layer {})", layer_), true);
                 layer_++;
                 incorrectPositions_.reset();
                 return tick(calcFailed, isSafeToCancel, recursions + 1);
             }
-            baritone_.logDirect("Impossible de continuer. En pause : #resume pour reprendre, #cancel pour annuler", true);
+            baritone_.logDirect("Cannot continue. Paused: use #resume to resume or #cancel to cancel", true);
             paused_ = true;
             return PathingCommand{nullptr, PathingCommandType::RequestPause};
         }
@@ -755,8 +761,8 @@ std::optional<PathingCommand> BuilderProcess::tick(bool calcFailed, bool isSafeT
     // throwaway blocks (acceptableThrowawayItems) in the hotbar.
     if (calcFailed) {
         if (++failedCalcs_ == 5) {
-            baritone_.logDirect("Construction : aucun chemin vers les blocs a poser. Il faut peut-etre des blocs jetables "
-                                "(acceptableThrowawayItems : terre, cobble...) pour monter ou faire un pont.", true);
+            baritone_.logDirect("Build: no path to the blocks to place. You may need throwaway blocks "
+                                "(acceptableThrowawayItems: dirt, cobblestone, etc.) to climb or bridge.", true);
         }
     } else if (baritone_.pathing().isPathing()) {
         failedCalcs_ = 0;

@@ -20,6 +20,7 @@ struct PlayerAbilities {
     bool hasThrowaway = false;  // blocks to place
     int foodLevel = 20;         // Java: no sprinting at 6 or less
     int frostWalker = 0;        // level on the worn boots
+    int depthStrider = 0;       // water movement efficiency, levels 0-3
     BreakSpeedFn breakSpeed;    // empty = bare hands with the vanilla formula
 };
 

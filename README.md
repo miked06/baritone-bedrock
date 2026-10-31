@@ -15,7 +15,7 @@
 <p align="center">
   <a href="https://github.com/miked06/baritone-bedrock/actions/workflows/build.yml"><img alt="Build" src="https://github.com/miked06/baritone-bedrock/actions/workflows/build.yml/badge.svg"></a>
   <a href="COPYING.LESSER"><img alt="License: LGPL-3.0" src="https://img.shields.io/badge/license-LGPL--3.0-blue.svg"></a>
-  <img alt="Minecraft Bedrock 26.52" src="https://img.shields.io/badge/Minecraft%20Bedrock-26.52-green.svg">
+  <img alt="Minecraft Bedrock 26.60" src="https://img.shields.io/badge/Minecraft%20Bedrock-26.60-green.svg">
   <img alt="Platform: Windows x64" src="https://img.shields.io/badge/platform-Windows%20x64-lightgrey.svg">
   <img alt="C++23" src="https://img.shields.io/badge/C%2B%2B-23-orange.svg">
 </p>
@@ -27,8 +27,8 @@ Baritone Bedrock is a native C++ rewrite of Baritone that runs **inside** the Wi
 The pathfinding engine, the movements, the processes and all the settings follow Baritone's Java code (1.21.11) closely, so the commands and settings you know from Java Edition work the same way.
 
 > [!IMPORTANT]
-> **Supported game version: Minecraft Bedrock 26.52 for Windows** (package `1.26.5203.0`).
-> The DLL reads the game's memory directly, so other versions need updated signatures and offsets (see [Updating to a new game version](docs/DEVELOPMENT.md#updating-to-a-new-game-version)).
+> **Supported game version: Minecraft Bedrock 26.60 for Windows** (package `1.26.6005.0`).
+> The DLL checks the package version before installing hooks and refuses unsupported builds. Other versions need updated signatures, offsets and calling conventions (see [Updating to a new game version](docs/DEVELOPMENT.md#updating-to-a-new-game-version)).
 
 > [!WARNING]
 > Using a bot on a multiplayer server may be against its rules and can get you banned. This project is meant for singleplayer worlds and servers that allow it. Use it at your own risk.
@@ -52,7 +52,7 @@ The pathfinding engine, the movements, the processes and all the settings follow
 ### Requirements
 
 - Windows 10 or 11, x64.
-- Minecraft Bedrock **26.52** (the Microsoft Store / Xbox app version).
+- Minecraft Bedrock **26.60** (the Microsoft Store / Xbox app version).
 - A DLL injector (any `LoadLibrary` injector works, for example FateInjector).
 
 ### Install
@@ -61,12 +61,14 @@ The pathfinding engine, the movements, the processes and all the settings follow
 2. Start Minecraft and open a world.
 3. In Minecraft's settings, turn off **"Pause game when focus is lost"**. Otherwise the world (and the bot) stops whenever you switch windows.
 4. Inject `BaritoneBedrock.dll` into `Minecraft.Windows.exe` with your injector.
-5. A console window titled *Baritone Bedrock* opens, and the chat shows `[Baritone] Charge` once the bot is ready.
+5. A console window titled *Baritone Bedrock* opens, and the chat shows `[Baritone] Loaded. Type #help for a list of commands.` once the bot is ready.
 
 Type commands in the chat, starting with `#`. They are handled locally and never sent to the server. `#unload` removes the bot cleanly.
 
 > [!NOTE]
-> The bot's chat messages are currently in French (for example `Arrive !` for "Arrived!"). Commands and settings use Baritone's English names.
+> All built-in messages, command help, notifications and diagnostics are in English.
+
+Version 1.3.0 adds state-filtered block searches, interactive click goals/selections, settings profiles, completion suggestions, disconnect on arrival, depth/cached-terrain rendering and elytra cache/diagnostic controls. See the [comparison with Baritone Java 26.3](docs/JAVA_PARITY_AUDIT.md) for the changes, checks and remaining platform differences.
 
 ### First commands
 
@@ -117,7 +119,7 @@ The pathfinding core (`src/baritone/`) does not depend on the game at all and is
 
 ## Status
 
-The port covers Baritone's features and has been tested in game on 26.52: long trips, mining in the overworld and the nether, building schematics, farming, elytra flights, water bucket falls. Some things cannot be done the same way on Bedrock (for example the elytra terrain prediction from the world seed); they are listed in [docs/PARITY.md](docs/PARITY.md).
+The current build targets 26.60. The earlier 26.52 build was tested on long trips, mining in the overworld and the nether, building schematics, farming, elytra flights and water bucket falls. See [the update notes](docs/DEVELOPMENT.md#reverse-engineering-notes-2660) for the checks performed on 26.60. Some things cannot be done the same way on Bedrock (for example the elytra terrain prediction from the world seed); they are listed in [docs/PARITY.md](docs/PARITY.md).
 
 Found a bug? Please [open an issue](https://github.com/miked06/baritone-bedrock/issues/new/choose) with your `log.txt`.
 

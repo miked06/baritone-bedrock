@@ -6,6 +6,8 @@
 #include <cstdint>
 #include <format>
 #include <string>
+#include <mutex>
+#include <deque>
 
 #include "baritone/Settings.h"
 #include "core/Bot.h"
@@ -143,6 +145,25 @@ using MouseInputFn = bool(__fastcall*)(void*, void*, void*);
 MouseInputFn g_mouseInput = nullptr;
 using FeedFn = void(__fastcall*)(void* device, char button, char state, short x, short y, short dx, short dy,
                                  bool forceMotionless);
+FeedFn g_feed = nullptr;
+std::atomic<bool> g_captureSelection{false};
+std::mutex g_selectionMutex;
+std::deque<SelectionClick> g_selectionClicks;
+
+void __fastcall feedMouse(void* device, char button, char state, short x, short y, short dx, short dy, bool forceMotionless) {
+    hooks::Guard guard;
+    bool consumed = false;
+    safe::run("click selection input", [&] {
+        if (g_captureSelection && button != 0)
+            logger::debug("Selection mouse event: button {} state {}", static_cast<int>(button), static_cast<int>(state));
+        if (!g_captureSelection || (button != 1 && button != 2)) return;
+        std::lock_guard lock(g_selectionMutex);
+        if (!g_captureSelection) return;
+        if (g_selectionClicks.size() < 32) g_selectionClicks.push_back({button, state != 0});
+        consumed = true;
+    });
+    if (!consumed) g_feed(device, button, state, x, y, dx, dy, forceMotionless);
+}
 
 std::atomic<int> g_clickRequest{0};  // mouse button to click (2 = right), 0 = none
 int g_pressedButton = 0;             // currently held down by us
@@ -171,7 +192,7 @@ bool __fastcall mouseInput(void* a1, void* a2, void* a3) {
         if (++g_mouseCalls == 1)
             logger::debug("handleMouseInput on thread {} (update thread {})", GetCurrentThreadId(), g_updateThread);
         auto* device = reinterpret_cast<uint8_t*>(sigs::MouseDevice_instance.address);
-        auto feed = reinterpret_cast<FeedFn>(sigs::MouseDevice_feed.address);
+        auto feed = g_feed;  // bot-generated clicks bypass the physical selection capture
         if (!device || !feed) return;
         short x = *reinterpret_cast<int16_t*>(device + 4), y = *reinterpret_cast<int16_t*>(device + 6);
         if (g_pressedButton) {
@@ -199,8 +220,24 @@ void requestClick(int button) { g_clickRequest = button; }
 
 void autoUseWhileTargeting(int ms) { g_autoUseUntil = GetTickCount64() + ms; }
 
+void captureSelectionClicks(bool enabled) {
+    if (enabled) { g_clickRequest = 0; g_autoUseUntil = 0; }
+    std::lock_guard lock(g_selectionMutex);
+    g_selectionClicks.clear();
+    g_captureSelection = enabled;
+}
+
+std::optional<SelectionClick> pollSelectionClick() {
+    std::lock_guard lock(g_selectionMutex);
+    if (g_selectionClicks.empty()) return std::nullopt;
+    SelectionClick click = g_selectionClicks.front();
+    g_selectionClicks.pop_front();
+    return click;
+}
+
 bool install() {
     bool ok = true;
+    ok &= hooks::create("MouseDevice::feed", sigs::MouseDevice_feed.address, &feedMouse, &g_feed);
     ok &= hooks::create("GameCore::handleMouseInput", sigs::GameCore_handleMouseInput.address, &mouseInput,
                         &g_mouseInput);
     ok &= hooks::create("ItemStackNetManagerClient::handleItemStackResponse", sigs::ItemStackNet_handleResponse.address,

@@ -12,10 +12,10 @@ namespace sdk {
 
 namespace {
 
-constexpr std::ptrdiff_t kScreenContext_shaderColor = 0x30;  // Color*
-constexpr std::ptrdiff_t kScreenContext_tessellator = 0xB8;
-constexpr std::ptrdiff_t kLevelRenderer_player = 0x468;      // LevelRendererPlayer*
-constexpr std::ptrdiff_t kLevelRendererPlayer_origin = 0x660;
+constexpr std::ptrdiff_t kScreenContext_shaderColor = 0x38;  // Color* (0x30 is fog color)
+constexpr std::ptrdiff_t kScreenContext_tessellator = 0xB0;
+constexpr std::ptrdiff_t kLevelRenderer_player = 0x480;      // LevelRendererPlayer*
+constexpr std::ptrdiff_t kLevelRendererPlayer_origin = 0x658;
 
 // HashedString's hash: FNV offset/prime, multiply then xor (FNV-1, not FNV-1a).
 uint64_t hashedStringHash(const std::string& s) {
@@ -40,8 +40,9 @@ void Tessellator::vertex(float x, float y, float z) {
 }
 
 void Tessellator::color(const Color& c) {
-    using Fn = void(__fastcall*)(Tessellator*, const Color&);
-    sigs::Tessellator_color.as<Fn>()(this, c);
+    // 26.60: the remaining overload takes four scalars (alpha is the fifth argument).
+    using Fn = void(__fastcall*)(Tessellator*, float, float, float, float);
+    sigs::Tessellator_color.as<Fn>()(this, c.r, c.g, c.b, c.a);
 }
 
 Tessellator* ScreenContext::tessellator() const {

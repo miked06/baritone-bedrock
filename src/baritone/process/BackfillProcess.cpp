@@ -11,7 +11,7 @@ bool BackfillProcess::isActive() {
     Settings& s = Settings::get();
     if (!s.backfill || !baritone_.player().valid() || !baritone_.liveContext()) return false;
     if (s.allowParkour) {
-        baritone_.logDirect("backfill ne marche pas avec allowParkour : backfill desactive", true);
+        baritone_.logDirect("backfill is incompatible with allowParkour: backfill disabled", true);
         s.backfill = false;
         return false;
     }

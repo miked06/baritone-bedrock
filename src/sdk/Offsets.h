@@ -2,8 +2,8 @@
 #include <cstddef>
 #include <cstdint>
 
-// Member offsets and vtable indices of the game classes, for Minecraft Bedrock 26.52
-// (package 1.26.5203.0). They move with updates: keep them all here and re-verify them
+// Member offsets and vtable indices of the game classes, for Minecraft Bedrock 26.60
+// (package 1.26.6005.0). They move with updates: keep them all here and re-verify them
 // with `#debug` after every update.
 namespace offsets {
 
@@ -11,37 +11,43 @@ namespace offsets {
 inline constexpr std::ptrdiff_t WinMain_platform = 0x8;
 inline constexpr std::ptrdiff_t Platform_gameHolder = 0x118;
 inline constexpr std::ptrdiff_t GameHolder_minecraftGame = 0x48;
-// std::map<uint8_t, {void*, shared_ptr<ClientInstance>}>
-inline constexpr std::ptrdiff_t MinecraftGame_clientInstances = 0x970;
+// std::map<uint8_t, {void*, void*, shared_ptr<ClientInstance>}>
+inline constexpr std::ptrdiff_t MinecraftGame_clientInstances = 0x9D0;
 
-inline constexpr std::ptrdiff_t MinecraftGame_cursorGrabbed = 0x1E8;  // bool
+inline constexpr std::ptrdiff_t MinecraftGame_cursorGrabbed = 0x1F8;  // bool
 
-inline constexpr std::ptrdiff_t ClientInstance_minecraftGame = 0x1A8;
-inline constexpr std::size_t ClientInstance_vt_getRegion = 0x1E;
-inline constexpr std::size_t ClientInstance_vt_getLocalPlayer = 0x1F;
-inline constexpr std::ptrdiff_t ClientInstance_guiData = 0x650;
+inline constexpr std::ptrdiff_t ClientInstance_minecraftGame = 0x1C8;
+inline constexpr std::size_t ClientInstance_vt_getRegion = 0x1D;
+inline constexpr std::size_t ClientInstance_vt_getLocalPlayer = 0x1E;
+inline constexpr std::size_t ClientInstance_vt_requestLeaveGameAsync = 0xD;
+inline constexpr std::ptrdiff_t ClientInstance_guiData = 0x668;
 
 inline constexpr std::ptrdiff_t Actor_entityContext = 0x8;
-inline constexpr std::ptrdiff_t Actor_dimension = 0x1C8;  // std::shared_ptr<Dimension>
-inline constexpr std::ptrdiff_t Actor_stateVector = 0x218;
-inline constexpr std::ptrdiff_t Actor_aabbShape = 0x220;
-inline constexpr std::ptrdiff_t Actor_rotation = 0x228;
+inline constexpr std::ptrdiff_t Actor_dimension = 0x1F0;  // std::shared_ptr<Dimension>
+inline constexpr std::ptrdiff_t Actor_stateVector = 0x240;
+inline constexpr std::ptrdiff_t Actor_aabbShape = 0x248;
+inline constexpr std::ptrdiff_t Actor_rotation = 0x250;
 
-inline constexpr std::ptrdiff_t Player_supplies = 0x5B8;  // PlayerInventory*
-inline constexpr std::ptrdiff_t Player_gameMode = 0xAA0;
-inline constexpr std::ptrdiff_t Player_name = 0xBC0;  // std::string
+inline constexpr std::ptrdiff_t Player_supplies = 0x5E0;  // PlayerInventory*
+inline constexpr std::ptrdiff_t Player_gameMode = 0xAC8;
+inline constexpr std::ptrdiff_t Player_name = 0xBE8;  // std::string
+inline constexpr std::ptrdiff_t Player_containerManager = 0x5C8;  // shared_ptr<ContainerManagerModel>
+inline constexpr std::size_t Player_vt_sendNetworkPacket = 0xE4;
+inline constexpr std::size_t Player_vt_deleteContainerManager = 0xDC;
+inline constexpr std::ptrdiff_t LocalPlayer_containerCloseInfo = 0xEEC;  // {int8 type, bool close}
 
 inline constexpr std::ptrdiff_t PlayerInventory_selectedSlot = 0x10;
 inline constexpr std::ptrdiff_t PlayerInventory_inventory = 0xB8;
 inline constexpr std::size_t Inventory_vt_getItem = 7;
-inline constexpr std::size_t Inventory_vt_setItem = 0xC;
-inline constexpr std::ptrdiff_t MovementAbilities_flags = 0x4;  // bit 0: flying  // Container::setItem(int, ItemStack const&)
+inline constexpr std::size_t Inventory_vt_setItem = 0xC;  // Container::setItem(int, ItemStack const&)
+inline constexpr std::ptrdiff_t MovementAbilities_flags = 0x4;  // bit 0: flying
 inline constexpr std::size_t ItemStack_size = 0x98;       // vtable at +0, virtual destructor first
 
 // Server-authoritative inventory (ItemStackRequest), see sdk::sendInventoryMove
-inline constexpr std::ptrdiff_t Player_itemStackNetManager = 0xAB8;          // ItemStackNetManagerClient*
+inline constexpr std::ptrdiff_t Player_itemStackNetManager = 0xAE0;          // ItemStackNetManagerClient*
 inline constexpr std::ptrdiff_t ItemStackNetManager_enabled = 0x9;           // bool
-inline constexpr std::ptrdiff_t ItemStackNetManager_currentRequest = 0x60;   // unique_ptr<ItemStackRequestData>
+inline constexpr std::ptrdiff_t ItemStackNetManager_currentRequest = 0x68;   // unique_ptr<ItemStackRequestData>
+inline constexpr std::ptrdiff_t ItemStackNetManager_requestQueue = 0x70;
 inline constexpr std::ptrdiff_t ItemStack_userData = 0x10;     // CompoundTag* (Damage, ench...)
 inline constexpr std::ptrdiff_t Item_maxDamage = 0x150;        // short, Item vtable 0x24 getMaxDamage
 inline constexpr std::ptrdiff_t ItemStack_netIdVariant = 0x80;               // ItemStackNetIdVariant (0x18 bytes)
@@ -62,7 +68,7 @@ inline constexpr std::ptrdiff_t MobEffectInstance_amplifier = 0x20;
 inline constexpr std::size_t AttributeInstance_size = 0x88;
 inline constexpr std::ptrdiff_t AttributeInstance_attribute = 0x08;
 inline constexpr std::ptrdiff_t AttributeInstance_current = 0x74;
-inline constexpr std::ptrdiff_t Attribute_name = 0x10;  // Container+8 (ContainerType), 19 = hand
+inline constexpr std::ptrdiff_t Attribute_name = 0x10;
 inline constexpr uint8_t ContainerEnumName_Hotbar = 28;                      // network values
 inline constexpr uint8_t ContainerEnumName_Inventory = 29;
 
@@ -81,14 +87,14 @@ inline constexpr std::ptrdiff_t Item_namespacedId = 0x120;  // HashedString
 inline constexpr std::ptrdiff_t Dimension_name = 0x20;
 
 inline constexpr std::ptrdiff_t Level_levelData = 0x90;      // std::shared_ptr<LevelData>
-inline constexpr std::ptrdiff_t LevelData_levelName = 0x2A8;  // std::string
+inline constexpr std::ptrdiff_t LevelData_levelName = 0x2B0;  // std::string
 
 // std::vector<Actor*> Level::getRuntimeActorList() const (returned by hidden pointer)
 inline constexpr std::size_t Level_vt_getRuntimeActorList = 0x145;
 // HitResult* (what the crosshair points at), returned by Level vtable 0x14F getHitResult
-inline constexpr std::ptrdiff_t Level_hitResult = 0x1E8;
+inline constexpr std::ptrdiff_t Level_hitResult = 0x1F0;
 
-inline constexpr std::ptrdiff_t ItemActor_stack = 0x3B0;  // ItemStack of a dropped item entity
+inline constexpr std::ptrdiff_t ItemActor_stack = 0x3D8;  // ItemStack of a dropped item entity
 
 inline constexpr uint32_t ActorType_Player = 319;
 inline constexpr uint32_t ActorType_ItemEntity = 64;

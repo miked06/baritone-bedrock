@@ -105,14 +105,14 @@ public:
         return mem::callVirtual<bool, const BlockPos&, uint8_t, bool&>(this, 1, pos, static_cast<uint8_t>(face),
                                                                        hasDestroyedBlock);
     }
-    // 26.52: continueDestroyBlock(pos, face, Vec3 const& playerPos, bool& hasDestroyedBlock)
+    // Verified on 26.60: continueDestroyBlock(pos, face, Vec3 const& playerPos, bool& hasDestroyedBlock)
     bool continueDestroyBlock(const BlockPos& pos, Face face, const Vec3& playerPos, bool& hasDestroyedBlock) {
         return mem::callVirtual<bool, const BlockPos&, uint8_t, const Vec3&, bool&>(
             this, 3, pos, static_cast<uint8_t>(face), playerPos, hasDestroyedBlock);
     }
     void stopDestroyBlock(const BlockPos& pos) { mem::callVirtual<void, const BlockPos&>(this, 4, pos); }
     // Right click on a block face: places the held block, opens doors... (sends an
-    // ItemUseInventoryTransaction). 26.52: buildBlock(pos, face, bool offhand?, bool isSimTick);
+    // ItemUseInventoryTransaction). Verified on 26.60: buildBlock(pos, face, bool offhand?, bool isSimTick);
     // the transaction's trigger type is isSimTick + 1 (1 = player input). A wrong value makes
     // the integrated server drop the connection ("bat" error).
     bool buildBlock(const BlockPos& pos, Face face) {
@@ -229,7 +229,19 @@ public:
     MoveInputComponent* moveInput() { return tryGet<MoveInputComponent>(); }
 };
 
-class LocalPlayer : public Player {};
+class LocalPlayer : public Player {
+public:
+    void* containerManager() const { return mem::member<void*>(this, offsets::Player_containerManager); }
+    // Tick only. 26.60 validates main-inventory slots against the open screen.
+    void openInventory();
+    void closeInventory() {
+        // The game's own close sequence: request the UI close and dispose its manager.
+        // LocalPlayer::normalTick consumes these two bytes and resets them to {-9, false}.
+        mem::member<int8_t>(this, offsets::LocalPlayer_containerCloseInfo) = -1;
+        mem::member<bool>(this, offsets::LocalPlayer_containerCloseInfo + 1) = true;
+        mem::callVirtual<void>(this, offsets::Player_vt_deleteContainerManager);
+    }
+};
 
 // Frees memory allocated by the game (its operator delete / custom allocator).
 void gameFree(void* ptr);
@@ -293,6 +305,8 @@ public:
         return mem::callVirtual<LocalPlayer*>(this, offsets::ClientInstance_vt_getLocalPlayer);
     }
     GuiData* guiData() const { return mem::member<GuiData*>(this, offsets::ClientInstance_guiData); }
+    // 26.60 RVA 0x6593740: queues the game's own leave operation on its scheduler.
+    void requestLeaveGameAsync() { mem::callVirtual<void>(this, offsets::ClientInstance_vt_requestLeaveGameAsync); }
     void* minecraftGame() const { return mem::member<void*>(this, offsets::ClientInstance_minecraftGame); }
     // The game only reads movement keys while the cursor is grabbed (in game, window focused).
     bool& cursorGrabbedFlag() const { return mem::member<bool>(minecraftGame(), offsets::MinecraftGame_cursorGrabbed); }

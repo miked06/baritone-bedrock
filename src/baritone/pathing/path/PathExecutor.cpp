@@ -196,14 +196,14 @@ bool PathExecutor::onTick(ExecContext& ctx) {
     auto status = closestPathPos(ctx);
     if (possiblyOffPath(ctx, status, kMaxDistFromPath)) {
         if (++ticksAway_ > kMaxTicksAway) {
-            cancel("trop loin du chemin depuis trop longtemps");
+            cancel("too far from the path for too long");
             return false;
         }
     } else {
         ticksAway_ = 0;
     }
     if (possiblyOffPath(ctx, status, kMaxMaxDistFromPath)) {
-        cancel(std::format("trop loin du chemin ({:.1f} blocs)", status.first));
+        cancel(std::format("too far from the path ({:.1f} blocks)", status.first));
         return false;
     }
 
@@ -223,19 +223,19 @@ bool PathExecutor::onTick(ExecContext& ctx) {
         currentMovementOriginalCostEstimate_ = movement->getCost();
         for (int i = 1; i < Settings::get().costVerificationLookahead && pathPosition_ + i + 1 < path_->length(); ++i) {
             if (movements_[pathPosition_ + i]->calculateCost(ctx.calc) >= costs::COST_INF && canCancel) {
-                cancel("un mouvement futur est devenu impossible");
+                cancel("a future movement is no longer possible");
                 return true;
             }
         }
     }
     double currentCost = movement->recalculateCost(ctx.calc);
     if (currentCost >= costs::COST_INF && canCancel) {
-        cancel("le mouvement actuel est devenu impossible");
+        cancel("the current movement is no longer possible");
         return true;
     }
     if (!movement->calculatedWhileLoaded &&
         currentCost - currentMovementOriginalCostEstimate_ > Settings::get().maxCostIncrease && canCancel) {
-        cancel("le cout du mouvement a trop augmente");
+        cancel("movement cost increased too much");
         return true;
     }
     if (shouldPause(ctx)) {
@@ -245,7 +245,7 @@ bool PathExecutor::onTick(ExecContext& ctx) {
 
     MovementStatus movementStatus = movement->update(ctx);
     if (movementStatus == MovementStatus::Unreachable || movementStatus == MovementStatus::Failed) {
-        cancel(std::format("mouvement {} -> {} impossible", movement->src(), movement->dest()));
+        cancel(std::format("movement {} -> {} is not possible", movement->src(), movement->dest()));
         return true;
     }
     if (movementStatus == MovementStatus::Success) {
@@ -261,7 +261,7 @@ bool PathExecutor::onTick(ExecContext& ctx) {
     output_.setInput(Input::Sprint, sprintNextTick_);
     ticksOnCurrent_++;
     if (ticksOnCurrent_ > currentMovementOriginalCostEstimate_ + Settings::get().movementTimeoutTicks) {
-        cancel(std::format("le mouvement prend trop de temps ({} ticks, {:.0f} prevus)", ticksOnCurrent_,
+        cancel(std::format("movement is taking too long ({} ticks, {:.0f} expected)", ticksOnCurrent_,
                            currentMovementOriginalCostEstimate_));
         return true;
     }

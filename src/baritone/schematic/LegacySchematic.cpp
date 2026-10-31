@@ -319,17 +319,17 @@ DesiredBlock legacyBlock(int id, int data) {
 SchematicPtr parseLegacySchematic(const nbt::Tag& root) {
     auto num = [&](const char* key) {
         const nbt::Tag* t = root.get(key);
-        if (!t || !t->integer()) throw std::runtime_error(std::string("champ manquant : ") + key);
+        if (!t || !t->integer()) throw std::runtime_error(std::string("missing field: ") + key);
         return static_cast<int>(*t->integer()) & 0xFFFF;
     };
     int w = num("Width"), h = num("Height"), l = num("Length");
     const nbt::Tag* blocks = root.get("Blocks");
     const nbt::Tag* data = root.get("Data");
     const nbt::Tag* add = root.get("AddBlocks");
-    if (!blocks || !blocks->intArray() || !data || !data->intArray()) throw std::runtime_error("Blocks ou Data manquant");
+    if (!blocks || !blocks->intArray() || !data || !data->intArray()) throw std::runtime_error("Missing Blocks or Data");
     std::size_t total = static_cast<std::size_t>(w) * h * l;
     if (w == 0 || h == 0 || l == 0 || blocks->intArray()->size() < total || data->intArray()->size() < total) {
-        throw std::runtime_error("taille incoherente");
+        throw std::runtime_error("inconsistent size");
     }
     const auto& ids = *blocks->intArray();
     const auto& meta = *data->intArray();

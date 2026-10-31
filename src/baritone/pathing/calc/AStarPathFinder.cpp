@@ -159,7 +159,7 @@ PathCalculationResult AStarPathFinder::calculate(long primaryTimeoutMs, long fai
         if (cancelRequested_) return {PathResultType::Cancellation, nullptr};
         if (auto best = bestSoFar(numNodes)) return postProcess(*best, numNodes);
         return {PathResultType::Failure, nullptr,
-                std::format("{} noeuds, open set {}, bords de chunks {}", numNodes, openSet.empty() ? "vide" : "non vide",
+                std::format("{} nodes, open set {}, chunk borders {}", numNodes, openSet.empty() ? "empty" : "nonempty",
                             numEmptyChunk),
                 numNodes};
     } catch (const std::exception& e) {

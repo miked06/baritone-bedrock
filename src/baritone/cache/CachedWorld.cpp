@@ -61,7 +61,7 @@ private:
         return v;
     }
     void need(std::size_t n) const {
-        if (pos_ + n > data_.size()) throw std::runtime_error("fichier de cache tronque");
+        if (pos_ + n > data_.size()) throw std::runtime_error("truncated cache file");
     }
     const std::vector<uint8_t>& data_;
     std::size_t pos_ = 0;
@@ -84,21 +84,21 @@ void rleEncode(Writer& w, const std::vector<uint8_t>& bits) {
 
 void rleDecode(Reader& r, std::vector<uint8_t>& bits) {
     uint32_t size = r.u32();
-    if (size % 2) throw std::runtime_error("donnees RLE invalides");
+    if (size % 2) throw std::runtime_error("invalid RLE data");
     const uint8_t* p = r.bytes(size);
     std::size_t out = 0;
     for (uint32_t i = 0; i < size; i += 2) {
         uint8_t run = p[i], v = p[i + 1];
-        if (out + run > bits.size()) throw std::runtime_error("donnees RLE trop longues");
+        if (out + run > bits.size()) throw std::runtime_error("RLE data too long");
         std::memset(bits.data() + out, v, run);
         out += run;
     }
-    if (out != bits.size()) throw std::runtime_error("donnees RLE trop courtes");
+    if (out != bits.size()) throw std::runtime_error("RLE data too short");
 }
 
 std::vector<uint8_t> readAll(const std::filesystem::path& file) {
     std::ifstream f(file, std::ios::binary);
-    if (!f) throw std::runtime_error("lecture impossible");
+    if (!f) throw std::runtime_error("read failed");
     return {std::istreambuf_iterator<char>(f), std::istreambuf_iterator<char>()};
 }
 
@@ -156,9 +156,9 @@ void CachedRegion::write(const std::filesystem::path& file, const std::vector<st
     tmp += ".tmp";
     {
         std::ofstream f(tmp, std::ios::binary | std::ios::trunc);
-        if (!f) throw std::runtime_error("ecriture impossible");
+        if (!f) throw std::runtime_error("write failed");
         f.write(reinterpret_cast<const char*>(w.out.data()), static_cast<std::streamsize>(w.out.size()));
-        if (!f) throw std::runtime_error("ecriture impossible");
+        if (!f) throw std::runtime_error("write failed");
     }
     std::filesystem::rename(tmp, file);  // replaces the old file
 }
@@ -167,13 +167,13 @@ std::shared_ptr<CachedRegion> CachedRegion::read(const std::filesystem::path& fi
                                                  int height) {
     std::vector<uint8_t> data = readAll(file);
     Reader r(data);
-    if (std::memcmp(r.bytes(4), kMagic, 4) != 0 || r.u32() != kVersion) throw std::runtime_error("format inconnu");
+    if (std::memcmp(r.bytes(4), kMagic, 4) != 0 || r.u32() != kVersion) throw std::runtime_error("unknown format");
     auto region = std::make_shared<CachedRegion>(rx, rz);
     if (r.i32() != minY || r.i32() != height) return region;  // other world height: start over
     uint32_t count = r.u32();
     for (uint32_t i = 0; i < count; ++i) {
         uint16_t idx = r.u16();
-        if (idx >= kSize * kSize) throw std::runtime_error("index de chunk invalide");
+        if (idx >= kSize * kSize) throw std::runtime_error("invalid chunk index");
         int cx = rx * kSize + (idx >> 5), cz = rz * kSize + (idx & 31);
         auto chunk = std::make_shared<CachedChunk>(cx, cz, minY, height);
         chunk->setTimestamp(r.i64());
@@ -277,7 +277,13 @@ void CachedWorld::writeJobs(const std::vector<Job>& jobs) const {
         try {
             CachedRegion::write(job.file, job.chunks, minY_, height_);
         } catch (const std::exception&) {
-            // disk full / file locked: the region stays in memory and is retried next time it changes
+            // Failed writes must stay dirty so pruning cannot discard the only
+            // current copy and the next save retries even without new edits.
+            if (auto position = parseRegionName(job.file.filename().string())) {
+                std::unique_lock lock(mutex_);
+                auto it = regions_.find(key(position->first, position->second));
+                if (it != regions_.end()) it->second->setDirty(true);
+            }
         }
     }
 }
@@ -302,6 +308,22 @@ void CachedWorld::prune(int playerCx, int playerCz, int distance) {
         const auto& r = entry.second;
         if (r->dirty() || std::max(std::abs(r->rx() - prx), std::abs(r->rz() - prz)) <= distance) return false;
         onDisk_.insert(entry.first);  // saved: reload from disk when needed
+        return true;
+    });
+}
+
+void CachedWorld::pruneOutside(const BlockPos& center, int distanceBlocks) {
+    if (saver_.joinable()) saver_.join();
+    const double radius = std::max(0, distanceBlocks);
+    std::unique_lock lock(mutex_);
+    std::erase_if(regions_, [&](const auto& entry) {
+        const auto& region = entry.second;
+        if (region->dirty()) return false;
+        const double x0 = double(region->rx()) * 512, z0 = double(region->rz()) * 512;
+        const double dx = center.x - std::clamp(double(center.x), x0, x0 + 511);
+        const double dz = center.z - std::clamp(double(center.z), z0, z0 + 511);
+        if (dx * dx + dz * dz <= radius * radius) return false;
+        onDisk_.insert(entry.first);
         return true;
     });
 }

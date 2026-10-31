@@ -10,7 +10,7 @@
 
 namespace baritone {
 
-DesiredBlock StaticSchematic::desired(int x, int y, int z, const std::string&) const {
+DesiredBlock StaticSchematic::desired(int x, int y, int z, const BlockProps&) const {
     std::size_t i = (static_cast<std::size_t>(x) * size_.y + y) * size_.z + z;
     if (i >= indices_.size()) return DesiredBlock::any();
     int idx = indices_[i];
@@ -23,20 +23,20 @@ SchematicPtr loadMcStructure(const std::string& path) {
     const nbt::Tag* sizeTag = root.get("size");
     const nbt::Tag* structure = root.get("structure");
     if (!sizeTag || !sizeTag->list() || sizeTag->list()->size() != 3 || !structure) {
-        throw std::runtime_error("Fichier .mcstructure invalide (size/structure manquant)");
+        throw std::runtime_error("Invalid .mcstructure file (missing size/structure)");
     }
     const auto& sl = *sizeTag->list();
     BlockPos size{static_cast<int>(sl[0].integer().value_or(0)), static_cast<int>(sl[1].integer().value_or(0)),
                   static_cast<int>(sl[2].integer().value_or(0))};
     if (size.x <= 0 || size.y <= 0 || size.z <= 0 || static_cast<int64_t>(size.x) * size.y * size.z > 64 * 1024 * 1024) {
-        throw std::runtime_error("Taille de structure invalide");
+        throw std::runtime_error("Invalid schematic size");
     }
 
     // palette.default.block_palette: [{name, states, version}]
     const nbt::Tag* palette = structure->get("palette");
     const nbt::Tag* def = palette ? palette->get("default") : nullptr;
     const nbt::Tag* blockPalette = def ? def->get("block_palette") : nullptr;
-    if (!blockPalette || !blockPalette->list()) throw std::runtime_error("Palette manquante");
+    if (!blockPalette || !blockPalette->list()) throw std::runtime_error("Missing palette");
     std::vector<DesiredBlock> pal;
     for (const nbt::Tag& entry : *blockPalette->list()) {
         const nbt::Tag* name = entry.get("name");
@@ -59,7 +59,7 @@ SchematicPtr loadMcStructure(const std::string& path) {
 
     // block_indices: two layers (blocks, then waterlogging); we use the first one
     const nbt::Tag* indicesTag = structure->get("block_indices");
-    if (!indicesTag || !indicesTag->list() || indicesTag->list()->empty()) throw std::runtime_error("block_indices manquant");
+    if (!indicesTag || !indicesTag->list() || indicesTag->list()->empty()) throw std::runtime_error("Missing block_indices");
     const nbt::Tag& layer0 = (*indicesTag->list())[0];
     std::vector<int> indices;
     if (auto* arr = layer0.intArray()) {
@@ -68,7 +68,7 @@ SchematicPtr loadMcStructure(const std::string& path) {
         for (const nbt::Tag& v : *list) indices.push_back(static_cast<int>(v.integer().value_or(-1)));
     }
     if (indices.size() != static_cast<std::size_t>(size.x) * size.y * size.z) {
-        throw std::runtime_error("Nombre d'indices incoherent");
+        throw std::runtime_error("Inconsistent index count");
     }
     return std::make_shared<StaticSchematic>(size, std::move(pal), std::move(indices));
 }
@@ -164,7 +164,7 @@ DesiredBlock mirrorBlock(DesiredBlock block, int mirror) {
     }, false);
 }
 
-DesiredBlock RotatedSchematic::desired(int x, int y, int z, const std::string& current) const {
+DesiredBlock RotatedSchematic::desired(int x, int y, int z, const BlockProps& current) const {
     // Java: the position turned back by the inverse rotation, the state turned forward
     BlockPos s = size();
     int inv = (4 - turns_) % 4;
@@ -178,7 +178,7 @@ DesiredBlock RotatedSchematic::desired(int x, int y, int z, const std::string& c
     return rotateBlock(inner_->desired(ix, y, iz, current), turns_);
 }
 
-DesiredBlock MirroredSchematic::desired(int x, int y, int z, const std::string& current) const {
+DesiredBlock MirroredSchematic::desired(int x, int y, int z, const BlockProps& current) const {
     BlockPos s = size();
     int mx = mirror_ == 2 ? s.x - x - 1 : x;
     int mz = mirror_ == 1 ? s.z - z - 1 : z;

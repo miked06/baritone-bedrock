@@ -67,7 +67,7 @@ bool collides(BlockStateInterface& bsi, const Vec3d& pos) {
 }
 
 std::optional<std::vector<Vec3d>> simulate(BlockStateInterface& bsi, FlightState s, const Rotation& look, int ticks,
-                                           int boostTicks) {
+                                           int boostTicks, std::vector<CollisionSample>* debug) {
     std::vector<Vec3d> out;
     out.reserve(ticks);
     for (int t = 0; t < ticks; ++t) {
@@ -76,7 +76,10 @@ std::optional<std::vector<Vec3d>> simulate(BlockStateInterface& bsi, FlightState
         Vec3d delta = next.pos - s.pos;
         int parts = std::max(1, static_cast<int>(std::ceil(std::sqrt(delta.lengthSq()) / 0.5)));
         for (int i = 1; i <= parts; ++i) {
-            if (collides(bsi, s.pos + delta * (static_cast<double>(i) / parts))) return std::nullopt;
+            Vec3d tested = s.pos + delta * (static_cast<double>(i) / parts);
+            bool collision = collides(bsi, tested);
+            if (debug && debug->size() < 256) debug->push_back({tested, collision});
+            if (collision) return std::nullopt;
         }
         s = next;
         out.push_back(s.pos);

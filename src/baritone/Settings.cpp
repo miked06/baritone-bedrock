@@ -86,7 +86,7 @@ void parseSettingValue(const SettingInfo& info, std::string_view text) {
             if constexpr (std::is_same_v<T, bool>) {
                 if (iequals(text, "true") || text == "1" || iequals(text, "on")) *p = true;
                 else if (iequals(text, "false") || text == "0" || iequals(text, "off")) *p = false;
-                else throw std::invalid_argument(std::format("'{}' n'est pas true/false", text));
+                else throw std::invalid_argument(std::format("'{}' is not true/false", text));
             } else if constexpr (std::is_same_v<T, std::string>) {
                 *p = std::string(text);
             } else if constexpr (std::is_same_v<T, StringList>) {
@@ -97,19 +97,22 @@ void parseSettingValue(const SettingInfo& info, std::string_view text) {
                 }
                 *p = std::move(list);
             } else if constexpr (std::is_same_v<T, Vec3i> || std::is_same_v<T, Color>) {
-                int v[3];
+                int v[3]{};
                 int n = 0;
                 for (auto part : std::views::split(text, ',')) {
                     std::string_view s(part.begin(), part.end());
-                    if (n == 3 || std::from_chars(s.data(), s.data() + s.size(), v[n]).ptr != s.data() + s.size() || s.empty()) {
-                        throw std::invalid_argument(std::format("'{}' n'est pas de la forme x,y,z", text));
+                    if (n == 3 || s.empty()) {
+                        throw std::invalid_argument(std::format("'{}' must be in x,y,z format", text));
                     }
+                    const auto [end, error] = std::from_chars(s.data(), s.data() + s.size(), v[n]);
+                    if (error != std::errc{} || end != s.data() + s.size())
+                        throw std::invalid_argument(std::format("'{}' must contain three valid integers", text));
                     ++n;
                 }
-                if (n != 3) throw std::invalid_argument(std::format("'{}' n'est pas de la forme x,y,z", text));
+                if (n != 3) throw std::invalid_argument(std::format("'{}' must be in x,y,z format", text));
                 if constexpr (std::is_same_v<T, Color>) {
                     for (int c : v)
-                        if (c < 0 || c > 255) throw std::invalid_argument(std::format("'{}' : couleur r,g,b de 0 a 255", text));
+                        if (c < 0 || c > 255) throw std::invalid_argument(std::format("'{}': color must be r,g,b with values from 0 to 255", text));
                     *p = Color{v[0], v[1], v[2]};
                 } else {
                     *p = Vec3i{v[0], v[1], v[2]};
@@ -125,7 +128,7 @@ void parseSettingValue(const SettingInfo& info, std::string_view text) {
                 T value{};
                 auto [ptr, ec] = std::from_chars(text.data(), text.data() + text.size(), value);
                 if (ec != std::errc{} || ptr != text.data() + text.size()) {
-                    throw std::invalid_argument(std::format("'{}' n'est pas un nombre valide", text));
+                    throw std::invalid_argument(std::format("'{}' is not a valid number", text));
                 }
                 *p = value;
             }
@@ -137,17 +140,22 @@ bool isModified(const SettingInfo& info) {
     return settingValueToString(info.ptr) != settingValueToString(info.defaultValue);
 }
 
-void saveSettings(const std::string& path) {
+bool saveSettings(const std::string& path) {
     std::ofstream out(path, std::ios::trunc);
-    if (!out) return;
+    if (!out) return false;
     for (const SettingInfo& info : settingsTable()) {
         if (isModified(info)) out << info.name << ' ' << settingValueToString(info.ptr) << '\n';
     }
+    out.flush();
+    return out.good();
 }
 
-int loadSettings(const std::string& path) {
+int loadSettings(const std::string& path, bool reset) {
     std::ifstream in(path);
-    if (!in) return 0;
+    if (!in) return -1;
+    if (reset) {
+        for (const SettingInfo& setting : settingsTable()) resetSetting(setting);
+    }
     int count = 0;
     std::string line;
     while (std::getline(in, line)) {

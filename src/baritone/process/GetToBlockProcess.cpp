@@ -81,12 +81,12 @@ bool GetToBlockProcess::rightClick() {
         }
         if (clicked_ && arrivalTickCount_ >= 5) return true;  // the screen had the time to open
         if (arrivalTickCount_++ > 20) {
-            baritone_.logDirect("Clic droit : delai depasse", true);
+            baritone_.logDirect("Right click timed out", true);
             return true;
         }
         return false;  // trying to right click, next tick or so
     }
-    baritone_.logDirect("Arrive mais impossible d'ouvrir en clic droit", true);
+    baritone_.logDirect("Arrived but could not open with right click", true);
     return true;
 }
 
@@ -133,7 +133,7 @@ std::optional<PathingCommand> GetToBlockProcess::onTick(bool calcFailed, bool is
             return PathingCommand{std::make_shared<GoalRunAway>(1, std::nullopt, std::vector<BlockPos>{start_}, true),
                                   PathingCommandType::ForceRevalidateGoalAndPath};
         }
-        baritone_.logDirect("Aucun " + filter_->toString() + " connu, #goto annule", true);
+        baritone_.logDirect("No known " + filter_->toString() + " found; #goto cancelled", true);
         if (isSafeToCancel) onLostControl();
         return PathingCommand{nullptr, PathingCommandType::CancelAndSetGoal};
     }
@@ -142,11 +142,11 @@ std::optional<PathingCommand> GetToBlockProcess::onTick(bool calcFailed, bool is
     GoalPtr goal = std::make_shared<GoalComposite>(std::move(goals));
     if (calcFailed) {
         if (Settings::get().blacklistClosestOnFailure) {
-            baritone_.logDirect("Pas de chemin vers " + filter_->toString() + ", le plus proche est ignore", true);
+            baritone_.logDirect("No path to " + filter_->toString() + "; nearest matching block blacklisted", true);
             blacklistClosest();
             return onTick(false, isSafeToCancel);
         }
-        baritone_.logDirect("Pas de chemin vers " + filter_->toString() + ", #goto annule", true);
+        baritone_.logDirect("No path to " + filter_->toString() + "; #goto cancelled", true);
         if (isSafeToCancel) onLostControl();
         return PathingCommand{goal, PathingCommandType::CancelAndSetGoal};
     }
@@ -158,7 +158,7 @@ std::optional<PathingCommand> GetToBlockProcess::onTick(bool calcFailed, bool is
         if (rightClickOnArrival()) {
             if (!rightClick()) return PathingCommand{nullptr, PathingCommandType::RequestPause};
         }
-        baritone_.logDirect("Arrive a " + filter_->toString(), false);
+        baritone_.logDirect("Arrived at " + filter_->toString(), false);
         onLostControl();
         return PathingCommand{nullptr, PathingCommandType::CancelAndSetGoal};
     }
@@ -166,7 +166,7 @@ std::optional<PathingCommand> GetToBlockProcess::onTick(bool calcFailed, bool is
 }
 
 std::string GetToBlockProcess::displayName() const {
-    return "Aller a " + (filter_ ? filter_->toString() : std::string());
+    return "Going to " + (filter_ ? filter_->toString() : std::string());
 }
 
 }  // namespace baritone

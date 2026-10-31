@@ -10,11 +10,16 @@
 #include <vector>
 
 #include "TestWorld.h"
+#include "TestPlayer.h"
 #include "baritone/Settings.h"
+#include "baritone/Baritone.h"
+#include "baritone/selection/ClickSelection.h"
 #include "baritone/behavior/InventoryBehavior.h"
 #include "baritone/pathing/calc/AStarPathFinder.h"
 #include "baritone/pathing/goals/Goal.h"
 #include "baritone/cache/CachedWorld.h"
+#include "baritone/cache/CachedMesh.h"
+#include "baritone/cache/ChunkPackerQueue.h"
 #include "baritone/cache/WorldScanner.h"
 #include "baritone/elytra/ElytraPathFinder.h"
 #include "baritone/elytra/ElytraPhysics.h"
@@ -553,6 +558,8 @@ TEST(selection_schematics) {
     CHECK(shell.desired(1, 1, 1, "").kind == DesiredBlock::Kind::Any);
     ReplaceSchematic replace({1, 1, 1}, {"minecraft:dirt"}, DesiredBlock::block("minecraft:stone"));
     CHECK(replace.desired(0, 0, 0, "minecraft:dirt").kind == DesiredBlock::Kind::Block);
+    CHECK(replace.desired(0, 0, 0, "minecraft:air").kind == DesiredBlock::Kind::Block);
+    replace.reset();
     CHECK(replace.desired(0, 0, 0, "minecraft:sand").kind == DesiredBlock::Kind::Any);
     GoalAdjacent adj({5, 5, 5});
     CHECK(!adj.isInGoal(5, 5, 5));  // standing in the spot to fill
@@ -611,6 +618,55 @@ StateId diamondOre() {
 std::shared_ptr<CachedWorld> makeCache(const std::filesystem::path& dir) {
     const Blocks& b = Blocks::get();
     return std::make_shared<CachedWorld>(dir, -64, 384, std::array<StateId, 4>{kAir, b.water, b.lava, b.stone});
+}
+
+TEST(chunk_packer_queue_deduplicates_limits_and_keeps_latest_snapshot) {
+    ChunkPackerQueue queue;
+    queue.setLimit(2);
+    auto a = std::make_shared<ChunkData>(0, 0, -64, 384);
+    auto b = std::make_shared<ChunkData>(1, 0, -64, 384);
+    auto updatedA = std::make_shared<ChunkData>(0, 0, -64, 384);
+    CHECK(queue.push(a));
+    CHECK(queue.push(b));
+    CHECK(queue.push(updatedA));  // deduplicate even when full
+    CHECK(queue.size() == 2);
+    CHECK(!queue.push(std::make_shared<ChunkData>(2, 0, -64, 384)));
+    CHECK(queue.take() == updatedA);
+    CHECK(queue.take() == b);
+    CHECK(!queue.take());
+    queue.push(a);
+    queue.push(b);
+    queue.setLimit(1);
+    CHECK(queue.size() == 1 && queue.take() == b);
+    queue.setLimit(0);
+    CHECK(!queue.push(a) && queue.size() == 0);
+}
+
+TEST(flight_cache_culling_preserves_files_and_unsaved_regions) {
+    TempDir tmp;
+    auto cache = makeCache(tmp.path);
+    auto near = std::make_shared<CachedChunk>(0, 0, -64, 384);
+    auto far = std::make_shared<CachedChunk>(64, 0, -64, 384);
+    far->setType(0, 1, 0, PathingBlockType::Water);
+    cache->put(near);
+    cache->put(far);
+    CHECK(cache->loadedRegions() == 2);
+    cache->pruneOutside({0, 1, 0}, 32);
+    CHECK(cache->loadedRegions() == 2);  // dirty regions stay in memory
+    cache->saveNow();
+    cache->pruneOutside({0, 1, 0}, 32);
+    CHECK(cache->loadedRegions() == 1);
+    CHECK(cache->chunk(64, 0)->type(0, 1, 0) == PathingBlockType::Water);
+    // Force a write failure with a directory where the region file should be.
+    std::filesystem::remove(tmp.path / "r.2.0.bbr");
+    std::filesystem::create_directory(tmp.path / "r.2.0.bbr");
+    auto changed = std::make_shared<CachedChunk>(*far);
+    changed->setType(0, 1, 0, PathingBlockType::Avoid);
+    cache->put(changed);
+    cache->saveNow();
+    cache->pruneOutside({0, 1, 0}, 32);
+    CHECK(cache->loadedRegions() == 2);
+    CHECK(cache->chunk(64, 0)->type(0, 1, 0) == PathingBlockType::Avoid);
 }
 
 TEST(cache_pack_and_disk_roundtrip) {
@@ -687,6 +743,49 @@ TEST(search_world_uses_cache) {
     CHECK_MSG(found.size() == 2, std::format("{} found", found.size()));
     CHECK(found[0] == (BlockPos{2, 5, 2}));
     CHECK(found[1] == (BlockPos{50, 5, -40}));
+}
+
+TEST(search_world_cache_threshold_and_stale_positions) {
+    SettingsGuard guard;
+    TempDir tmp;
+    auto cache = makeCache(tmp.path);
+    TestWorld world(1);
+    world.set(2, 1, 2, diamondOre());
+    cache->put(CachedChunk::pack(*world.snapshot()->chunk(0, 0), -64, 384, 0));
+    world.set(2, 1, 2, kAir);  // stale cached location: must be rejected
+    world.set(3, 1, 3, diamondOre());  // discovered since last packing
+    world.setCache(cache);
+    Settings::get().extendCacheOnThreshold = false;
+    CHECK(searchWorld(*world.snapshot(), BlockFilter({"diamond_ore"}), {0, 1, 0}, 10, 1).empty());
+    Settings::get().extendCacheOnThreshold = true;
+    auto found = searchWorld(*world.snapshot(), BlockFilter({"diamond_ore"}), {0, 1, 0}, 10, 1);
+    CHECK(found == std::vector<BlockPos>({{3, 1, 3}}));
+    CHECK(searchWorld(*world.snapshot(), BlockFilter({"diamond_ore"}), {0, 1, 0}, 0, 1).empty());
+}
+
+TEST(cached_mesh_exposes_surfaces_and_respects_loaded_chunks_and_budget) {
+    TempDir tmp;
+    auto cache = makeCache(tmp.path);
+    auto chunk = std::make_shared<CachedChunk>(0, 0, -64, 384);
+    chunk->setType(0, 1, 0, PathingBlockType::Solid);
+    cache->put(chunk);
+    TestWorld empty(0);
+    CHECK(buildCachedMesh(*cache, *empty.snapshot(), {0, 1, 0}, 0).size() == 6);
+    auto adjacent = std::make_shared<CachedChunk>(0, 0, -64, 384);
+    adjacent->setType(0, 1, 0, PathingBlockType::Solid);
+    adjacent->setType(1, 1, 0, PathingBlockType::Solid);
+    cache->put(adjacent);
+    CHECK(buildCachedMesh(*cache, *empty.snapshot(), {0, 1, 0}, 0).size() == 10);
+    CHECK(buildCachedMesh(*cache, *empty.snapshot(), {0, 1, 0}, 0, 3).size() == 3);
+    TestWorld loaded(1);
+    CHECK(buildCachedMesh(*cache, *loaded.snapshot(), {0, 1, 0}, 0).empty());
+    auto boundary = std::make_shared<CachedChunk>(0, 0, -64, 384);
+    boundary->setType(15, 1, 0, PathingBlockType::Solid);
+    auto neighbor = std::make_shared<CachedChunk>(1, 0, -64, 384);
+    neighbor->setType(0, 1, 0, PathingBlockType::Solid);
+    cache->put(boundary);
+    cache->put(neighbor);
+    CHECK(buildCachedMesh(*cache, *empty.snapshot(), {15, 1, 0}, 1).size() == 10);
 }
 
 TEST(elytra_physics) {
@@ -853,6 +952,198 @@ TEST(toolset_break_speed) {
     CHECK(InventoryBehavior::materialCost(pickaxe) == 4);
     CHECK(InventoryBehavior::materialCost(HotbarStack{"minecraft:wooden_pickaxe", 1}) == 0);
     CHECK(InventoryBehavior::materialCost(HotbarStack{"minecraft:stick", 1}) == -1);
+}
+
+TEST(manual_tool_path_cost_and_snapshot) {
+    SettingsGuard guard;
+    test::TestPlayer player;
+    player.inventory[1] = {"minecraft:diamond_pickaxe", 1, false, Tool::Pickaxe, 4, 8.0f};
+    InventoryBehavior inventory(player);
+    const auto& stone = BlockRegistry::get().props(Blocks::get().stone);
+    Settings::get().autoTool = false;
+    auto manual = inventory.abilities();
+    Settings::get().autoTool = true;
+    auto automatic = inventory.abilities();
+    CHECK(automatic.breakSpeed(stone) > manual.breakSpeed(stone) * 20);
+    // A calculation keeps the original held item even after the real player switches.
+    player.selected = 1;
+    CHECK(manual.breakSpeed(stone) == InventoryBehavior::breakSpeed({}, stone));
+    Settings::get().autoTool = false;
+    CHECK(inventory.abilities().breakSpeed(stone) == automatic.breakSpeed(stone));
+}
+
+TEST(inventory_retrieves_enchanted_tool_and_preserves_worn_tool) {
+    SettingsGuard guard;
+    Settings::get().allowInventory = true;
+    Settings::get().allowWaterBucketFall = false;
+    Settings::get().itemSaver = true;
+    test::TestPlayer player;
+    player.inventory[0] = {"minecraft:iron_pickaxe", 1, false, Tool::Pickaxe, 3, 6.0f};
+    player.inventory[9] = {"minecraft:wooden_pickaxe", 1, false, Tool::Pickaxe, 1, 2.0f};
+    player.inventory[9].efficiency = 5;
+    player.inventory[10] = {"minecraft:netherite_pickaxe", 1, false, Tool::Pickaxe, 5, 9.0f};
+    player.inventory[10].efficiency = 5;
+    player.inventory[10].maxDamage = 2031;
+    player.inventory[10].damage = 2030;
+    InventoryBehavior inventory(player);
+    inventory.setStationaryCheck([] { return true; });
+    inventory.tick();
+    CHECK(player.lastSwap == std::make_optional(std::pair{9, 0}));
+    CHECK(player.inventory[10].damage == 2030);
+}
+
+TEST(depth_strider_water_cost) {
+    TestWorld world(1);
+    test::TestPlayer player;
+    InventoryBehavior inventory(player);
+    double previous = costs::WALK_ONE_IN_WATER_COST;
+    for (int level = 0; level <= 3; ++level) {
+        player.equipment[3].depthStrider = level;
+        CalculationContext context(world.snapshot(), inventory.abilities(), true);
+        CHECK(context.waterWalkSpeed <= previous);
+        CHECK(context.waterWalkSpeed >= costs::WALK_ONE_BLOCK_COST);
+        previous = context.waterWalkSpeed;
+    }
+    CHECK(std::abs(previous - costs::WALK_ONE_BLOCK_COST) < 1e-9);
+}
+
+TEST(block_state_selectors_scan_only_matching_states) {
+    TestWorld world(1);
+    BlockProps log;
+    log.name = "minecraft:oak_log";
+    log.states = {{"pillar_axis", "y"}};
+    auto y = BlockRegistry::get().add(log);
+    log.states = {{"pillar_axis", "x"}};
+    auto x = BlockRegistry::get().add(log);
+    world.set(1, 1, 0, y);
+    world.set(2, 1, 0, x);
+    auto found = scanLoadedChunks(*world.snapshot(), BlockFilter({"oak_log[pillar_axis=y]"}), {0, 1, 0}, 10, 1);
+    CHECK(found == std::vector<BlockPos>({{1, 1, 0}}));
+    CHECK(scanLoadedChunks(*world.snapshot(), BlockFilter({"oak_log"}), {0, 1, 0}, 10, 1).size() == 2);
+    CHECK(scanLoadedChunks(*world.snapshot(), BlockFilter({"oak_log[pillar_axis=z]"}), {0, 1, 0}, 10, 1).empty());
+    CHECK(BlockSelector::parse("oak_door[open_bit=true]").states.front().second == "1");
+    for (const std::string input : {"", "oak_log[", "oak_log[axis]", "oak_log[axis=]", "oak_log[axis=x,axis=y]", "oak_log[axis=x,]"}) {
+        bool rejected = false;
+        try { BlockSelector::parse(input); } catch (const std::invalid_argument&) { rejected = true; }
+        CHECK_MSG(rejected, input);
+    }
+}
+
+TEST(replace_state_mask_survives_breaking_and_resets_through_wrappers) {
+    auto replace = std::make_shared<ReplaceSchematic>(BlockPos{1, 1, 1},
+        std::unordered_set<std::string>{"oak_log[pillar_axis=y]"}, DesiredBlock::block("minecraft:stone"));
+    auto mirrored = std::make_shared<MirroredSchematic>(replace, 1);
+    auto rotated = std::make_shared<RotatedSchematic>(mirrored, 1);
+    auto masked = std::make_shared<MaskSchematic>(rotated, [](int, int, int) { return true; });
+    CompositeSchematic composite({1, 1, 1}, {{{0, 0, 0}, masked}});
+    BlockProps current;
+    current.name = "minecraft:oak_log";
+    current.states = {{"pillar_axis", "y"}};
+    CHECK(composite.desired(0, 0, 0, current).name == "minecraft:stone");
+    current.name = "minecraft:air";
+    current.states.clear();
+    CHECK(composite.desired(0, 0, 0, current).name == "minecraft:stone");
+    composite.reset();
+    CHECK(composite.desired(0, 0, 0, current).kind == DesiredBlock::Kind::Any);
+    composite.reset();
+    current.name = "minecraft:oak_log";
+    current.states = {{"pillar_axis", "x"}};
+    CHECK(composite.desired(0, 0, 0, current).kind == DesiredBlock::Kind::Any);
+}
+
+TEST(settings_profiles_missing_file_preserves_current_values) {
+    SettingsGuard guard;
+    TempDir tmp;
+    std::filesystem::create_directories(tmp.path);
+    auto file = tmp.path / "settings.txt";
+    Settings::get().allowBreak = false;
+    CHECK(saveSettings(file.string()));
+    Settings::get().allowBreak = true;
+    CHECK(loadSettings(file.string(), true) >= 1);
+    CHECK(!Settings::get().allowBreak);
+    std::filesystem::remove(file);
+    CHECK(loadSettings(file.string(), true) == -1);
+    CHECK(!Settings::get().allowBreak);
+    const auto* color = findSetting("colorCurrentPath");
+    const auto old = settingValueToString(color->ptr);
+    bool rejected = false;
+    try { parseSettingValue(*color, "99999999999999999,0,0"); }
+    catch (const std::invalid_argument&) { rejected = true; }
+    CHECK(rejected);
+    CHECK(settingValueToString(color->ptr) == old);
+}
+
+TEST(click_selection_goal_above_drag_miss_and_cancel) {
+    ClickSelection click;
+    BlockPos a{1, 2, 3}, b{4, 5, 6};
+    click.start();
+    CHECK(!click.event(1, true, a));
+    auto goal = click.event(1, false, a);
+    CHECK(goal && goal->kind == ClickSelection::Result::Goal && goal->first == a);
+    CHECK(!click.active());
+    click.start();
+    click.event(2, true, a);
+    goal = click.event(2, false, a);
+    CHECK(goal && goal->kind == ClickSelection::Result::Goal && goal->first == a.above());
+    click.start();
+    click.event(1, true, a);
+    CHECK(click.dragStart() == a);
+    auto box = click.event(1, false, b);
+    CHECK(box && box->kind == ClickSelection::Result::Box && box->first == a && box->second == b);
+    click.start();
+    click.event(1, true, a);
+    auto miss = click.event(1, false, std::nullopt);
+    CHECK(miss && miss->kind == ClickSelection::Result::Miss && !click.active());
+    click.start();
+    click.event(1, true, a);
+    click.cancel();
+    CHECK(!click.event(1, false, b));
+    CHECK(!click.active() && !click.dragStart());
+}
+
+TEST(disconnect_only_once_on_arrival_when_enabled) {
+    SettingsGuard guard;
+    TestWorld world(1);
+    world.floor(0, Blocks::get().stone);
+    for (bool enabled : {false, true}) {
+        Settings::get().disconnectOnArrival = enabled;
+        test::TestPlayer player;
+        Baritone bot(player, [](const std::string&, bool) {});
+        bot.customGoal().setGoalAndPath(std::make_shared<GoalBlock>(0, 1, 0));
+        for (int tick = 0; tick < 10; ++tick) bot.tick(world.snapshot());
+        CHECK(player.disconnectRequests == (enabled ? 1 : 0));
+    }
+}
+
+TEST(elytra_allocator_modes_keep_the_same_obstacle_avoiding_path) {
+    TestWorld world(1);
+    world.fill(0, 0, -5, 0, 12, 5, Blocks::get().stone);
+    std::vector<BlockPos> previous;
+    for (bool custom : {false, true}) {
+        elytra::ElytraPathFinder::Options options;
+        options.customAllocator = custom;
+        options.clearance = 1;
+        elytra::FlightPathResult result;
+        {
+            elytra::ElytraPathFinder finder(world.snapshot(), options);
+            result = finder.calculate({-10, 5, 0}, {10, 5, 0}, 1, 2000);
+        }
+        CHECK(result.reachesGoal && !result.path.empty());
+        if (!previous.empty()) CHECK(previous == result.path);
+        previous = result.path;
+    }
+}
+
+TEST(elytra_collision_debug_records_the_tested_sweep) {
+    TestWorld world(1);
+    world.fill(0, 1, 2, 0, 6, 2, Blocks::get().stone);
+    BlockStateInterface bsi(world.snapshot());
+    std::vector<elytra::CollisionSample> samples;
+    auto flight = elytra::simulate(bsi, {{0.5, 4, 0.5}, {0, 0, 10}}, {0, 0}, 1, 0, &samples);
+    CHECK(!flight);
+    CHECK(!samples.empty());
+    CHECK(samples.back().collided);
+    CHECK(samples.back().position.z < 2.5);
 }
 
 TEST(performance_random_terrain) {

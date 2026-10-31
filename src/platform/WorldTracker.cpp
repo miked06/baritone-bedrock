@@ -88,8 +88,13 @@ void WorldTracker::packIntoCache(const ChunkData& chunk) {
     if (cache_) cache_->put(baritone::CachedChunk::pack(chunk, minY_, maxY_ - minY_, nowMs()));
 }
 
+void WorldTracker::queueForPacking(std::shared_ptr<const ChunkData> chunk) {
+    if (cache_) packQueue_.push(std::move(chunk));
+}
+
 std::size_t WorldTracker::repack() {
     if (!cache_ || !snapshot_) return 0;
+    while (auto chunk = packQueue_.take()) packIntoCache(*chunk);
     std::size_t n = 0;
     for (auto [cx, cz] : snapshot_->loadedChunks()) {
         if (auto c = snapshot_->chunk(cx, cz)) {
@@ -101,7 +106,8 @@ std::size_t WorldTracker::repack() {
 }
 
 void WorldTracker::flushCache() {
-    if (!cache_) return;
+    if (!cache_) { packQueue_.clear(); return; }
+    while (auto chunk = packQueue_.take()) packIntoCache(*chunk);
     auto start = Clock::now();
     if (snapshot_) {
         for (auto [cx, cz] : snapshot_->loadedChunks())
@@ -158,7 +164,7 @@ void WorldTracker::scanChunk(int cx, int cz, bool refresh) {
     }
     // a refresh catches block changes: Java repackOnAnyBlockChange repacks the chunk then
     // (chunks leaving the radius are always packed)
-    if (!refresh || baritone::Settings::get().repackOnAnyBlockChange) packIntoCache(*chunk);
+    if (!refresh || baritone::Settings::get().repackOnAnyBlockChange) queueForPacking(chunk);
     snapshot_->put(std::move(chunk));
     scannedAt_[WorldSnapshot::key(cx, cz)] = tick_;
 }
@@ -170,6 +176,7 @@ void WorldTracker::tick(sdk::BlockSource& region, sdk::LocalPlayer& player) {
     int dimension = dim ? dimensionId(dim->name()) : 0;
     if (!snapshot_ || dimension != dimension_) setDimension(dimension, region.minHeight(), region.maxHeight());
     ensureCache();
+    packQueue_.setLimit(static_cast<std::size_t>(std::max(0, baritone::Settings::get().chunkPackerQueueMaxSize)));
 
     sdk::BlockPos feet = sdk::BlockPos::floor(player.feet());
     int pcx = feet.x >> 4, pcz = feet.z >> 4;
@@ -203,6 +210,15 @@ void WorldTracker::tick(sdk::BlockSource& region, sdk::LocalPlayer& player) {
         lastChunkScanMs_ = std::chrono::duration<double, std::milli>(Clock::now() - chunkStart).count();
     }
 
+    // Pack within the remaining budget, with at least one job to avoid starvation
+    // on machines where scanning a single chunk uses the entire frame budget.
+    bool packed = false;
+    while (packQueue_.size() && (!packed || elapsedMs() < budgetMs)) {
+        auto chunk = packQueue_.take();
+        packIntoCache(*chunk);
+        packed = true;
+    }
+
     // write the cache regularly, keep only the regions around the player in memory
     if (cache_ && tick_ % 1200 == 0) {
         if (baritone::Settings::get().pruneRegionsFromRAM) cache_->prune(pcx, pcz, 1);
@@ -213,7 +229,7 @@ void WorldTracker::tick(sdk::BlockSource& region, sdk::LocalPlayer& player) {
     if (tick_ % 100 == 0) {
         for (auto [cx, cz] : snapshot_->loadedChunks()) {
             if (std::max(std::abs(cx - pcx), std::abs(cz - pcz)) > loadRadius + 2) {
-                if (auto c = snapshot_->chunk(cx, cz)) packIntoCache(*c);  // last known state
+                if (auto c = snapshot_->chunk(cx, cz)) queueForPacking(c);  // retain its last known state until packed
                 snapshot_->remove(cx, cz);
                 scannedAt_.erase(WorldSnapshot::key(cx, cz));
             }

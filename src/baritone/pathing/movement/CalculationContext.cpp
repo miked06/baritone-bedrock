@@ -1,6 +1,7 @@
 #include "baritone/pathing/movement/CalculationContext.h"
 
 #include <limits>
+#include <algorithm>
 
 #include "baritone/Settings.h"
 
@@ -50,7 +51,11 @@ CalculationContext::CalculationContext(std::shared_ptr<const WorldSnapshot> worl
     minFallHeight = 3;  // Math.min(maxFallHeightNoWater, 3) in Baritone
     maxFallHeightNoWater = s.maxFallHeightNoWater;
     maxFallHeightBucket = s.maxFallHeightBucket;
-    waterWalkSpeed = costs::WALK_ONE_IN_WATER_COST;  // TODO: depth strider
+    // Java CalculationContext: interpolate water and ground movement costs using
+    // the boots' water movement efficiency. Bedrock encodes it as Depth Strider.
+    const double waterEfficiency = std::clamp(abilities.depthStrider, 0, 3) / 3.0;
+    waterWalkSpeed = costs::WALK_ONE_IN_WATER_COST * (1 - waterEfficiency) +
+                     costs::WALK_ONE_BLOCK_COST * waterEfficiency;
     breakBlockAdditionalCost = s.blockBreakAdditionalPenalty;
     jumpPenalty = s.jumpPenalty;
     walkOnWaterOnePenalty = s.walkOnWaterOnePenalty;

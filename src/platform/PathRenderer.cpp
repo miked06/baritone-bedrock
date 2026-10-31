@@ -4,10 +4,13 @@
 #include <chrono>
 #include <cmath>
 #include <numbers>
+#include <map>
+#include <tuple>
 
 #include "baritone/Settings.h"
 #include "sdk/Render.h"
 #include "platform/WorldTracker.h"
+#include "core/Log.h"
 
 namespace platform {
 
@@ -21,6 +24,7 @@ struct Line {
     Vec3d a, b;
     sdk::Color color;
     float width = 0;  // world units; 0 = a 1-pixel line
+    bool ignoreDepth = false;
 };
 
 // Java's line widths are in pixels; Bedrock's line primitive is always 1 pixel, so wider
@@ -28,7 +32,11 @@ struct Line {
 float worldWidth(double pixels) { return pixels <= 1.0 ? 0.0f : static_cast<float>(pixels * 0.012); }
 void widen(std::vector<Line>& lines, std::size_t from, double pixels) {
     float w = worldWidth(pixels);
-    for (std::size_t i = from; i < lines.size(); ++i) lines[i].width = w;
+    for (std::size_t i = from; i < lines.size(); ++i) if (lines[i].width == 0) lines[i].width = w;
+}
+
+void depthMode(std::vector<Line>& lines, std::size_t from, bool ignore) {
+    for (std::size_t i = from; i < lines.size(); ++i) lines[i].ignoreDepth = ignore;
 }
 
 // Java IRenderer.startLines: every line is drawn with alpha 0.4 unless said otherwise
@@ -162,10 +170,11 @@ void drawGoal(std::vector<Line>& out, const baritone::Goal* goal, const baritone
         double minX = g->x() + 0.002, maxX = g->x() + 1 - 0.002, minZ = g->z() + 0.002, maxZ = g->z() + 1 - 0.002;
         dankLitGoalBox(out, c, minX, maxX, minZ, maxZ, minY, maxY, std::nullopt, std::nullopt);
         if (s.renderGoalXZBeacon) {
-            // Java draws a beacon beam; here a thinner column inside the box, brighter
-            const sdk::Color beam = color(col, 0.8f);
-            double cx = g->x() + 0.5, cz = g->z() + 0.5, r = 0.2;
-            dankLitGoalBox(out, beam, cx - r, cx + r, cz - r, cz + r, minY, maxY, std::nullopt, std::nullopt);
+            // Two translucent crossed surfaces, with a bright core. The game
+            // provides no Java beacon texture, but this is a filled beam, not an outline.
+            double cx = g->x() + 0.5, cz = g->z() + 0.5;
+            out.push_back({{cx, minY, cz}, {cx, maxY, cz}, color(col, 0.25f), 0.4f});
+            out.push_back({{cx, minY, cz}, {cx, maxY, cz}, color(col, 0.65f), 0.15f});
         }
     } else if (auto gc = dynamic_cast<const GoalComposite*>(goal)) {
         for (const GoalPtr& sub : gc->goals()) drawGoal(out, sub.get(), col, player, depth + 1, budget);
@@ -184,26 +193,79 @@ void drawGoal(std::vector<Line>& out, const baritone::Goal* goal, const baritone
 }  // namespace
 
 PathRenderer& PathRenderer::get() {
-    static PathRenderer instance;
-    return instance;
+    // Explicit shutdown joins workers during DLL unload. At process termination
+    // Windows may already have killed other threads before static destructors run.
+    static PathRenderer* instance = new PathRenderer;
+    return *instance;
 }
 
 void PathRenderer::update(Frame frame) {
+    std::lock_guard updateLock(updateMutex_);
+    if (stopping_) return;
+    ++meshTicks_;
+    auto world = WorldTracker::get().snapshot();
+    auto cache = world ? world->cache() : nullptr;
+    const bool enabled = Settings::get().renderCachedChunks && frame.player && cache;
+    if (meshFuture_.valid() && meshFuture_.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
+        try {
+            auto mesh = meshFuture_.get();
+            if (enabled && buildingSource_ == cache)
+                cachedMesh_ = std::make_shared<const std::vector<baritone::CachedFace>>(std::move(mesh));
+        } catch (const std::exception& e) {
+            logger::warn("Cached terrain mesh failed: {}", e.what());
+        }
+        buildingSource_.reset();
+    }
+    if (!enabled || meshSource_ != cache) {
+        cachedMesh_.reset();
+        meshSource_ = enabled ? cache : nullptr;
+        meshStarted_ = 0;
+    }
+    if (enabled) {
+        if (!meshFuture_.valid() && (meshStarted_ == 0 || meshTicks_ - meshStarted_ >= 20)) {
+            const auto& player = *frame.player;
+            baritone::BlockPos center{static_cast<int>(std::floor(player.x)), static_cast<int>(std::floor(player.y)),
+                                      static_cast<int>(std::floor(player.z))};
+            buildingSource_ = cache;
+            meshStarted_ = meshTicks_;
+            meshFuture_ = std::async(std::launch::async, [cache, world, center] {
+                return baritone::buildCachedMesh(*cache, *world, center);
+            });
+        }
+        frame.cachedMesh = cachedMesh_;
+    }
     std::lock_guard lock(mutex_);
     frame_ = std::move(frame);
+}
+
+void PathRenderer::shutdown() {
+    stopping_ = true;
+    std::lock_guard updateLock(updateMutex_);
+    if (meshFuture_.valid()) {
+        try { meshFuture_.get(); }
+        catch (const std::exception& e) { logger::warn("Cached terrain mesh shutdown: {}", e.what()); }
+    }
+    cachedMesh_.reset();
+    meshSource_.reset();
+    buildingSource_.reset();
+    std::lock_guard frameLock(mutex_);
+    frame_ = {};
 }
 
 void PathRenderer::render(sdk::LevelRenderer* renderer, sdk::ScreenContext* screen) {
     const Settings& s = Settings::get();
     std::vector<Line> lines;
+    std::shared_ptr<const std::vector<baritone::CachedFace>> cachedMesh;
     {
         std::lock_guard lock(mutex_);
         const Frame& f = frame_;
+        cachedMesh = f.cachedMesh;
         // Java PathRenderer.render
         if (s.renderGoal && f.goal) {
             int budget = 100;
             drawGoal(lines, f.goal.get(), s.colorGoalBox, f.player, 0, budget);
             widen(lines, 0, s.goalRenderLineWidthPixels);
+            depthMode(lines, 0, s.renderGoalIgnoreDepth);
         }
         const std::size_t pathLines = lines.size();
         if (s.renderPath) {
@@ -213,7 +275,9 @@ void PathRenderer::render(sdk::LevelRenderer* renderer, sdk::ScreenContext* scre
                 for (const BlockPos& p : f.toWalkInto) addBlockBox(lines, p, color(s.colorBlocksToWalkInto));
                 // ours: the block being mined right now
                 if (f.breaking) addBlockBox(lines, *f.breaking, color(s.colorBlocksToBreak, 0.8f), 0.004);
+                depthMode(lines, pathLines, s.renderSelectionBoxesIgnoreDepth);
             }
+            const std::size_t movementLines = lines.size();
             if (!f.path.empty()) {
                 std::size_t begin = f.pathPosition >= 3 ? f.pathPosition - 3 : 0;
                 drawPath(lines, f.path, begin, s.colorCurrentPath, s.fadePath);
@@ -224,6 +288,7 @@ void PathRenderer::render(sdk::LevelRenderer* renderer, sdk::ScreenContext* scre
                 drawPath(lines, f.mostRecent, 0, s.colorMostRecentConsidered, s.fadePath);
                 addBlockBox(lines, f.mostRecent.back(), color(s.colorMostRecentConsidered));
             }
+            depthMode(lines, movementLines, s.renderPathIgnoreDepth);
         }
         widen(lines, pathLines, s.pathRenderLineWidthPixels);
         // Java ElytraBehavior.onRenderPass
@@ -255,6 +320,20 @@ void PathRenderer::render(sdk::LevelRenderer* renderer, sdk::ScreenContext* scre
                 lines.push_back({f.elytraSimulation[i - 1], f.elytraSimulation[i], sim});
         }
         widen(lines, elytraLines, s.pathRenderLineWidthPixels);
+        if (s.elytraRenderRaytraces) {
+            for (const auto& ray : f.elytraRaytraces)
+                lines.push_back({ray.from, ray.to, ray.blocked ? sdk::Color{1, 0.2f, 0.1f, 0.5f} : sdk::Color{0.1f, 1, 0.2f, 0.3f}});
+        }
+        if (s.elytraRenderHitboxRaytraces) {
+            constexpr double half = baritone::elytra::kGlideWidth / 2;
+            for (const auto& sample : f.elytraHitboxSamples) {
+                const auto& p = sample.position;
+                addBox(lines, {p.x - half, p.y, p.z - half},
+                    {p.x + half, p.y + baritone::elytra::kGlideHeight, p.z + half},
+                    sample.collided ? sdk::Color{1, 0.1f, 0.1f, 0.7f} : sdk::Color{0.2f, 0.8f, 1, 0.15f});
+            }
+        }
+        depthMode(lines, elytraLines, s.renderPathIgnoreDepth);
         // Java SelectionRenderer
         const std::size_t selectionLines = lines.size();
         if (s.renderSelection) {
@@ -270,36 +349,74 @@ void PathRenderer::render(sdk::LevelRenderer* renderer, sdk::ScreenContext* scre
             if (f.build) addRegion(lines, f.build->first, f.build->second, color(kBuildColor, opacity));
         }
         widen(lines, selectionLines, s.selectionLineWidth);
+        depthMode(lines, selectionLines, s.renderSelectionIgnoreDepth);
+        const std::size_t clickLines = lines.size();
+        if (f.clickTarget) addBlockBox(lines, *f.clickTarget, {0, 1, 1, 0.7f});
+        if (f.clickTarget && f.clickStart && *f.clickTarget != *f.clickStart)
+            addRegion(lines, *f.clickStart, *f.clickTarget, {1, 0.2f, 0.2f, 0.6f});
+        widen(lines, clickLines, s.selectionLineWidth);
+        depthMode(lines, clickLines, true);
     }
-    if (lines.empty() || !renderer || !screen) return;
+    if ((lines.empty() && !cachedMesh) || !renderer || !screen) return;
 
     sdk::Tessellator* tess = screen->tessellator();
-    sdk::MaterialPtr* mat = sdk::material("selection_box");
     sdk::Vec3 origin = renderer->origin();
-    if (!tess || !mat) return;
-    if (sdk::Color* shader = screen->shaderColor()) *shader = {1, 1, 1, 1};
+    sdk::Color* shader = screen->shaderColor();
+    if (!tess || !shader) return;
+    struct RestoreColor {
+        sdk::Color* target;
+        sdk::Color saved;
+        ~RestoreColor() { *target = saved; }
+    } restore{shader, *shader};
 
     auto put = [&](const Vec3d& v, const sdk::Color& c) {
         tess->color(c);
         tess->vertex(static_cast<float>(v.x - origin.x), static_cast<float>(v.y - origin.y), static_cast<float>(v.z - origin.z));
     };
-    std::size_t thin = 0, thick = 0;
-    for (const Line& l : lines) (l.width > 0 ? thick : thin)++;
-
-    if (thin) {
-        tess->begin(sdk::Primitive::LineList, static_cast<int>(thin * 2));
-        for (const Line& l : lines) {
-            if (l.width > 0) continue;
-            put(l.a, l.color);
-            put(l.b, l.color);
+    // UI fill uses the same position transform and explicitly enables blending
+    // and disables depth testing (vanilla materials/ui.material). It also draws
+    // the remembered terrain as a translucent ghost of its 2-bit representation.
+    sdk::MaterialPtr* overlay = sdk::material("ui_fill_color");
+    if (s.renderCachedChunks && cachedMesh && overlay) {
+        const float alpha = static_cast<float>(std::clamp(s.cachedChunksOpacity, 0.0, 1.0));
+        for (auto type : {baritone::PathingBlockType::Solid, baritone::PathingBlockType::Water, baritone::PathingBlockType::Avoid}) {
+            sdk::Color tint = type == baritone::PathingBlockType::Water ? sdk::Color{0.15f, 0.45f, 1, alpha}
+                              : type == baritone::PathingBlockType::Avoid ? sdk::Color{1, 0.3f, 0.15f, alpha}
+                              : sdk::Color{0.6f, 0.65f, 0.7f, alpha};
+            std::size_t count = 0;
+            for (const auto& face : *cachedMesh) if (face.type == type) ++count;
+            if (!count || alpha == 0) continue;
+            *shader = tint;
+            tess->begin(sdk::Primitive::Quad, static_cast<int>(count * 8));
+            for (const auto& face : *cachedMesh) {
+                if (face.type != type) continue;
+                for (int v = 0; v < 4; ++v) put(face.vertices[v], tint);
+                for (int v = 3; v >= 0; --v) put(face.vertices[v], tint);
+            }
+            sdk::renderMeshImmediately(screen, tess, overlay);
         }
-        sdk::renderMeshImmediately(screen, tess, mat);
     }
-    if (thick) {
-        // each segment: a horizontal and a vertical ribbon, both windings (no back-face culling)
-        tess->begin(sdk::Primitive::Quad, static_cast<int>(thick * 16));
-        for (const Line& l : lines) {
-            if (l.width <= 0) continue;
+
+    // These position-only materials use a uniform color. Batch by color as well
+    // as depth mode so every path/goal/fade keeps its requested color and alpha.
+    using Batch = std::tuple<bool, float, float, float, float, bool>;
+    std::map<Batch, std::vector<const Line*>> batches;
+    for (const Line& line : lines)
+        batches[{line.ignoreDepth, line.color.r, line.color.g, line.color.b, line.color.a, line.width > 0}].push_back(&line);
+    for (const auto& [key, batch] : batches) {
+        auto [ignoreDepth, r, g, b, a, thick] = key;
+        sdk::MaterialPtr* mat = ignoreDepth ? overlay : sdk::material("selection_box");
+        if (!mat) continue;
+        *shader = {r, g, b, a};
+        tess->begin(thick ? sdk::Primitive::Quad : sdk::Primitive::LineList, static_cast<int>(batch.size() * (thick ? 16 : 2)));
+        for (const Line* line : batch) {
+            const Line& l = *line;
+            if (!thick) {
+                put(l.a, l.color);
+                put(l.b, l.color);
+                continue;
+            }
+            // Two crossed ribbons, both windings (no back-face culling).
             Vec3d d = l.b - l.a;
             double len = std::sqrt(d.lengthSq());
             if (len < 1e-6) continue;

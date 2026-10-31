@@ -20,10 +20,15 @@ public:
         if (player != player_) {  // a new (or no) player: nothing is being broken or moved
             breaking_.reset();
             moves_.clear();
+            openingMove_.reset();
+            ownedInventory_ = nullptr;
+            inventoryClosedAt_ = 0;
+            disconnectRequested_ = false;
         }
         player_ = player;
         region_ = region;
         ++tick_;
+        if (player_ && openingMove_) advanceInventoryOpen();
         if (player_ && !moves_.empty()) applyAnsweredMoves();
         if (player_ && !clickRefreshes_.empty()) refreshClickedBlocks();
     }
@@ -35,6 +40,9 @@ public:
     const std::optional<baritone::BlockPos>& breakingPos() const { return breaking_; }
 
     bool valid() const override { return player_ != nullptr; }
+    bool requestDisconnect() override { disconnectRequested_ = valid(); return disconnectRequested_; }
+    bool takeDisconnectRequest() { bool requested = disconnectRequested_; disconnectRequested_ = false; return requested; }
+    void cancelDisconnectRequest() { disconnectRequested_ = false; }
     baritone::Vec3d position() const override;
     baritone::Vec3d eyePosition() const override;
     baritone::Vec3d velocity() const override;
@@ -51,7 +59,12 @@ public:
     int foodLevel() const override;
     int effectAmplifier(std::string_view effect) const override;
     bool swapSlots(int slotA, int slotB) override;
-    bool inventoryMovePending() const override { return !moves_.empty(); }
+    bool inventoryMovePending() const override {
+        return !moves_.empty() || openingMove_.has_value() || tick_ - inventoryClosedAt_ < 4;
+    }
+    bool inventoryScreenPending() const {
+        return openingMove_.has_value() || ownedInventory_ || tick_ - inventoryClosedAt_ < 4;
+    }
     bool isGliding() const override;
     bool isFlying() const override;
     bool isCreative() const override;
@@ -88,6 +101,16 @@ private:
     };
     std::vector<Move> moves_;
     void applyAnsweredMoves();
+    struct OpeningMove {
+        int slotA, slotB;
+        uint64_t started;
+    };
+    std::optional<OpeningMove> openingMove_;
+    void* ownedInventory_ = nullptr;  // close only the screen opened for our request
+    uint64_t inventoryClosedAt_ = 0;
+    bool disconnectRequested_ = false;
+    void advanceInventoryOpen();
+    void closeOwnedInventory();
 
     // Blocks right clicked through the mouse: the game changes them a few ticks later, so the
     // world snapshot reads them again then

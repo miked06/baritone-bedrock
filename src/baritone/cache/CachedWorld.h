@@ -70,6 +70,8 @@ public:
     void saveNow();
     // Unloads saved regions further than `distance` regions from the player (pruneRegionsFromRAM).
     void prune(int playerCx, int playerCz, int distance);
+    // Evict saved regions outside a radius in blocks, retaining files for reload.
+    void pruneOutside(const BlockPos& center, int distanceBlocks);
 
     // Tracked blocks matching `match` in the regions around `center`, closest first
     // (CachedWorld.getLocationsOf).

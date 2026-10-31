@@ -9,8 +9,7 @@
 namespace baritone {
 
 // Hotbar management (Baritone's InventoryBehavior + ToolSet): throwaway blocks to place
-// and the best tool to break a block. Bedrock's inventory is server-authoritative, so for
-// now only the hotbar is used (no moving items around).
+// and the best tool to break a block. Inventory moves wait for server acknowledgement.
 class InventoryBehavior {
 public:
     explicit InventoryBehavior(PlayerContext& player) : player_(player) {}

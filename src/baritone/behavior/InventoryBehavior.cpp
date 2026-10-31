@@ -113,11 +113,19 @@ bool InventoryBehavior::requestSwapWithHotBar(int inInventory, int inHotbar) {
 int InventoryBehavior::bestPickaxeSlot() {
     int best = -1;
     double bestSpeed = -1;
+    const Settings& settings = Settings::get();
+    BlockProps stone;
+    stone.name = "minecraft:stone";
+    stone.hardness = 1.5f;
+    stone.bestTool = Tool::Pickaxe;
+    stone.requiresTool = true;
     for (int i = 0; i < 36; ++i) {
         HotbarStack s = player_.hotbar(i);
         if (s.empty() || s.tool != Tool::Pickaxe) continue;
-        if (s.toolSpeed > bestSpeed) {
-            bestSpeed = s.toolSpeed;
+        if (settings.itemSaver && s.maxDamage > 1 && s.damage + settings.itemSaverThreshold >= s.maxDamage) continue;
+        const double speed = breakSpeed(s, stone);
+        if (speed > bestSpeed) {
+            bestSpeed = speed;
             best = i;
         }
     }
@@ -238,6 +246,7 @@ PlayerAbilities InventoryBehavior::abilities() {
     a.hasThrowaway = hasGenericThrowaway();
     a.foodLevel = player_.foodLevel();
     a.frostWalker = player_.armor(3).frostWalker;
+    a.depthStrider = player_.armor(3).depthStrider;
     if (player_.isCreative()) {  // everything breaks at once, except unbreakable blocks
         a.breakSpeed = [](const BlockProps& block) { return block.hardness < 0 || block.unbreakable ? 0.0 : 1.0; };
         return a;
@@ -247,6 +256,15 @@ PlayerAbilities InventoryBehavior::abilities() {
     std::vector<HotbarStack> hotbar;
     for (int i = 0; i < 9; ++i) hotbar.push_back(player_.hotbar(i));
     const Settings& st = Settings::get();
+    if (!st.autoTool) {
+        // Java ToolSet.getBestSlot(..., pathingCalculation=true): planning must
+        // use the item that will actually be held when automatic tools are off.
+        const HotbarStack held = hotbar[std::clamp(player_.selectedSlot(), 0, 8)];
+        a.breakSpeed = [held, amplifier = potionAmplifier()](const BlockProps& block) {
+            return breakSpeed(held, block) * amplifier;
+        };
+        return a;
+    }
     a.breakSpeed = [hotbar = std::move(hotbar), amplifier = potionAmplifier(), useSword = st.useSwordToMine,
                     itemSaver = st.itemSaver, threshold = st.itemSaverThreshold](const BlockProps& block) {
         double best = breakSpeed(HotbarStack{}, block);  // bare hand (an empty slot)

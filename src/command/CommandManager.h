@@ -29,6 +29,10 @@ public:
     void add(Command command);
     const std::vector<Command>& commands() const { return commands_; }
     const Command* find(std::string_view name) const;
+    // Java CommandManager.tabComplete equivalent. Input has no command prefix;
+    // preserve a trailing space when completing the next argument.
+    std::vector<std::string> complete(std::string_view input) const;
+    void setCompletionProvider(std::function<Args(const Args&)> provider) { completionProvider_ = std::move(provider); }
 
     // A chat message (Java ExampleBaritoneControl.onSendChatMessage): with prefixControl,
     // "<prefix>command" runs the command; with chatControl(Anyway), a message that is a
@@ -44,6 +48,7 @@ public:
 private:
     void logRanCommand(std::string_view command, std::string_view rest);
     std::vector<Command> commands_;
+    std::function<Args(const Args&)> completionProvider_;
 };
 
 // Helpers for argument parsing; throw CommandError with a readable message.

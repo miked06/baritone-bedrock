@@ -24,7 +24,7 @@ namespace {
 [[noreturn]] void invalid(const std::string& what) { throw std::runtime_error(what); }
 
 int64_t intOf(const nbt::Tag* t, const char* what) {
-    if (!t || !t->integer()) invalid(std::string("champ manquant : ") + what);
+    if (!t || !t->integer()) invalid(std::string("missing field: ") + what);
     return *t->integer();
 }
 
@@ -170,7 +170,7 @@ SchematicPtr parseSponge(const nbt::Tag& root) {
     int w = static_cast<int>(intOf(s->get("Width"), "Width")) & 0xFFFF;
     int h = static_cast<int>(intOf(s->get("Height"), "Height")) & 0xFFFF;
     int l = static_cast<int>(intOf(s->get("Length"), "Length")) & 0xFFFF;
-    if (w == 0 || h == 0 || l == 0) invalid("structure vide");
+    if (w == 0 || h == 0 || l == 0) invalid("empty schematic");
 
     const nbt::Tag* palette = s->get("Palette");
     const nbt::Tag* data = s->get("BlockData");
@@ -178,12 +178,12 @@ SchematicPtr parseSponge(const nbt::Tag& root) {
         palette = blocks->get("Palette");
         data = blocks->get("Data");
     }
-    if (!palette || !palette->compound() || !data || !data->intArray()) invalid("Palette ou BlockData manquant");
+    if (!palette || !palette->compound() || !data || !data->intArray()) invalid("Missing Palette or BlockData");
 
     std::vector<DesiredBlock> pal;
     for (const auto& [state, idx] : *palette->compound()) {
         auto i = idx.integer();
-        if (!i || *i < 0 || *i > 1'000'000) invalid("index de palette invalide");
+        if (!i || *i < 0 || *i > 1'000'000) invalid("invalid palette index");
         if (pal.size() <= static_cast<std::size_t>(*i)) pal.resize(*i + 1, DesiredBlock::any());
         pal[*i] = javaToBedrock(state);
     }
@@ -196,12 +196,12 @@ SchematicPtr parseSponge(const nbt::Tag& root) {
     for (std::size_t i = 0; i < total; ++i) {
         int value = 0, shift = 0;
         for (;;) {
-            if (pos >= bytes.size()) invalid("BlockData trop court");
+            if (pos >= bytes.size()) invalid("BlockData too short");
             int b = static_cast<int>(bytes[pos++]) & 0xFF;
             value |= (b & 0x7F) << shift;
             if (!(b & 0x80)) break;
             shift += 7;
-            if (shift > 28) invalid("varint invalide");
+            if (shift > 28) invalid("invalid varint");
         }
         int x = static_cast<int>(i % w), z = static_cast<int>((i / w) % l), y = static_cast<int>(i / (static_cast<std::size_t>(w) * l));
         indices[(static_cast<std::size_t>(x) * h + y) * l + z] = value;
@@ -212,7 +212,7 @@ SchematicPtr parseSponge(const nbt::Tag& root) {
 // Litematica: one or more regions, block states packed in a long array.
 SchematicPtr parseLitematic(const nbt::Tag& root) {
     const nbt::Tag* regions = root.get("Regions");
-    if (!regions || !regions->compound() || regions->compound()->empty()) invalid("aucune region");
+    if (!regions || !regions->compound() || regions->compound()->empty()) invalid("no regions");
 
     struct Region {
         BlockPos min, size;
@@ -226,7 +226,7 @@ SchematicPtr parseLitematic(const nbt::Tag& root) {
         const nbt::Tag* size = r.get("Size");
         const nbt::Tag* pal = r.get("BlockStatePalette");
         const nbt::Tag* states = r.get("BlockStates");
-        if (!pos || !size || !pal || !pal->list() || !states || !states->intArray()) invalid("region " + name + " incomplete");
+        if (!pos || !size || !pal || !pal->list() || !states || !states->intArray()) invalid("region " + name + " is incomplete");
         BlockPos p{static_cast<int>(intOf(pos->get("x"), "x")), static_cast<int>(intOf(pos->get("y"), "y")),
                    static_cast<int>(intOf(pos->get("z"), "z"))};
         BlockPos s{static_cast<int>(intOf(size->get("x"), "x")), static_cast<int>(intOf(size->get("y"), "y")),
@@ -249,9 +249,9 @@ SchematicPtr parseLitematic(const nbt::Tag& root) {
         hi = {std::max(hi.x, min.x + abs.x), std::max(hi.y, min.y + abs.y), std::max(hi.z, min.z + abs.z)};
         list.push_back(std::move(reg));
     }
-    if (list.empty()) invalid("regions vides");
+    if (list.empty()) invalid("empty regions");
     BlockPos total{hi.x - lo.x, hi.y - lo.y, hi.z - lo.z};
-    if (static_cast<int64_t>(total.x) * total.y * total.z > 64 * 1024 * 1024) invalid("structure trop grande");
+    if (static_cast<int64_t>(total.x) * total.y * total.z > 64 * 1024 * 1024) invalid("schematic too large");
 
     std::vector<DesiredBlock> palette;  // merged
     std::vector<int> indices(static_cast<std::size_t>(total.x) * total.y * total.z, -1);
@@ -262,7 +262,7 @@ SchematicPtr parseLitematic(const nbt::Tag& root) {
         uint64_t mask = (uint64_t{1} << bits) - 1;
         const auto& longs = *r.states;
         std::size_t volume = static_cast<std::size_t>(r.size.x) * r.size.y * r.size.z;
-        if ((volume * bits + 63) / 64 > longs.size()) invalid("BlockStates trop court");
+        if ((volume * bits + 63) / 64 > longs.size()) invalid("BlockStates too short");
         for (std::size_t i = 0; i < volume; ++i) {
             // LitematicaBitArray.getAt: entries may span two longs
             uint64_t start = i * bits;
@@ -296,7 +296,7 @@ SchematicPtr loadSchematic(const std::string& path) {
         if (root.get("Palette") || root.get("Schematic")) return parseSponge(root);  // some tools use this extension
         return parseLegacySchematic(root);                                          // MCEdit, ids before 1.13
     }
-    invalid("extension inconnue (.mcstructure, .schem, .litematic)");
+    invalid("unknown extension (.mcstructure, .schem, .litematic)");
 }
 
 }  // namespace baritone

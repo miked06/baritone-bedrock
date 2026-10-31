@@ -13,11 +13,43 @@ namespace {
 
 struct ClientInterface {
     void* clientInterface;
+    void* clientInterface2;  // 26.60: second interface before the owning shared_ptr
     std::shared_ptr<ClientInstance> instance;
 };
-static_assert(sizeof(ClientInterface) == 0x18);
+static_assert(sizeof(ClientInterface) == 0x20);
 
 }  // namespace
+
+void LocalPlayer::openInventory() {
+    // Mirror the native inventory-key handler at 26.60 RVA 0x657DA52. Calling the
+    // client-only openInventory virtual skips server authorization of the container.
+    // The server answers this request by opening the game's normal inventory UI.
+    struct InventoryOpenPacket {
+        uintptr_t vtable;
+        uint32_t priority = 2, reliability = 1;
+        uint8_t senderSubId = 0, handled = 0;
+        uint8_t pad0[6]{};
+        uint64_t receiveTime = 0;
+        void* handler = nullptr;
+        uint32_t compressibility = 0;
+        uint8_t pad1[4]{};
+        uint8_t action = 6;  // InteractPacket::OpenInventory
+        uint8_t pad2[7]{};
+        uint64_t targetId;
+        Vec3 position{};
+        bool hasPosition = false;
+        uint8_t pad3[3]{};
+        uint32_t serializationMode = 5;
+    };
+    static_assert(sizeof(InventoryOpenPacket) == 0x58);
+    static_assert(offsetof(InventoryOpenPacket, action) == 0x30);
+    static_assert(offsetof(InventoryOpenPacket, targetId) == 0x38);
+    static_assert(offsetof(InventoryOpenPacket, serializationMode) == 0x50);
+    InventoryOpenPacket packet{};
+    packet.vtable = sigs::InteractPacket_vtable.address;
+    packet.targetId = runtimeId();
+    mem::callVirtual<void, InventoryOpenPacket&>(this, offsets::Player_vt_sendNetworkPacket, packet);
+}
 
 ClientInstance* ClientInstance::get() {
     static ClientInstance* cached = nullptr;

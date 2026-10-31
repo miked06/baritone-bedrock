@@ -22,7 +22,7 @@ void MineProcess::mine(int quantity, BlockFilter filter) {
             if (std::ranges::find(anyway, n) != anyway.end()) allowed.push_back(n);
         }
         if (allowed.empty()) {
-            baritone_.logDirect("Impossible de miner avec allowBreak a false si le bloc n'est pas dans allowBreakAnyway", true);
+            baritone_.logDirect("Cannot mine with allowBreak false unless the block is in allowBreakAnyway", true);
             return;
         }
         filter = BlockFilter(allowed);
@@ -44,14 +44,14 @@ void MineProcess::mine(int quantity, BlockFilter filter) {
             else if (netherOre == nether) possible = true;
         }
         if (!possible) {
-            baritone_.logDirect(std::format("Attention : {} n'existe pas {}", filter_->toString(),
-                                            nether ? "dans le Nether" : "dans cette dimension (minerai du Nether)"),
+            baritone_.logDirect(std::format("Warning: {} does not exist {}", filter_->toString(),
+                                            nether ? "in the Nether" : "in this dimension (Nether ore)"),
                                 true);
         }
     }
     if (knownOreLocations_.empty() && !Settings::get().exploreForBlocks) {
-        baritone_.logDirect("Aucun " + filter_->toString() + " connu, #mine annule", true);
-        if (Settings::get().notificationOnMineFail) baritone_.logNotification("Aucun " + filter_->toString() + " connu, #mine annule", true);
+        baritone_.logDirect("No known " + filter_->toString() + " found; #mine cancelled", true);
+        if (Settings::get().notificationOnMineFail) baritone_.logNotification("No known " + filter_->toString() + " found; #mine cancelled", true);
         onLostControl();
     }
 }
@@ -80,10 +80,10 @@ void MineProcess::warnIfNoPickaxe() {
         HotbarStack s = p.hotbar(i);
         if (s.tool == Tool::Pickaxe) best = std::max(best, s.toolTier);
     }
-    static constexpr const char* names[] = {"", "en bois", "en pierre", "en fer", "en diamant"};
+    static constexpr const char* names[] = {"", "wooden", "stone", "iron", "diamond"};
     if (best < need) {
-        baritone_.logDirect(std::format("Attention : il faut au moins une pioche {} dans la barre d'objets pour miner {} "
-                                        "(sinon le bot creuse a peine et reste en surface)",
+        baritone_.logDirect(std::format("Warning: you need at least a {} pickaxe in the hotbar to mine {} "
+                                        "(otherwise the bot barely digs and stays near the surface)",
                                         names[need], filter_->toString()),
                             true);
     }
@@ -283,14 +283,14 @@ std::optional<PathingCommand> MineProcess::updateGoal() {
     if (!branchPoint_) {
         if (std::abs(feet.y - y) > 1) {
             if (!announcedDescent_) {
-                baritone_.logDirect(std::format("Aucun {} connu : je vais en Y={} puis je creuse des galeries",
+                baritone_.logDirect(std::format("No known {}: heading to Y={} to begin branch mining",
                                                 filter_->toString(), y), false);
                 announcedDescent_ = true;
             }
             return PathingCommand{std::make_shared<GoalYLevel>(y), PathingCommandType::RevalidateGoalAndPath};
         }
         branchPoint_ = feet;
-        baritone_.logDirect(std::format("Niveau Y={} atteint : minage en galerie", y), false);
+        baritone_.logDirect(std::format("Reached Y={}: branch mining", y), false);
     }
     return PathingCommand{std::make_shared<GoalRunAway>(1, y, std::vector<BlockPos>{*branchPoint_}, true),
                           PathingCommandType::RevalidateGoalAndPath};
@@ -301,15 +301,15 @@ std::optional<PathingCommand> MineProcess::onTick(bool calcFailed, bool isSafeTo
     if (desiredQuantity_ > 0) {
         int have = countHave();
         if (have >= desiredQuantity_) {
-            baritone_.logDirect(std::format("J'ai {} {}, #mine termine", have, filter_->toString()), false);
+            baritone_.logDirect(std::format("Collected {} {}; #mine complete", have, filter_->toString()), false);
             cancel();
             return std::nullopt;
         }
     }
     if (calcFailed) {
         if (!knownOreLocations_.empty() && Settings::get().blacklistClosestOnFailure) {
-            baritone_.logDirect("Pas de chemin vers " + filter_->toString() + ", le plus proche est ignore", true);
-            if (Settings::get().notificationOnMineFail) baritone_.logNotification("Pas de chemin vers " + filter_->toString() + ", le plus proche est ignore", true);
+            baritone_.logDirect("No path to " + filter_->toString() + "; nearest matching block blacklisted", true);
+            if (Settings::get().notificationOnMineFail) baritone_.logNotification("No path to " + filter_->toString() + "; nearest matching block blacklisted", true);
             BlockPos feet = baritone_.playerFeet();
             auto closest = std::ranges::min_element(knownOreLocations_, [&](const BlockPos& a, const BlockPos& b) {
                 return a.distSq(feet) < b.distSq(feet);
@@ -317,8 +317,8 @@ std::optional<PathingCommand> MineProcess::onTick(bool calcFailed, bool isSafeTo
             blacklist_.push_back(*closest);
             knownOreLocations_.erase(closest);
         } else {
-            baritone_.logDirect("Pas de chemin vers " + filter_->toString() + ", #mine annule", true);
-            if (Settings::get().notificationOnMineFail) baritone_.logNotification("Pas de chemin vers " + filter_->toString() + ", #mine annule", true);
+            baritone_.logDirect("No path to " + filter_->toString() + "; #mine cancelled", true);
+            if (Settings::get().notificationOnMineFail) baritone_.logNotification("No path to " + filter_->toString() + "; #mine cancelled", true);
             cancel();
             return std::nullopt;
         }
@@ -366,7 +366,7 @@ std::optional<PathingCommand> MineProcess::onTick(bool calcFailed, bool isSafeTo
     }
     auto command = updateGoal();
     if (!command) {
-        baritone_.logDirect("Plus de " + filter_->toString() + " a portee, #mine termine", false);
+        baritone_.logDirect("No more " + filter_->toString() + " within reach; #mine complete", false);
         cancel();
         return std::nullopt;
     }

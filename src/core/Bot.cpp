@@ -43,7 +43,7 @@ bool Bot::start() {
     if (!gamehooks::install()) return false;
     devpipe::start();
     watchdog::start();
-    chat::info("Charge. Tape #help pour la liste des commandes.");
+    chat::info("Loaded. Type #help for a list of commands.");
     return true;
 }
 
@@ -53,6 +53,7 @@ void Bot::stop() {
     notify::shutdown();
     cancelAll();
     updateFocusOverride(false);
+    platform::PathRenderer::get().shutdown();
     if (baritone_) baritone_->shutdown();
 }
 
@@ -65,6 +66,8 @@ void Bot::saveSettings() {
 }
 
 void Bot::cancelAll() {
+    stopClickSelection();
+    player_.cancelDisconnectRequest();
     walkTicks_ = 0;
     testAction_.reset();
     manualLook_.reset();
@@ -105,6 +108,73 @@ void Bot::updateFocusOverride(bool botControlling) {
     }
 }
 
+void Bot::startClickSelection() {
+    cancelAll();
+    clickSelection_.start();
+    clickSelectionStartedAt_ = GetTickCount64();
+    gamehooks::requestClick(0);
+    gamehooks::autoUseWhileTargeting(0);
+    chat::info("Click mode: aim with the crosshair. Left click: go there; right click: go above; hold left and aim elsewhere: select a box. Escape cancels.");
+}
+
+void Bot::stopClickSelection() {
+    clickSelection_.cancel();
+    clickCaptureStarted_ = false;
+    clickTarget_.reset();
+    gamehooks::captureSelectionClicks(false);
+}
+
+void Bot::updateClickSelection() {
+    if (!clickSelection_.active()) return;
+    auto* client = sdk::ClientInstance::get();
+    auto world = platform::WorldTracker::get().snapshot();
+    if (!client || !player_.valid() || !world ||
+        (gameWindowInForeground() && (GetAsyncKeyState(VK_ESCAPE) & 0x8000))) {
+        stopClickSelection();
+        chat::info("Click mode cancelled");
+        return;
+    }
+    // Wait until the command's chat screen closes. Do not consume clicks on
+    // chat, menus or other apps; once active, opening a menu cancels the mode.
+    const bool ready = client->cursorGrabbedFlag() && gameWindowInForeground();
+    if (!clickCaptureStarted_) {
+        if (!ready) {
+            if (GetTickCount64() - clickSelectionStartedAt_ > 30000) {
+                stopClickSelection();
+                chat::info("Click mode cancelled");
+            }
+            return;
+        }
+        gamehooks::captureSelectionClicks(true);
+        clickCaptureStarted_ = true;
+    } else if (!ready) {
+        stopClickSelection();
+        chat::info("Click mode cancelled");
+        return;
+    }
+    baritone::BlockStateInterface bsi(world);
+    auto hit = baritone::rayTrace(bsi, player_.eyePosition(), player_.rotation(), 512);
+    clickTarget_ = hit ? std::make_optional(hit->pos) : std::nullopt;
+    while (auto event = gamehooks::pollSelectionClick()) {
+        auto result = clickSelection_.event(event->button, event->pressed, clickTarget_);
+        if (!result) continue;
+        stopClickSelection();
+        if (result->kind == baritone::ClickSelection::Result::Box) {
+            baritone_->selections().clear();
+            selectionPos1_.reset();
+            baritone_->selections().add({result->first, result->second});
+            chat::info(std::format("Selection made: {} to {}. Use #help sel for building commands.", result->first, result->second));
+        } else if (result->kind == baritone::ClickSelection::Result::Goal) {
+            auto goal = std::make_shared<baritone::GoalBlock>(result->first);
+            baritone_->customGoal().setGoalAndPath(goal);
+            chat::info("Goal: " + goal->toString());
+        } else {
+            chat::info("No block selected");
+        }
+        break;
+    }
+}
+
 void Bot::walkFor(int ticks, bool sprint) {
     walkTicks_ = ticks;
     walkSprint_ = sprint;
@@ -129,8 +199,16 @@ void Bot::onFrame() {
     }
     while (auto line = devpipe::poll()) commands_.execute(*line);
     if (player) {
+        updateClickSelection();
         chat::flush();
         updateFocusOverride(input_.controlling());
+        if (player_.takeDisconnectRequest()) {
+            // Never tear down a world from inside its level tick. This native
+            // asynchronous entry point schedules the normal save/leave flow.
+            cancelAll();
+            logger::info("Disconnecting after arrival");
+            client->requestLeaveGameAsync();
+        }
     }
 }
 
@@ -145,14 +223,20 @@ void Bot::onTick(void* level) {
         return;
     }
     player_.bind(player, region);
+    if (player_.inventoryScreenPending()) {
+        // Pause movement/clicks while our temporary inventory screen is active.
+        releaseControl();
+        return;
+    }
     look_.tick();  // new random look offsets (Java LookBehavior.onTick IN)
     player_.setLevel(static_cast<sdk::Level*>(level));
     if (worldName_.empty() && level) {
         // waypoints are stored per world
         std::string name = static_cast<sdk::Level*>(level)->name();
-        worldName_ = name.empty() ? "monde" : name;
+        worldName_ = name.empty() ? "world" : name;
         std::string file;
         for (char c : worldName_) file += (std::isalnum(static_cast<unsigned char>(c)) || c == '-' || c == '_') ? c : '_';
+        if (name.empty()) file = "monde";  // Preserve the existing cache/waypoint key for unnamed worlds.
         auto dir = paths::dataDir() / "waypoints";
         std::error_code ec;
         std::filesystem::create_directories(dir, ec);
@@ -185,7 +269,7 @@ void Bot::onTick(void* level) {
         input_.set(Key::MoveForward, walkTicks_ > 0);
         input_.set(Key::Sprint, walkSprint_ && walkTicks_ > 0);
         input_.setControlling(walkTicks_ > 0);
-        if (walkTicks_ == 0) chat::info(std::format("Fin de marche, position {}", player->feet()));
+        if (walkTicks_ == 0) chat::info(std::format("Finished walking, position {}", player->feet()));
         return;
     }
 
@@ -194,9 +278,9 @@ void Bot::onTick(void* level) {
         return;
     }
 
-    baritone_->tick(tracker.snapshot());
+    if (!clickSelection_.active()) baritone_->tick(tracker.snapshot());
     const baritone::MovementState& out = baritone_->controls();
-    applyOutput(out, out.inputs.any() || out.target.rotation.has_value());
+    applyOutput(out, !clickSelection_.active() && (out.inputs.any() || out.target.rotation.has_value()));
 
     auto& pathing = baritone_->pathing();
     platform::PathRenderer::Frame frame;
@@ -213,12 +297,16 @@ void Bot::onTick(void* level) {
     frame.goal = pathing.goal();
     frame.breaking = player_.breakingPos();
     frame.selPos1 = selectionPos1_;
+    frame.clickTarget = clickTarget_;
+    frame.clickStart = clickSelection_.dragStart();
     frame.selections = selectionBoxes();
     frame.build = baritone_->builder().bounds();
     frame.elytraPath = baritone_->elytra().path();
     frame.elytraAim = baritone_->elytra().aim();
     frame.elytraLanding = baritone_->elytra().landing();
     frame.elytraSimulation = baritone_->elytra().simulation();
+    frame.elytraRaytraces = baritone_->elytra().raytraces();
+    frame.elytraHitboxSamples = baritone_->elytra().hitboxSamples();
     platform::PathRenderer::get().update(std::move(frame));
 }
 
@@ -237,7 +325,7 @@ void Bot::onDeath(sdk::LocalPlayer& player) {
     wp.dimension = platform::WorldTracker::get().dimension();
     wp.createdAt = std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count();
     waypoints_.add(wp);
-    chat::info(std::format("Mort en {} {} {} : waypoint 'death' enregistre (#wp goto death)", pos.x, pos.y, pos.z));
+    chat::info(std::format("Died at {} {} {}: 'death' waypoint saved (#wp goto death)", pos.x, pos.y, pos.z));
 }
 
 std::vector<std::pair<baritone::BlockPos, baritone::BlockPos>> Bot::selectionBoxes() const {
@@ -274,7 +362,7 @@ void Bot::onSleep(sdk::LocalPlayer& player) {
     wp.dimension = platform::WorldTracker::get().dimension();
     wp.createdAt = std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count();
     waypoints_.add(wp);
-    chat::info(std::format("Lit en {} {} {} : waypoint 'bed' enregistre", bed.x, bed.y, bed.z));
+    chat::info(std::format("Bed at {} {} {}: 'bed' waypoint saved", bed.x, bed.y, bed.z));
 }
 
 void Bot::startTestAction(TestAction::Kind kind, const baritone::BlockPos& pos) {
@@ -295,7 +383,7 @@ void Bot::runTestAction() {
     if (t.kind == TestAction::Break) {
         if (ctx.canWalkThrough(t.pos)) {
             done = true;
-            chat::info(std::format("Bloc {} casse en {} ticks", t.pos, t.ticks));
+            chat::info(std::format("Block {} broken in {} ticks", t.pos, t.ticks));
         } else {
             movement_helper::switchToBestToolFor(ctx, ctx.props(t.pos));
             if (auto reach = movement_helper::reachable(ctx, t.pos)) {
@@ -304,25 +392,25 @@ void Bot::runTestAction() {
                     state.setInput(Input::ClickLeft, true);
                 }
             } else if (t.ticks == 0) {
-                chat::error("Bloc hors de portee");
+                chat::error("Block out of reach");
                 done = true;
             }
         }
     } else {
         if (!ctx.props(t.pos).replaceable && ctx.props(t.pos).type != BlockType::Air) {
             done = true;
-            chat::info(std::format("Bloc pose en {} : {} ({} ticks)", t.pos, ctx.props(t.pos).name, t.ticks));
+            chat::info(std::format("Block placed at {}: {} ({} ticks)", t.pos, ctx.props(t.pos).name, t.ticks));
         } else {
             auto r = movement_helper::attemptToPlaceABlock(ctx, state, t.pos, false, false);
             if (r == movement_helper::PlaceResult::ReadyToPlace) state.setInput(Input::ClickRight, true);
             if (r == movement_helper::PlaceResult::NoOption && t.ticks == 0) {
-                chat::error("Impossible de poser ici (pas de bloc a poser ou pas de face visible)");
+                chat::error("Cannot place here (no block available or no visible face)");
                 done = true;
             }
         }
     }
     if (++t.ticks > 400 && !done) {
-        chat::error("Test abandonne apres 400 ticks");
+        chat::error("Test abandoned after 400 ticks");
         done = true;
     }
     if (done) {
@@ -334,7 +422,8 @@ void Bot::runTestAction() {
 }
 
 void Bot::applyOutput(const baritone::MovementState& out, bool active) {
-    if (!active) {
+    // A process may request an inventory move during this very tick.
+    if (!active || player_.inventoryScreenPending()) {
         if (controlling_) releaseControl();
         return;
     }

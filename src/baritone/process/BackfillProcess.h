@@ -18,7 +18,7 @@ public:
     bool isTemporary() const override { return true; }
     void onLostControl() override {}
     double priority() const override { return 5; }
-    std::string displayName() const override { return "Rebouchage"; }
+    std::string displayName() const override { return "Backfill"; }
 
 private:
     void recordTargetedBlock();

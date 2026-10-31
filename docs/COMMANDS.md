@@ -7,6 +7,7 @@ Conventions used below:
 - `<x y z>` are block coordinates. `~` means "relative to the player": `#goto ~10 ~ ~-5`.
 - `[...]` is optional, `a | b` means "one of".
 - `<block>` is a block name, with or without `minecraft:` (`diamond_ore`, `minecraft:oak_log`).
+- State selectors use Bedrock properties: `#find oak_log[pillar_axis=y]`. Use `#nbt` to inspect nearby block states. Selection fills can request orientation states, for example `#sel set oak_log[pillar_axis=x]`.
 
 You can also type a setting name directly: `#allowBreak false` is the same as `#set allowBreak false`, and `#allowBreak` alone toggles it.
 
@@ -36,7 +37,8 @@ You can also type a setting name directly: `#allowBreak false` is the same as `#
 | `#thisway <distance>` (`#forward`) | Walk straight in the direction you look. |
 | `#invert` | Run away from the current goal. |
 | `#come` | Walk to the camera's position. |
-| `#click` | Walk to the block you are looking at, up to 512 blocks away. |
+| `#click` | Aim with the crosshair, then left click to go there, right click to go above, or hold left and change aim to select a box. |
+| `#click cancel` / `#click here` | Cancel click mode / immediately walk above the aimed block. |
 | `#surface` (`#top`) | Go up to the surface. |
 | `#axis` (`#highway`) | Go to the closest axis or diagonal (at `axisHeight`). |
 | `#follow players` | Follow every player. |
@@ -171,7 +173,7 @@ Setting: `chunkCaching` (on by default).
 
 | Command | Description |
 |---|---|
-| `#stop` (`#cancel`) | Stop everything. |
+| `#stop` (`#cancel`, `#c`) | Stop everything, including click mode. |
 | `#forcecancel` | Stop everything, even in the middle of a movement. |
 | `#pause` (`#p`) / `#resume` (`#r`) | Pause the current task / continue it. |
 | `#paused` | Tell whether the bot is paused. |
@@ -179,6 +181,7 @@ Setting: `chunkCaching` (on by default).
 | `#eta` | Estimated time to the end of the segment and to the goal. |
 | `#version` | Show the version. |
 | `#help [page\|command]` (`#?`) | List commands / show one. |
+| `#complete [prefix...]` | Suggest commands, settings and arguments. Examples: `#complete go`, `#complete set toggle allow`, `#complete set allowBreak`, `#complete find oak_log[pillar_`. |
 | `#unload` | Unload the DLL cleanly. |
 | `#unfault` | Turn the bot back on after it caught an internal error. |
 | `#litematica`, `#schematica` | These Java mods do not exist on Bedrock: use `#build <file>`. |
@@ -192,7 +195,7 @@ Setting: `chunkCaching` (on by default).
 | `#set toggle <name>` | Toggle a boolean. |
 | `#set reset <name\|all>` | Back to the default. |
 | `#set list [page]` / `#set modified [filter] [page]` | List all / changed settings. |
-| `#set save` / `#set load` | Write / read `settings.txt`. |
+| `#set save [file]` / `#set load [file]` | Write / read a settings profile (default: `settings.txt` in the data folder). Loading resets defaults first; a missing file preserves current values. |
 | `#modified` (`#mod`) | List the changed settings. |
 | `#reset [all\|name]` | Reset settings. |
 

@@ -4,6 +4,7 @@
 #include <vector>
 
 #include "baritone/utils/BlockPos.h"
+#include "baritone/utils/BlockSelector.h"
 #include "baritone/world/BlockProps.h"
 #include "baritone/world/WorldSnapshot.h"
 
@@ -17,7 +18,7 @@ public:
     explicit BlockFilter(const std::vector<std::string>& names);
 
     bool empty() const { return names_.empty(); }
-    bool matches(const BlockProps& p) const { return names_.contains(p.name); }
+    bool matches(const BlockProps& p) const;
     bool matchesName(const std::string& name) const { return names_.contains(name); }
     // Items obtained by mining these blocks (diamond_ore -> diamond, stone -> cobblestone...).
     const std::unordered_set<std::string>& dropNames() const { return drops_; }
@@ -29,6 +30,7 @@ public:
 private:
     std::unordered_set<std::string> names_;
     std::unordered_set<std::string> drops_;
+    std::vector<BlockSelector> selectors_;
 };
 
 // Finds the closest blocks matching a filter in the loaded chunks (Baritone's

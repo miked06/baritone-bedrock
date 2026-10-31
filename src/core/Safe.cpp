@@ -56,7 +56,7 @@ void reportSeh(std::string_view where, unsigned long code, void* address) {
     g_faulted = true;
     logger::error("Fault 0x{:08X} in {} at {} -> bot disabled (use #reset after fixing)", code, where,
                   describeAddress(address));
-    chat::error(std::format("Crash evite dans {} ({}). Bot desactive, voir log.txt", where, describeAddress(address)));
+    chat::error(std::format("Crash prevented in {} ({}). Bot disabled; see log.txt", where, describeAddress(address)));
 }
 
 void reportException(std::string_view where, const char* what) {

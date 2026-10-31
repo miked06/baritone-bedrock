@@ -185,8 +185,8 @@ std::optional<PathingCommand> FarmProcess::onTick(bool calcFailed, bool isSafeTo
     }
 
     auto failed = [&] {
-        baritone_.logDirect("Farm echoue", true);
-        if (st.notificationOnFarmFail) baritone_.logNotification("Farm echoue", true);
+        baritone_.logDirect("Farming failed", true);
+        if (st.notificationOnFarmFail) baritone_.logNotification("Farming failed", true);
         onLostControl();
         return PathingCommand{nullptr, PathingCommandType::RequestPause};
     };

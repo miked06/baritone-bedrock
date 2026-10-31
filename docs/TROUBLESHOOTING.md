@@ -4,7 +4,7 @@ First, check `%LOCALAPPDATA%\BaritoneBedrock\log.txt`: every command, error and 
 
 ## The DLL does not load / nothing happens
 
-- **Check your game version.** Only Minecraft Bedrock **26.52** (package `1.26.5203.0`) is supported. Other versions move the functions the DLL hooks: the console shows which signatures were not found and the bot refuses to start. You can see your version at the bottom of Minecraft's main menu.
+- **Check your game version.** Only Minecraft Bedrock **26.60** (package `1.26.6005.0`) is supported. The DLL logs the detected package and rejects other builds before reading game objects. Missing or ambiguous signatures also prevent startup. You can see your version at the bottom of Minecraft's main menu.
 - **Inject into the right process**: `Minecraft.Windows.exe`.
 - **Antivirus**: DLL injectors and injected DLLs are often flagged. Build the DLL yourself if you prefer (see [BUILDING.md](BUILDING.md)).
 - **Admin rights**: if Minecraft runs as administrator, the injector must too. Running both normally is best.

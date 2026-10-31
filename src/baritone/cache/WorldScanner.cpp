@@ -81,8 +81,9 @@ static std::vector<std::string> oreFamily(const std::string& n) {
 }
 
 BlockFilter::BlockFilter(const std::vector<std::string>& names) {
-    auto add = [this](const std::string& block) {
+    auto add = [this](const std::string& block, const BlockSelector& selector) {
         names_.insert(block);
+        selectors_.push_back({block, selector.states});
         drops_.insert(block);  // with silk touch, or blocks that drop themselves
         if (auto it = dropTable().find(block); it != dropTable().end()) {
             for (const std::string& d : it->second) drops_.insert(d);
@@ -95,22 +96,34 @@ BlockFilter::BlockFilter(const std::vector<std::string>& names) {
         {"minecraft:nether_portal", "minecraft:portal"},           {"minecraft:sugar_cane", "minecraft:reeds"},
     };
     for (const std::string& raw : names) {
-        std::string n = normalize(raw);
+        const BlockSelector selector = BlockSelector::parse(raw);
+        std::string n = selector.name;
         if (auto it = javaNames.find(n); it != javaNames.end()) n = it->second;
         std::vector<std::string> family = oreFamily(n);
-        for (const std::string& ore : family) add(ore);
-        if (family.empty() || dropTable().contains(n)) add(n);  // an item name alone is not a block
+        for (const std::string& ore : family) add(ore, selector);
+        if (family.empty() || dropTable().contains(n)) add(n, selector);  // an item name alone is not a block
     }
 }
 
 std::string BlockFilter::toString() const {
     std::string out;
-    for (const std::string& n : names_) out += (out.empty() ? "" : ", ") + n;
+    std::unordered_set<std::string> printed;
+    for (const BlockSelector& selector : selectors_) {
+        const std::string text = selector.toString();
+        if (printed.insert(text).second) out += (out.empty() ? "" : ", ") + text;
+    }
     return out;
+}
+
+bool BlockFilter::matches(const BlockProps& p) const {
+    return names_.contains(p.name) && std::ranges::any_of(selectors_, [&](const BlockSelector& selector) {
+        return selector.matches(p);
+    });
 }
 
 std::vector<BlockPos> scanLoadedChunks(const WorldSnapshot& world, const BlockFilter& filter, const BlockPos& center,
                                        std::size_t max, int maxChunkRadius) {
+    if (max == 0 || filter.empty() || maxChunkRadius < 0) return {};
     const BlockRegistry& registry = BlockRegistry::get();
     std::size_t states = registry.size();
     std::vector<char> match(states, 0);
@@ -163,7 +176,8 @@ std::vector<BlockPos> scanLoadedChunks(const WorldSnapshot& world, const BlockFi
 
 std::vector<BlockPos> searchWorld(const WorldSnapshot& world, const BlockFilter& filter, const BlockPos& center,
                                   std::size_t max, int maxChunkRadius) {
-    std::vector<BlockPos> found = scanLoadedChunks(world, filter, center, max, maxChunkRadius);
+    if (max == 0 || filter.empty()) return {};
+    std::vector<BlockPos> found;
     auto cache = world.cache();
     bool tracked = std::ranges::any_of(filter.names(), [](const std::string& n) { return isTrackedBlock(n); });
     if (cache && tracked) {
@@ -171,11 +185,26 @@ std::vector<BlockPos> searchWorld(const WorldSnapshot& world, const BlockFilter&
         auto cached = cache->locationsOf([&](const std::string& n) { return filter.matchesName(n); }, center,
                                          static_cast<std::size_t>(std::max(0, Settings::get().maxCachedWorldScanCount)), 1);
         for (const BlockPos& p : cached) {
-            if (!world.isLoaded(p.x >> 4, p.z >> 4)) found.push_back(p);  // loaded chunks were scanned exactly
+            // Java prune: a cached location in a loaded chunk must still match,
+            // including properties; unloaded locations remain candidates to visit.
+            auto chunk = world.chunk(p.x >> 4, p.z >> 4);
+            if (!chunk || filter.matches(BlockRegistry::get().props(chunk->get(p.x & 15, p.y, p.z & 15))))
+                found.push_back(p);
         }
-        std::ranges::sort(found, [&](const BlockPos& a, const BlockPos& b) { return a.distSq(center) < b.distSq(center); });
-        if (found.size() > max) found.resize(max);
     }
+    const bool untracked = std::ranges::any_of(filter.names(), [](const std::string& n) { return !isTrackedBlock(n); });
+    // Java MineProcess.searchWorld: always scan untracked blocks, otherwise extend
+    // the cache only when requested and fewer than max locations were found.
+    if (!cache || untracked || (Settings::get().extendCacheOnThreshold && found.size() < max)) {
+        auto loaded = scanLoadedChunks(world, filter, center, max, maxChunkRadius);
+        found.insert(found.end(), loaded.begin(), loaded.end());
+    }
+    std::ranges::sort(found, [](const BlockPos& a, const BlockPos& b) {
+        return std::tie(a.x, a.y, a.z) < std::tie(b.x, b.y, b.z);
+    });
+    found.erase(std::unique(found.begin(), found.end()), found.end());
+    std::ranges::sort(found, [&](const BlockPos& a, const BlockPos& b) { return a.distSq(center) < b.distSq(center); });
+    if (found.size() > max) found.resize(max);
     return found;
 }
 

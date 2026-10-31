@@ -22,7 +22,7 @@ public:
         filter_ = nullptr;
         cache_.clear();
     }
-    std::string displayName() const override { return "Suivre " + description_; }
+    std::string displayName() const override { return "Following " + description_; }
     const std::vector<EntityInfo>& following() const { return cache_; }
 
 private:

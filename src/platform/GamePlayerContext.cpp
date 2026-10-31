@@ -175,6 +175,7 @@ baritone::HotbarStack describe(const sdk::ItemStack* stack) {
             if (id == 15) out.efficiency = lvl;  // Bedrock enchantment ids
             if (id == 16) out.silkTouch = lvl > 0;
             if (id == 25) out.frostWalker = lvl;
+            if (id == 7) out.depthStrider = lvl;
         }
     }
     return out;
@@ -231,12 +232,45 @@ void GamePlayerContext::useHeldItemWhenTargeting() {
 }
 
 bool GamePlayerContext::swapSlots(int slotA, int slotB) {
-    if (!player_ || !moves_.empty()) return false;  // one move at a time
+    if (!player_ || inventoryMovePending() || slotA < 0 || slotA >= 36 || slotB < 0 || slotB >= 36 || slotA == slotB)
+        return false;
+    if (hotbar(slotA).empty()) return false;
+    if ((slotA >= 9 || slotB >= 9) && !player_->containerManager()) {
+        // 26.60: the server only exposes InventoryContainer while its screen is open.
+        // Use the normal open/close flow; never pretend a refused move succeeded locally.
+        player_->openInventory();
+        openingMove_ = OpeningMove{slotA, slotB, tick_};
+        return true;
+    }
     int id = sdk::sendInventoryMove(*player_, slotA, slotB);
     logger::debug("Inventory move {} -> {}: {}", slotA, slotB, id ? std::format("request {}", id) : "not sent");
     if (!id) return false;
     moves_.push_back({id, slotA, slotB, tick_});
     return true;
+}
+
+void GamePlayerContext::advanceInventoryOpen() {
+    const auto move = *openingMove_;
+    if (void* manager = player_->containerManager(); manager && tick_ - move.started >= 3) {
+        ownedInventory_ = manager;
+        openingMove_.reset();
+        int id = sdk::sendInventoryMove(*player_, move.slotA, move.slotB);
+        logger::debug("Inventory move {} -> {} after opening inventory: request {}", move.slotA, move.slotB, id);
+        if (id) moves_.push_back({id, move.slotA, move.slotB, tick_});
+        else closeOwnedInventory();
+    } else if (tick_ - move.started > 100) {
+        openingMove_.reset();
+        logger::warn("Inventory screen did not open; move cancelled");
+    }
+}
+
+void GamePlayerContext::closeOwnedInventory() {
+    if (!ownedInventory_) return;
+    if (player_->containerManager() == ownedInventory_) {
+        player_->closeInventory();
+        inventoryClosedAt_ = tick_;
+    }
+    ownedInventory_ = nullptr;
 }
 
 void GamePlayerContext::onItemStackResponse(int requestId, int result) {
@@ -262,6 +296,7 @@ void GamePlayerContext::applyAnsweredMoves() {
         }
         return false;
     });
+    if (moves_.empty()) closeOwnedInventory();
 }
 
 int GamePlayerContext::countItem(std::string_view name) const {

@@ -19,7 +19,7 @@ public:
     bool isTemporary() const override { return true; }
     void onLostControl() override {}
     double priority() const override { return 0; }  // Java: DEFAULT_PRIORITY + 1
-    std::string displayName() const override { return "En pause"; }
+    std::string displayName() const override { return "Paused"; }
 
 private:
     bool paused_ = false;
@@ -42,7 +42,7 @@ public:
     bool isTemporary() const override { return true; }
     void onLostControl() override {}
     double priority() const override { return 5.1; }  // slightly higher than backfill
-    std::string displayName() const override { return "Pause inventaire"; }
+    std::string displayName() const override { return "Inventory pause"; }
 
 private:
     bool pauseRequestedLastTick_ = false;
