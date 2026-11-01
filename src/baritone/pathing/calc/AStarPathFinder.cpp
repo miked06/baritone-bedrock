@@ -125,6 +125,7 @@ PathCalculationResult AStarPathFinder::calculate(long primaryTimeoutMs, long fai
                 move.apply(move, ctx, current->x, current->y, current->z, res);
                 double actionCost = res.cost;
                 if (actionCost >= costs::COST_INF) continue;
+                if (!ctx.permitsSegment({current->x, current->y, current->z}, {res.x, res.y, res.z})) continue;
                 if (actionCost <= 0 || std::isnan(actionCost)) {
                     throw std::logic_error(std::string(move.name) + " calculated an invalid cost");
                 }

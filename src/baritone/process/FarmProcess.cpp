@@ -92,6 +92,7 @@ std::optional<PathingCommand> FarmProcess::onTick(bool calcFailed, bool isSafeTo
 
     std::vector<BlockPos> toBreak, openFarmland, bonemealable, openSoulSand, openLog;
     for (const BlockPos& pos : *locations_) {
+        if (!ctx.permitsModify(pos) || !ctx.permitsModify(pos.above())) continue;
         if (selection && !selection->contains(pos)) continue;
         if (range_ != 0 && pos.distSq(center_) > static_cast<int64_t>(range_) * range_) continue;
         const BlockProps& p = ctx.props(pos.x, pos.y, pos.z);

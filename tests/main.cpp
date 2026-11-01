@@ -6,6 +6,7 @@
 #include <format>
 #include <functional>
 #include <random>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -27,7 +28,15 @@
 #include "baritone/schematic/Orientation.h"
 #include "baritone/schematic/Schematic.h"
 #include "baritone/schematic/SchematicWorkspace.h"
+#include "baritone/schematic/SchematicCatalog.h"
+#include "baritone/api/TransferReconciliation.h"
+#include "baritone/world/PortalGraph.h"
+#include "baritone/schematic/QuarryPlan.h"
 #include "baritone/schematic/SchematicLoadJob.h"
+#include "baritone/schematic/SchematicSurvey.h"
+#include "baritone/schematic/SchematicExport.h"
+#include "baritone/task/TaskQueue.h"
+#include "baritone/task/CheckpointWriter.h"
 #include "baritone/schematic/NbtReader.h"
 #include "baritone/utils/CommandLine.h"
 #include "InflateData.h"
@@ -223,6 +232,28 @@ TEST(no_pillar_without_blocks) {
     w.floor(0, b.stone);
     auto r = findPath(w, {0, 1, 0}, std::make_shared<GoalBlock>(0, 4, 0), false, 300);
     CHECK_MSG(r.type != PathResultType::SuccessToGoal, describe(r));
+}
+
+TEST(swim_to_surface_without_placing_or_breaking) {
+    SettingsGuard guard;
+    Settings::get().allowBreak = false;
+    Settings::get().allowPlace = false;
+    const Blocks& b = Blocks::get();
+    TestWorld w(1);
+    w.floor(0, b.stone);
+    w.fill(-3, 1, -3, 3, 3, 3, b.water);
+    auto r = findPath(w, {0, 1, 0}, std::make_shared<GoalBlock>(0, 3, 0));
+    CHECK_MSG(r.type == PathResultType::SuccessToGoal, describe(r));
+    CHECK_MSG(uses(r, MovementType::Pillar), describe(r));
+    PlayerAbilities abilities;
+    CalculationContext open(w.snapshot(), abilities, true);
+    CHECK(movement_costs::pillar(open, 0, 2, 0) < costs::COST_INF);
+    w.set(0, 4, 0, b.stone);
+    CalculationContext ceiling(w.snapshot(), abilities, true);
+    CHECK(movement_costs::pillar(ceiling, 0, 2, 0) >= costs::COST_INF);
+    w.set(0, 4, 0, b.lava);
+    CalculationContext hazard(w.snapshot(), abilities, true);
+    CHECK(movement_costs::pillar(hazard, 0, 2, 0) >= costs::COST_INF);
 }
 
 TEST(bridge_over_gap) {
@@ -1558,6 +1589,338 @@ TEST(compressed_schematic_corruption_is_rejected) {
         try { decompressIfNeeded(bytes); } catch (const std::runtime_error&) { rejected = true; }
         CHECK(rejected);
     }
+}
+
+TEST(schematic_survey_counts_only_live_differences_and_yields) {
+    TestWorld world(1);
+    world.set(0, 1, 0, Blocks::get().dirt);
+    world.set(2, 1, 0, Blocks::get().dirt);
+    world.set(3, 1, 0, Blocks::get().stone);
+    std::vector<int> indices(49, -1);
+    indices[0] = indices[1] = indices[3] = indices[48] = 0; indices[2] = 1;
+    SchematicSurvey survey;
+    survey.start(std::make_shared<StaticSchematic>(BlockPos{49, 1, 1},
+        std::vector<DesiredBlock>{DesiredBlock::block("minecraft:stone"), DesiredBlock::air()}, indices), {0, 1, 0}, 7);
+    CHECK(!survey.step(*world.snapshot(), 2)); CHECK(survey.scanned() == 2);
+    while (survey.active()) survey.step(*world.snapshot(), 5);
+    auto r = survey.result();
+    CHECK(r.matching == 1 && r.wrong == 1 && r.missing == 1 && r.extra == 1 && r.unknown == 1);
+    CHECK(r.items.at("minecraft:stone") == 2 && r.problems.size() == 4);
+    CHECK(survey.revision() == 7);
+}
+
+TEST(material_plan_reserves_exact_items_before_substitutions) {
+    test::TestPlayer player;
+    player.inventory[0].name = "minecraft:stone"; player.inventory[0].count = 3;
+    player.inventory[9].name = "minecraft:cobblestone"; player.inventory[9].count = 5;
+    auto plan = planMaterials({{"minecraft:stone", 8}, {"minecraft:cobblestone", 4}}, player, {"stone>cobblestone"});
+    CHECK(plan.size() == 2);
+    CHECK(plan[0].item == "minecraft:cobblestone" && plan[0].missing == 0);
+    CHECK(plan[1].required == 8 && plan[1].available == 4 && plan[1].missing == 4);
+}
+
+TEST(material_plan_counts_both_missing_door_halves_once) {
+    TestWorld world(1);
+    auto lower = DesiredBlock::block("minecraft:oak_door"), upper = lower;
+    lower.states = {{"upper_block_bit", "0"}}; upper.states = {{"upper_block_bit", "1"}};
+    SchematicSurvey survey;
+    survey.start(std::make_shared<StaticSchematic>(BlockPos{1, 2, 1}, std::vector<DesiredBlock>{lower, upper}, std::vector<int>{0, 1}), {0, 1, 0}, 1);
+    while (survey.active()) survey.step(*world.snapshot());
+    CHECK(survey.result().missing == 2 && survey.result().items.at("minecraft:oak_door") == 1);
+}
+
+TEST(mcstructure_export_roundtrip_preserves_states_and_refuses_unknown_or_overwrite) {
+    TempDir dir;
+    TestWorld world(1);
+    BlockProps log = BlockRegistry::get().props(Blocks::get().stone);
+    log.name = "minecraft:oak_log"; log.states = {{"pillar_axis", "x"}};
+    world.set(0, 1, 0, BlockRegistry::get().add(log));
+    auto file = dir.path / "export.mcstructure";
+    exportMcStructure(*world.snapshot(), {{0, 1, 0}, {1, 1, 0}}, file);
+    auto loaded = loadMcStructure(file.string());
+    CHECK((loaded->size() == BlockPos{2, 1, 1}));
+    CHECK(blockMatches(loaded->desired(0, 0, 0, BlockProps{}), log, false));
+    CHECK(loaded->desired(1, 0, 0, BlockProps{}).kind == DesiredBlock::Kind::Air);
+    bool rejected = false;
+    try { exportMcStructure(*world.snapshot(), {{0, 1, 0}, {1, 1, 0}}, file); } catch (const std::exception&) { rejected = true; }
+    CHECK(rejected);
+    rejected = false;
+    try { exportMcStructure(*world.snapshot(), {{48, 1, 0}, {48, 1, 0}}, dir.path / "unknown.mcstructure"); } catch (const std::exception&) { rejected = true; }
+    CHECK(rejected && !std::filesystem::exists(dir.path / "unknown.mcstructure"));
+}
+
+TEST(protected_areas_block_crossing_and_override_costs_without_blocking_other_cells) {
+    TestWorld world(1);
+    auto policy = std::make_shared<ProtectionPolicy>();
+    policy->add({"wall", {{2, 0, -1}, {2, 4, 1}}, ProtectionPolicy::Both});
+    world.snapshot()->setProtection(policy);
+    CalculationContext ctx(world.snapshot(), {}, true);
+    ctx.ignoreBreakRestrictions = true;
+    ctx.placeCostOverride = [](int, int, int, const BlockProps&) { return 0.0; };
+    CHECK(ctx.breakCostMultiplierAt(2, 1, 0, BlockRegistry::get().props(Blocks::get().dirt)) >= costs::COST_INF);
+    CHECK(ctx.costOfPlacingAt(2, 1, 0, BlockRegistry::get().props(kAir)) >= costs::COST_INF);
+    CHECK(!ctx.permitsSegment({0, 1, 0}, {4, 1, 0}));
+    CHECK(ctx.permitsSegment({0, 1, 3}, {4, 1, 3}));
+    CHECK(policy->permitsModify({4, 1, 0}));
+    auto snapshotPolicy = ctx.protection;
+    world.snapshot()->setProtection(std::make_shared<ProtectionPolicy>());
+    CHECK(!snapshotPolicy->permitsEntry({2, 1, 0}));
+}
+
+TEST(protected_areas_persist_and_navigation_avoids_them) {
+    TempDir dir;
+    ProtectionPolicy policy;
+    policy.add({"protected home", {{2, 1, -1}, {4, 3, 1}}, ProtectionPolicy::Both});
+    policy.save(dir.path / "zones.txt");
+    auto restored = ProtectionPolicy::load(dir.path / "zones.txt");
+    CHECK(restored.zones().size() == 1 && !restored.permitsModify({3, 1, 0}));
+    TestWorld world(1); world.floor(0, Blocks::get().stone);
+    world.snapshot()->setProtection(std::make_shared<ProtectionPolicy>(restored));
+    auto result = findPath(world, {0, 1, 0}, std::make_shared<GoalBlock>(6, 1, 0));
+    CHECK(result.type == PathResultType::SuccessToGoal && result.path);
+    for (const auto& movement : result.path->movements()) CHECK(restored.permitsSegment(movement.src, movement.dest));
+    CHECK(restored.remove("protected home") && restored.permitsEntry({3, 1, 0}));
+}
+
+TEST(task_queue_sequences_recovers_paused_and_rejects_world_mismatch) {
+    TaskQueue queue; WorldIdentity world{"My world", 0}; queue.bind(world);
+    queue.add({"wait", {"3"}}); queue.add({"goto", {"1", "2", "3"}});
+    queue.resume(world);
+    int started = 0;
+    auto start = [&](const Task&) { ++started; return TaskOutcome{}; };
+    auto poll = [](const Task& task) { return TaskOutcome{task.elapsedTicks >= 3 ? TaskStatus::Succeeded : TaskStatus::Running, {}}; };
+    queue.tick(world, start, poll); queue.tick(world, start, poll);
+    CHECK(started == 1 && queue.currentIndex() == 0);
+    auto recovered = TaskQueue::decode(queue.encode());
+    CHECK(!recovered.running() && recovered.tasks()[0].status == TaskStatus::Pending);
+    bool rejected = false;
+    try { recovered.resume({"Other world", 0}); } catch (const std::exception&) { rejected = true; }
+    CHECK(rejected);
+    for (int i = 0; i < 10 && queue.running(); ++i) queue.tick(world, start, poll);
+    CHECK(queue.complete() && started == 2);
+    recovered.resume(world); recovered.tick({"My world", 1}, start, poll);
+    CHECK(!recovered.running());
+}
+
+TEST(task_queue_bounds_retries_and_blocks_following_actions_on_failure) {
+    TaskQueue queue; WorldIdentity world{"world", 0}; queue.bind(world);
+    Task task{"test", {}}; task.retryLimit = 1; queue.add(task); queue.add({"never", {}}); queue.resume(world);
+    int started = 0;
+    auto fail = [&](const Task&) { ++started; return TaskOutcome{TaskStatus::Failed, "Missing tool"}; };
+    queue.tick(world, fail, {}); CHECK(queue.running());
+    queue.tick(world, fail, {}); CHECK(!queue.running() && started == 2 && queue.currentIndex() == 0);
+    CHECK(queue.tasks()[0].reason == "Missing tool");
+    queue.retryCurrent(); CHECK(queue.tasks()[0].status == TaskStatus::Pending);
+    bool rejected = false;
+    try { TaskQueue::decode("BARITONE_TASKS 1 \"world\" 0 0 129"); } catch (const std::exception&) { rejected = true; }
+    CHECK(rejected);
+}
+
+TEST(task_checkpoint_writer_coalesces_and_preserves_final_snapshot) {
+    TempDir dir; CheckpointWriter writer; auto file = dir.path / "tasks.txt";
+    writer.submit(file, "first"); writer.submit(file, "second"); writer.submit(file, "latest"); writer.wait();
+    std::ifstream input(file); std::string value; input >> value; CHECK(value == "latest");
+    CHECK(!std::filesystem::exists(file.string() + ".checkpoint.tmp"));
+}
+
+TEST(survival_eats_until_full_and_restores_the_original_slot) {
+    SettingsGuard settings;
+    TestWorld world(1); world.floor(0, Blocks::get().stone);
+    test::TestPlayer player; player.hunger = 10; player.selected = 5; player.facing.pitch = -90;
+    player.inventory[0].name = "minecraft:bread"; player.inventory[0].count = 8;
+    Baritone bot(player, [](const std::string&, bool) {}); bot.tick(world.snapshot());
+    bot.survival().setEnabled(true); CHECK(bot.survival().isActive());
+    bot.survival().onTick(false, true);
+    CHECK(player.heldUse && player.selected == 0);
+    player.hunger = 20; bot.survival().onTick(false, true);
+    CHECK(!player.heldUse && player.selected == 5 && !bot.survival().isActive());
+}
+
+TEST(survival_retreats_from_threats_and_stops_holding_on_disable) {
+    TestWorld world(1); world.floor(0, Blocks::get().stone);
+    test::TestPlayer player;
+    EntityInfo creeper; creeper.type = "minecraft:creeper"; creeper.position = {2, 1, 0}; player.nearby = {creeper};
+    Baritone bot(player, [](const std::string&, bool) {}); bot.tick(world.snapshot());
+    bot.survival().setEnabled(true);
+    auto action = bot.survival().onTick(false, true);
+    CHECK(action && action->goal && !action->goal->isInGoal({0, 1, 0}) && action->goal->isInGoal({100, 1, 100}));
+    player.heldUse = true; bot.survival().setEnabled(false); CHECK(!player.heldUse);
+}
+
+TEST(storage_moves_exact_quantity_only_after_acceptance_and_returns) {
+    TestWorld world(1); test::TestPlayer player;
+    player.inventory[0].name = "minecraft:stone"; player.inventory[0].count = 5;
+    player.externalSlots = {{"container_items", 0, false, {}}};
+    Baritone bot(player, [](const std::string&, bool) {}); bot.tick(world.snapshot());
+    bot.storage().addLocation("supplies", {1, 1, 0}); bot.storage().start("supplies", "stone", 2, false);
+    for (int i = 0; i < 12 && bot.storage().isActive(); ++i) bot.storage().onTick(false, true);
+    CHECK(bot.storage().succeeded() && !player.containerOpen());
+    CHECK(player.inventory[0].count == 3 && player.externalSlots[0].stack.count == 2);
+}
+
+TEST(storage_server_refusal_never_claims_success_or_changes_items) {
+    TestWorld world(1); test::TestPlayer player; player.rejectTransfer = true;
+    HotbarStack stone; stone.name = "minecraft:stone"; stone.count = 8;
+    player.externalSlots = {{"container_items", 0, false, stone}};
+    Baritone bot(player, [](const std::string&, bool) {}); bot.tick(world.snapshot());
+    bot.storage().addLocation("supplies", {1, 1, 0}); bot.storage().start("supplies", "stone", 2, true);
+    for (int i = 0; i < 12 && bot.storage().isActive(); ++i) bot.storage().onTick(false, true);
+    CHECK(!bot.storage().succeeded() && !bot.storage().failure().empty());
+    CHECK(player.countItem("minecraft:stone") == 0 && player.externalSlots[0].stack.count == 8);
+}
+
+TEST(animal_farming_skips_babies_and_preserves_minimum_adult_population) {
+    TestWorld world(1); test::TestPlayer player;
+    for (int i = 0; i < 4; ++i) {
+        EntityInfo animal; animal.id = i + 1; animal.type = "minecraft:cow"; animal.position = {1, 1, 0};
+        animal.baby = i == 3; animal.inLove = false; animal.health = 10; player.nearby.push_back(animal);
+    }
+    Baritone bot(player, [](const std::string&, bool) {}); bot.tick(world.snapshot());
+    bot.animals().start("cow", true, 5, 2, 16);
+    for (int i = 0; i < 12 && bot.animals().isActive(); ++i) bot.animals().onTick(false, true);
+    CHECK(player.attacks == 1 && !player.nearby.back().dead);
+}
+
+TEST(transfer_reconciliation_accepts_independent_native_updates_and_rejects_other_changes) {
+    CHECK(transferSideCompatible(false, true, 15, 15, 0));
+    CHECK(transferSideCompatible(true, false, 0, 15, 0));
+    CHECK(transferSideCompatible(false, true, 15, 0, 15));
+    CHECK(transferSideCompatible(true, false, 0, 0, 15));
+    CHECK(!transferSideCompatible(false, false, 15, 0, 15));
+    CHECK(!transferSideCompatible(false, true, 9, 0, 15));
+    CHECK(!transferSideCompatible(true, false, 0, 15, 13));
+}
+
+TEST(schematic_catalog_restores_transforms_without_mutating_other_placements) {
+    SchematicWorkspace work;
+    work.load("test", std::make_shared<FillSchematic>(BlockPos{2, 3, 4}, DesiredBlock::block("minecraft:stone")), {2, 1, 2}, "test.mcstructure");
+    work.rotate(1); work.mirror(2); work.layer(std::pair{1, 2});
+    SchematicCatalog catalog; catalog.store("first", work);
+    work.move({12, 1, 2}); catalog.store("second", work);
+    CHECK(catalog.select("first", work) && work.origin().x == 2 && work.rotation() == 1 && work.mirrorMode() == 2);
+    CHECK(work.schematic()->size() == BlockPos(4, 3, 2));
+    TempDir dir; catalog.save(dir.path / "placements.txt");
+    SchematicCatalog restored; restored.load(dir.path / "placements.txt");
+    CHECK(!restored.select("second", work));
+    restored.entry("second").preset.apply(work);
+    CHECK(work.origin().x == 12 && work.layers()->first == 1);
+    CHECK(catalog.entry("first").resident->origin().x == 2);
+}
+
+TEST(schematic_catalog_preview_has_a_shared_limit_and_deduplicates_cells) {
+    TestWorld world(1); SchematicWorkspace work;
+    work.load("test", std::make_shared<FillSchematic>(BlockPos{16, 5, 16}, DesiredBlock::block("minecraft:stone")), {0, 1, 0}, "test.mcstructure");
+    SchematicCatalog catalog; catalog.store("same", work);
+    auto cells = catalog.preview(*world.snapshot(), {3, 3, 3}, work, 17);
+    CHECK(cells.size() == 17);
+    std::set<BlockPos> positions; for (const auto& cell : cells) positions.insert(cell.pos);
+    CHECK(positions.size() == cells.size());
+}
+
+TEST(portal_routes_choose_nether_shortcut_and_respect_directed_links) {
+    PortalGraph graph;
+    graph.add("home",0,{0,64,0}); graph.add("far",0,{8000,64,0});
+    graph.add("nether-home",1,{0,64,0}); graph.add("nether-far",1,{1000,64,0});
+    graph.link("home","nether-home",false); graph.link("nether-far","far",false);
+    auto route = graph.route("home","far");
+    CHECK(route.stops.size()==4 && route.cost==1032);
+    CHECK(graph.route("far","home").stops.size()==2);
+    CHECK(PortalGraph::equivalent({-1,64,-9},0,1)==BlockPos(-1,64,-2));
+    TempDir dir; graph.save(dir.path/"portals.txt"); PortalGraph copy; copy.load(dir.path/"portals.txt");
+    CHECK(copy.route("home","far").stops==route.stops);
+    copy.remove("nether-home"); CHECK(copy.route("home","far").stops.size()==2);
+}
+
+TEST(quarry_preserves_a_continuous_supported_ramp_and_detects_boundary_liquids) {
+    TestWorld world(1); world.fill(-1,0,-1,8,5,8,Blocks::get().stone);
+    auto plan=std::make_shared<QuarryPlan>(Selection{{0,1,0},{6,4,6}},true);
+    CHECK(plan->rampFloor(0,0)==3 && plan->rampFloor(1,0)==2 && plan->rampFloor(2,0)==1);
+    CHECK(plan->desired(0,3,0,{}).kind==DesiredBlock::Kind::Any);
+    CHECK(plan->desired(3,1,3,{}).kind==DesiredBlock::Kind::Air);
+    QuarryPreflight survey; survey.start(plan);
+    while (!survey.step(*world.snapshot(),29)) {}
+    CHECK(survey.ready() && survey.failure().empty() && survey.blocks()>0);
+    world.fill(-1,2,2,-1,2,2,Blocks::get().water); survey.start(plan);
+    while (!survey.step(*world.snapshot(),29)) {}
+    CHECK(!survey.ready() && !survey.failure().empty());
+}
+
+TEST(tree_detection_requires_soil_natural_canopy_and_a_complete_selected_tree) {
+    TestWorld world(1); world.floor(0,Blocks::get().dirt);
+    BlockProps log; log.name="minecraft:oak_log"; log.fullCube=log.canPlaceAgainst=true;
+    auto logId=BlockRegistry::get().add(log);
+    BlockProps leaves; leaves.name="minecraft:oak_leaves"; leaves.type=BlockType::Leaves; leaves.states={{"persistent_bit","0"}};
+    auto leafId=BlockRegistry::get().add(leaves);
+    world.fill(0,1,0,0,4,0,logId); world.fill(-1,4,-1,1,5,1,leafId); world.set(0,4,0,logId);
+    Selection area{{-2,0,-2},{2,6,2}};
+    auto tree=identifyTree(*world.snapshot(),area,{0,1,0});
+    CHECK(tree && tree->logs.size()==4 && tree->roots.size()==1 && tree->sapling=="minecraft:oak_sapling");
+    CHECK(!identifyTree(*world.snapshot(),Selection{{-2,0,-2},{2,2,2}},{0,1,0}));
+    leaves.states={{"persistent_bit","1"}}; leafId=BlockRegistry::get().add(leaves);
+    world.fill(-1,4,-1,1,5,1,leafId); world.set(0,4,0,logId);
+    CHECK(!identifyTree(*world.snapshot(),area,{0,1,0}));
+}
+
+TEST(vehicle_routes_use_wide_corridors_and_refuse_land_or_unloaded_water) {
+    TestWorld world(1); world.floor(0,Blocks::get().water);
+    auto route=findVehiclePath(*world.snapshot(),{0,1,0},{8,1,0},VehicleKind::Boat);
+    CHECK(route.error.empty() && route.points.front()==BlockPos(0,1,0) && route.points.back()==BlockPos(8,1,0));
+    world.fill(4,1,-1,4,3,1,Blocks::get().stone);
+    route=findVehiclePath(*world.snapshot(),{0,1,0},{8,1,0},VehicleKind::Boat);
+    CHECK(route.error.empty());
+    for (auto p:route.points) CHECK(vehicleNodeClear(*world.snapshot(),p,VehicleKind::Boat));
+    CHECK(!vehicleNodeClear(*world.snapshot(),{4,1,0},VehicleKind::Boat));
+    CHECK(!findVehiclePath(*world.snapshot(),{0,1,0},{16,1,0},VehicleKind::Boat).error.empty());
+    CHECK(!findVehiclePath(*world.snapshot(),{0,1,0},{8,1,0},VehicleKind::Horse).error.empty());
+}
+
+TEST(quarry_path_calculations_cannot_destroy_the_access_ramp) {
+    TestWorld world(1); world.fill(-1,0,-1,8,5,8,Blocks::get().stone);
+    test::TestPlayer player; Baritone bot(player,[](const std::string&,bool) {}); bot.tick(world.snapshot());
+    auto plan=std::make_shared<QuarryPlan>(Selection{{0,1,0},{6,4,6}},false);
+    bot.builder().build("quarry",std::make_shared<MaskSchematic>(plan,[](int,int,int) { return true; }),plan->origin(),false,false);
+    CalculationContext ctx(world.snapshot(),{},false); bot.builder().customizeContext(ctx);
+    CHECK(ctx.breakCostMultiplierAt(0,4,0,BlockRegistry::get().props(Blocks::get().stone))>=costs::COST_INF);
+    CHECK(ctx.breakCostMultiplierAt(3,2,3,BlockRegistry::get().props(Blocks::get().stone))<costs::COST_INF);
+}
+
+TEST(crafting_waits_for_server_acceptance_and_output_and_stops_on_refusal) {
+    TestWorld world(1); test::TestPlayer player;
+    player.recipeOptions={{"recipe_items","minecraft:stick",0,4}};
+    Baritone bot(player,[](const std::string&,bool) {}); bot.tick(world.snapshot());
+    bot.craft().start({1,1,0},"stick",3);
+    for (int i=0;i<15;++i) bot.craft().onTick(false,true);
+    CHECK(player.craftRequests==1 && bot.craft().isActive() && !bot.craft().succeeded());
+    player.inventory[0].name="minecraft:stick"; player.inventory[0].count=4; player.crafting=TransferState::Accepted;
+    for (int i=0;i<5 && bot.craft().isActive();++i) bot.craft().onTick(false,true);
+    CHECK(bot.craft().succeeded() && !player.containerOpen());
+    bot.craft().start({1,1,0},"stick",1);
+    for (int i=0;i<8;++i) bot.craft().onTick(false,true);
+    player.crafting=TransferState::Rejected; bot.craft().onTick(false,true);
+    CHECK(!bot.craft().isActive() && !bot.craft().succeeded() && !bot.craft().failure().empty());
+    CHECK(player.countItem("minecraft:stick")==4);
+}
+
+TEST(smelting_collects_confirmed_output_and_preserves_preexisting_furnace_items) {
+    TestWorld world(1); test::TestPlayer player;
+    player.inventory[0].name="minecraft:raw_iron"; player.inventory[0].count=8;
+    player.inventory[1].name="minecraft:coal"; player.inventory[1].count=1;
+    player.externalSlots={{"furnace_input",0,false,{},25},{"furnace_fuel",0,false,{},24},{"furnace_output",0,false,{},26}};
+    Baritone bot(player,[](const std::string&,bool) {}); bot.tick(world.snapshot());
+    bot.smelt().start({1,1,0},"raw_iron","iron_ingot",8,"coal",1);
+    for (int i=0;i<8;++i) bot.smelt().onTick(false,true);
+    CHECK(!bot.smelt().succeeded() && player.externalSlots[0].stack.count==8);
+    player.externalSlots[0].stack.count=0; player.externalSlots[1].stack.count=0;
+    player.externalSlots[2].stack.name="minecraft:iron_ingot"; player.externalSlots[2].stack.count=8;
+    for (int i=0;i<8 && bot.smelt().isActive();++i) bot.smelt().onTick(false,true);
+    CHECK(bot.smelt().succeeded() && player.countItem("minecraft:iron_ingot")==8);
+    CHECK(transferTargetReceiptValid(24,1,0) && !transferTargetReceiptValid(7,1,0));
+    player.inventory[0].name="minecraft:raw_iron"; player.inventory[0].count=8;
+    player.inventory[1].name="minecraft:coal"; player.inventory[1].count=1;
+    player.externalSlots[0].stack.name="minecraft:sand"; player.externalSlots[0].stack.count=3;
+    bot.smelt().start({1,1,0},"raw_iron","iron_ingot",8,"coal",1);
+    for (int i=0;i<4 && bot.smelt().isActive();++i) bot.smelt().onTick(false,true);
+    CHECK(!bot.smelt().succeeded() && player.externalSlots[0].stack.count==3 && player.countItem("minecraft:raw_iron")==8);
 }
 
 TEST(performance_random_terrain) {

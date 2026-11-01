@@ -244,6 +244,7 @@ BlockProps classifyBlock(const std::string& fullName, const sdk::nbt::CompoundTa
     BlockProps p = classifyByName(fullName, states);
     if (states) {
         for (const auto& [key, value] : states->tags) {
+            p.stateTypes.emplace_back(key, static_cast<uint8_t>(value.type()));
             switch (value.type()) {
                 case sdk::nbt::TagType::String: p.states.emplace_back(key, *static_cast<const std::string*>(value.payload())); break;
                 case sdk::nbt::TagType::Byte:

@@ -12,7 +12,13 @@
 #include "baritone/cache/Waypoints.h"
 #include "baritone/selection/ClickSelection.h"
 #include "baritone/schematic/SchematicWorkspace.h"
+#include "baritone/schematic/SchematicCatalog.h"
+#include "baritone/schematic/QuarryPlan.h"
 #include "baritone/schematic/SchematicLoadJob.h"
+#include "baritone/schematic/SchematicSurvey.h"
+#include "baritone/task/TaskQueue.h"
+#include "baritone/task/CheckpointWriter.h"
+#include "baritone/world/PortalGraph.h"
 #include "command/CommandManager.h"
 #include "core/InputOverride.h"
 #include "core/LookBehavior.h"
@@ -52,11 +58,26 @@ public:
     platform::GamePlayerContext& player() { return player_; }
     baritone::WaypointStore& waypoints() { return waypoints_; }
     baritone::SchematicWorkspace& schematics() { return schematics_; }
+    baritone::SchematicCatalog& placements() { return placements_; }
+    void selectPlacement(const std::string& key);
+    void startQuarry(baritone::Selection area, bool lighting, bool excavate);
+    const baritone::QuarryPreflight& quarry() const { return quarry_; }
+    void setQuarryStorage(std::string name) { quarryStorage_ = std::move(name); }
     bool schematicLoading() const { return schematicLoad_.running(); }
     void loadSchematicAsync(std::string file, baritone::BlockPos origin, bool preview);
     void cancelSchematicLoad() { schematicLoad_.cancel(); }
     void runDiagnosticAsync(std::function<void()> task);
+    void startSchematicSurvey(bool materials);
+    const baritone::SchematicSurvey& schematicSurvey() const { return survey_; }
     const std::string& worldName() const { return worldName_; }
+    std::filesystem::path worldDataPath(const std::string& category, bool perDimension = true) const;
+    baritone::PortalGraph& portals() { return portals_; }
+    void applyProtection(std::shared_ptr<const baritone::ProtectionPolicy> policy);
+    baritone::TaskQueue& tasks() { return tasks_; }
+    baritone::WorldIdentity identity() const;
+    void saveTasks();
+    void resumeTasks();
+    void prepareTasks();
 
     // #sel pos1 waiting for its pos2 (the selections themselves are in baritone().selections()).
     std::optional<baritone::BlockPos>& selectionPos1() { return selectionPos1_; }
@@ -84,6 +105,7 @@ public:
 
     // Debug helpers
     void walkFor(int ticks, bool sprint);
+    void jumpFor(int ticks) { cancelAll(); jumpTicks_ = ticks; }
     void lookAt(float yaw, float pitch) { manualLook_ = sdk::Vec2{pitch, yaw}; }
     void cancelAll();
     void startClickSelection();
@@ -116,7 +138,35 @@ private:
     void updateClickSelection();
     baritone::ClickSelection clickSelection_;
     baritone::SchematicWorkspace schematics_;
+    baritone::SchematicCatalog placements_;
+    std::filesystem::path placementsFile_;
+    baritone::PortalGraph portals_;
+    std::filesystem::path portalsFile_;
+    baritone::QuarryPreflight quarry_;
+    baritone::SchematicSurvey quarryVerification_;
+    bool quarryChecking_ = false;
+    bool quarryActive_ = false, quarryExcavate_ = false, quarryLayerStarted_ = false;
+    bool quarryUnloading_ = false;
+    int quarryLayer_ = 0;
+    uint64_t quarryDiagnosticStart_ = 0;
+    std::string quarryStorage_;
+    void tickQuarry();
+    std::optional<baritone::PlacementPreset> loadingPlacement_;
+    std::string loadingSchematicFile_;
     baritone::SchematicLoadJob schematicLoad_;
+    baritone::SchematicSurvey survey_;
+    bool surveyMaterials_ = false, surveyReport_ = false;
+    std::string protectionKey_;
+    baritone::TaskQueue tasks_;
+    baritone::CheckpointWriter taskWriter_;
+    std::filesystem::path taskCheckpoint_;
+    bool dispatchingTask_ = false;
+    uint64_t taskDiagnosticStart_ = 0;
+    baritone::GoalPtr taskGoal_;
+    std::string lastLoadFailure_;
+    void tickTasks();
+    baritone::TaskOutcome startTask(const baritone::Task& task);
+    baritone::TaskOutcome pollTask(const baritone::Task& task);
     std::mutex diagnosticMutex_;
     std::future<void> diagnosticJob_;
     bool diagnosticsStopped_ = false;
@@ -153,6 +203,7 @@ private:
     uint64_t ticks_ = 0;
 
     int walkTicks_ = 0;
+    int jumpTicks_ = 0;
     bool walkSprint_ = false;
     std::optional<sdk::Vec2> manualLook_;
     LookBehavior look_;

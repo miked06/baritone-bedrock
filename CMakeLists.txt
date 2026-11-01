@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.25)
-project(BaritoneBedrock VERSION 1.4.1 LANGUAGES C CXX)
+project(BaritoneBedrock VERSION 1.5.0 LANGUAGES C CXX)
 
 if(NOT CMAKE_SIZEOF_VOID_P EQUAL 8)
     message(FATAL_ERROR "Minecraft Bedrock is x64 only: configure with -A x64")
@@ -46,6 +46,12 @@ set_target_properties(BaritoneBedrock PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
     LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
 target_link_options(BaritoneBedrock PRIVATE /DEBUG /OPT:REF /OPT:ICF)
+
+add_executable(BaritoneControlPanel WIN32 apps/ControlPanel.cpp)
+target_compile_options(BaritoneControlPanel PRIVATE /W4 /permissive- /utf-8)
+target_compile_definitions(BaritoneControlPanel PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
+target_link_libraries(BaritoneControlPanel PRIVATE comctl32 comdlg32)
+set_target_properties(BaritoneControlPanel PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
 
 # ---------------------------------------------------------------------------
 # Offline tests of the core (no game needed).

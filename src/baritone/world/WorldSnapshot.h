@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "baritone/world/BlockProps.h"
+#include "baritone/world/Protection.h"
 
 namespace baritone {
 
@@ -61,6 +62,8 @@ public:
     int dimension() const { return dimension_; }
     int minY() const { return minY_; }
     int maxY() const { return maxY_; }  // exclusive
+    std::shared_ptr<const ProtectionPolicy> protection() const { return protection_.load(); }
+    void setProtection(std::shared_ptr<const ProtectionPolicy> policy) const { protection_.store(std::move(policy)); }
 
     std::shared_ptr<const ChunkData> chunk(int cx, int cz) const;
     std::shared_ptr<ChunkData> mutableChunk(int cx, int cz) const;
@@ -86,6 +89,7 @@ public:
 
 private:
     int dimension_, minY_, maxY_;
+    mutable std::atomic<std::shared_ptr<const ProtectionPolicy>> protection_;
     mutable std::shared_mutex mutex_;
     std::unordered_map<int64_t, std::shared_ptr<ChunkData>> chunks_;
     std::unordered_set<int64_t> explored_;

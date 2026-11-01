@@ -44,10 +44,12 @@ public:
     bool runCommand(std::string_view line, bool echo = true);
     // Lines from the dev pipe: "#command" (the prefix setting doesn't apply).
     bool execute(std::string_view line);
+    const std::string& lastError() const { return lastError_; }
 
 private:
     void logRanCommand(std::string_view command, std::string_view rest);
     std::vector<Command> commands_;
+    std::string lastError_;
     std::function<Args(const Args&)> completionProvider_;
 };
 

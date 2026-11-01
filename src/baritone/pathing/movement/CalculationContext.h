@@ -29,6 +29,9 @@ public:
     CalculationContext(std::shared_ptr<const WorldSnapshot> world, PlayerAbilities abilities, bool forUseOnAnotherThread);
 
     BlockStateInterface bsi;
+    std::shared_ptr<const ProtectionPolicy> protection;
+    bool permitsModify(BlockPos p) const { return !protection || protection->permitsModify(p); }
+    bool permitsSegment(BlockPos a, BlockPos b) const { return !protection || protection->permitsSegment(a, b); }
 
     StateId get(int x, int y, int z) { return bsi.get(x, y, z); }
     const BlockProps& props(int x, int y, int z) { return bsi.props(x, y, z); }

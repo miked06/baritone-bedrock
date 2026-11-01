@@ -7,10 +7,12 @@
 
 #include "baritone/Settings.h"
 #include "baritone/world/BlockStateInterface.h"
+#include "baritone/utils/RayTrace.h"
 #include "core/Log.h"
 #include "hooks/GameHooks.h"
 #include "platform/WorldTracker.h"
 #include "sdk/Game.h"
+#include "sdk/Recipes.h"
 
 namespace platform {
 
@@ -146,6 +148,7 @@ baritone::HotbarStack describe(const sdk::ItemStack* stack);
 }
 
 baritone::HotbarStack GamePlayerContext::hotbar(int slot) const {
+    if (!player_ || slot<0 || slot>=36) return {};
     auto* inv = player_->supplies()->inventory();
     if (!inv) return {};
     return describe(inv->getItem(slot));
@@ -226,6 +229,42 @@ bool GamePlayerContext::useHeldItem() {
     gamehooks::requestClick(2);
     return true;
 }
+float GamePlayerContext::health() const {
+    if (!player_) return 0;
+    auto value = player_->attribute("minecraft:health"); return value ? value->value : 20;
+}
+bool GamePlayerContext::holdUseItem(bool held) {
+    gamehooks::holdUseItem(held ? 150 : 0); return valid();
+}
+std::optional<bool> GamePlayerContext::ridingState() const { return player_ ? player_->dataFlag(2) : std::nullopt; }
+bool GamePlayerContext::interactEntity(uint64_t id) { return actOnEntity(id, false); }
+bool GamePlayerContext::attackEntity(uint64_t id) { return actOnEntity(id, true); }
+bool GamePlayerContext::actOnEntity(uint64_t id, bool attack) {
+    if (!player_ || !level_ || inventoryMovePending() || slotChangePending()) return false;
+    auto world = WorldTracker::get().snapshot(); if (!world) return false;
+    for (auto* actor : level_->actors()) {
+        if (!actor || actor == player_ || actor->runtimeId() != id || actor->isPlayer() || !actor->aabbShape() || actor->isDead()) continue;
+        const auto& box = actor->aabbShape()->box;
+        sdk::Vec3 hit{(box.min.x + box.max.x) * .5f, (box.min.y + box.max.y) * .5f, (box.min.z + box.max.z) * .5f};
+        const auto target = toVec(hit), eye = eyePosition();
+        if (!std::isfinite(target.x) || !std::isfinite(target.y) || !std::isfinite(target.z) ||
+            std::abs(target.x)>30000000 || std::abs(target.z)>30000000 || std::abs(target.y)>1000000) return false;
+        if ((target - eye).lengthSq() > blockReachDistance() * blockReachDistance()) return false;
+        const BlockPos pos{int(std::floor(target.x)), int(std::floor(box.min.y)), int(std::floor(target.z))};
+        if (auto policy = world->protection(); policy && !policy->permitsModify(pos)) return false;
+        baritone::BlockStateInterface blocks(world);
+        auto aim = baritone::rotation_utils::calcRotationFromVec3d(eye, target, rotation());
+        auto block = baritone::rayTrace(blocks, eye, aim, blockReachDistance());
+        if (block && (block->hit - eye).lengthSq() + .01 < (target - eye).lengthSq()) return false;
+        // This API reports dispatch. The native return value does not confirm
+        // the server's outcome (feeding can succeed while it is false); processes
+        // confirm breeding/death/riding state separately from live metadata.
+        if (attack) player_->gameMode()->attack(*actor, hit);
+        else player_->gameMode()->interact(*actor, hit);
+        return true;
+    }
+    return false;
+}
 
 void GamePlayerContext::useHeldItemWhenTargeting() {
     if (player_) gamehooks::autoUseWhileTargeting(80);
@@ -242,10 +281,11 @@ bool GamePlayerContext::swapSlots(int slotA, int slotB) {
         openingMove_ = OpeningMove{slotA, slotB, tick_};
         return true;
     }
+    auto snapshot=sdk::snapshotContainerTransfer(*player_,sdk::inventorySlotRef(slotA),sdk::inventorySlotRef(slotB));
     int id = sdk::sendInventoryMove(*player_, slotA, slotB);
     logger::debug("Inventory move {} -> {}: {}", slotA, slotB, id ? std::format("request {}", id) : "not sent");
     if (!id) return false;
-    moves_.push_back({id, slotA, slotB, tick_});
+    Move move{id,slotA,slotB,tick_}; move.snapshot=std::move(snapshot); moves_.push_back(std::move(move));
     return true;
 }
 
@@ -254,9 +294,10 @@ void GamePlayerContext::advanceInventoryOpen() {
     if (void* manager = player_->containerManager(); manager && tick_ - move.started >= 3) {
         ownedInventory_ = manager;
         openingMove_.reset();
+        auto snapshot=sdk::snapshotContainerTransfer(*player_,sdk::inventorySlotRef(move.slotA),sdk::inventorySlotRef(move.slotB));
         int id = sdk::sendInventoryMove(*player_, move.slotA, move.slotB);
         logger::debug("Inventory move {} -> {} after opening inventory: request {}", move.slotA, move.slotB, id);
-        if (id) moves_.push_back({id, move.slotA, move.slotB, tick_});
+        if (id) { Move pending{id,move.slotA,move.slotB,tick_}; pending.snapshot=std::move(snapshot); moves_.push_back(std::move(pending)); }
         else closeOwnedInventory();
     } else if (tick_ - move.started > 100) {
         openingMove_.reset();
@@ -273,16 +314,25 @@ void GamePlayerContext::closeOwnedInventory() {
     ownedInventory_ = nullptr;
 }
 
-void GamePlayerContext::onItemStackResponse(int requestId, int result) {
+void GamePlayerContext::onItemStackResponse(int requestId, int result, const void* response) {
+    if (craft_ && craft_->responses.contains(requestId)) craft_->responses[requestId]=result;
+    if (transfer_ && transfer_->id == requestId) {
+        transfer_->result = result;
+        if (result == 0) transfer_->receipt = sdk::containerTransferReceipt(response, transfer_->source, transfer_->target);
+    }
     for (Move& m : moves_)
-        if (m.requestId == requestId) m.result = result;
+        if (m.requestId == requestId) {
+            m.result = result;
+            if (result==0) m.receipt=sdk::containerTransferReceipt(response,sdk::inventorySlotRef(m.slotA),sdk::inventorySlotRef(m.slotB));
+        }
 }
 
 // The server answered: apply accepted moves to the client's slots (tick context).
 void GamePlayerContext::applyAnsweredMoves() {
     std::erase_if(moves_, [&](const Move& m) {
         if (m.result == 0) {
-            sdk::applyInventoryMoveLocally(*player_, m.slotA, m.slotB);
+            if (!sdk::applyInventorySwap(*player_,m.slotA,m.slotB,m.receipt,m.snapshot))
+                logger::warn("Inventory swap receipt could not be reconciled; close and reopen the inventory before retrying");
             slotChangedAt_ = tick_;  // like a slot change: let the server settle before clicking
             return true;
         }
@@ -310,6 +360,104 @@ int GamePlayerContext::countItem(std::string_view name) const {
     return total;
 }
 
+bool GamePlayerContext::containerOpen() const { return player_ && player_->containerManager(); }
+bool GamePlayerContext::ownedContainerReady() const { return ownedContainer_ && player_ && player_->containerManager() == ownedContainer_; }
+bool GamePlayerContext::openContainerAt(BlockPos pos) {
+    if (!player_ || !region_ || isSneaking() || inventoryMovePending()) return false;
+    if (ownedContainerReady()) return true;
+    if (containerOpening_) return true;
+    if (containerOpen()) { transferError_ = "Close the current container before starting automatic storage"; return false; }
+    auto world = WorldTracker::get().snapshot(); if (!world) return false;
+    if (auto policy = world->protection(); policy && !policy->permitsModify(pos)) { transferError_ = "Container is in a protected area"; return false; }
+    const auto target = baritone::Vec3d::center(pos);
+    if ((target - eyePosition()).lengthSq() > blockReachDistance() * blockReachDistance()) return false;
+    const auto* block = region_->getBlock(toSdk(pos)); if (!block) return false;
+    const auto name = block->serializationId().string("name").value_or("");
+    if (name != "minecraft:chest" && name != "minecraft:trapped_chest" && name != "minecraft:barrel" && name.find("shulker_box") == std::string::npos &&
+        name != "minecraft:furnace" && name != "minecraft:lit_furnace" && name != "minecraft:crafting_table") {
+        transferError_ = "The registered block is not a supported container or workstation"; return false;
+    }
+    baritone::BlockStateInterface blocks(world);
+    auto aim = baritone::rotation_utils::calcRotationFromVec3d(eyePosition(), target, rotation());
+    auto hit = baritone::rayTrace(blocks, eyePosition(), aim, blockReachDistance());
+    if (!hit || hit->pos != pos) return false;
+    player_->gameMode()->buildBlock(toSdk(pos), static_cast<sdk::Face>(hit->face));
+    containerOpening_ = std::pair{pos, tick_}; containerClosing_ = false; transferError_.clear();
+    return true;
+}
+void GamePlayerContext::closeOwnedContainer() { containerClosing_ = true; }
+std::vector<baritone::ContainerSlot> GamePlayerContext::containerSlots() const {
+    std::vector<baritone::ContainerSlot> result;
+    if (!player_ || !containerOpen()) return result;
+    for (int i = 0; i < 36; ++i) result.push_back({"player", i, true, hotbar(i)});
+    for (const auto& view : sdk::openContainerViews(*player_)) {
+        if (view.networkName != 7 && view.networkName != 30 && view.networkName != 58 &&
+            view.networkName != 24 && view.networkName != 25 && view.networkName != 26 && view.networkName != 45 && view.networkName != 46) continue;
+        for (int i = 0; i < view.size; ++i) {
+            auto ref = sdk::containerSlotRef(*player_, view.name, i);
+            result.push_back({view.name, i, false, describe(sdk::containerItem(*player_, ref)), view.networkName});
+        }
+    }
+    return result;
+}
+bool GamePlayerContext::transferContainerItem(const baritone::ContainerSlot& source, const baritone::ContainerSlot& target, int count) {
+    if (!ownedContainerReady() || inventoryMovePending()) return false;
+    auto a = source.playerInventory ? sdk::inventorySlotRef(source.slot) : sdk::containerSlotRef(*player_, source.collection, source.slot);
+    auto b = target.playerInventory ? sdk::inventorySlotRef(target.slot) : sdk::containerSlotRef(*player_, target.collection, target.slot);
+    auto* from = sdk::containerItem(*player_, a); auto* to = sdk::containerItem(*player_, b);
+    if (!from || !to || from->empty() || !to->empty()) return false;
+    int before = from->count(), after = to->count();
+    auto snapshot = sdk::snapshotContainerTransfer(*player_, a, b);
+    if (!snapshot.source || !snapshot.target) return false;
+    int id = sdk::sendContainerTransfer(*player_, a, b, count); if (!id) return false;
+    Transfer transfer; transfer.id = id; transfer.count = count; transfer.fromCount = before; transfer.toCount = after;
+    transfer.sent = tick_; transfer.source = a; transfer.target = b; transfer.snapshot = std::move(snapshot); transfer_ = std::move(transfer);
+    transferState_ = baritone::TransferState::Pending; transferError_.clear(); return true;
+}
+std::vector<baritone::RecipeOption> GamePlayerContext::recipes(std::string_view item) const {
+    std::vector<baritone::RecipeOption> result;
+    if (player_) for (auto& r:sdk::visibleRecipes(*player_,item)) result.push_back({std::move(r.collection),std::move(r.item),r.slot,r.count});
+    return result;
+}
+bool GamePlayerContext::craftRecipe(const baritone::RecipeOption& recipe) {
+    if (!containerOpen() || inventoryMovePending()) return false;
+    Craft pending; pending.item=recipe.item; pending.before=countItem(recipe.item); pending.sent=tick_;
+    auto ids=sdk::craftRecipeOnce(*player_,{recipe.collection,recipe.item,recipe.slot,recipe.count});
+    if (ids.empty()) { craftError_="The recipe did not produce a normal crafting request; check ingredients and crafting-grid size"; return false; }
+    for (auto id:ids) pending.responses.emplace(id,-1);
+    craft_=std::move(pending); craftState_=baritone::TransferState::Pending; craftError_.clear(); return true;
+}
+void GamePlayerContext::advanceContainer() {
+    if (craft_) {
+        const bool refused=std::ranges::any_of(craft_->responses,[](const auto& r) { return r.second>0; });
+        const bool answered=std::ranges::all_of(craft_->responses,[](const auto& r) { return r.second==0; });
+        if (refused || tick_-craft_->sent>100) {
+            craftState_=baritone::TransferState::Rejected; craftError_=refused ? "Crafting request refused by the server" : "Crafting output/response timed out; inspect inventory before retrying"; craft_.reset();
+        } else if (answered && countItem(craft_->item)>craft_->before) { craftState_=baritone::TransferState::Accepted; craft_.reset(); slotChangedAt_=tick_; }
+    }
+    if (containerOpening_) {
+        if (player_->containerManager()) { ownedContainer_ = player_->containerManager(); containerOpening_.reset(); }
+        else if (tick_ - containerOpening_->second > 100) { containerOpening_.reset(); transferError_ = "Container did not open"; }
+    }
+    if (transfer_) {
+        if (transfer_->result == 0) {
+            bool applied = sdk::applyContainerTransfer(*player_, transfer_->source, transfer_->target, transfer_->count,
+                transfer_->fromCount, transfer_->toCount, transfer_->receipt, transfer_->snapshot);
+            transferState_ = applied ? baritone::TransferState::Accepted : baritone::TransferState::Rejected;
+            if (!applied) transferError_ = "Server accepted the move but its slot receipt could not be reconciled; close and reopen the container";
+            transfer_.reset(); slotChangedAt_ = tick_;
+        } else if (transfer_->result > 0 || tick_ - transfer_->sent > 100) {
+            transferState_ = baritone::TransferState::Rejected;
+            transferError_ = transfer_->result > 0 ? "Container transfer refused by the server" : "Container transfer response timed out";
+            transfer_.reset();
+        }
+    }
+    if (containerClosing_ && !transfer_ && !craft_) {
+        if (ownedContainer_ && player_->containerManager() == ownedContainer_) { player_->closeInventory(); inventoryClosedAt_ = tick_; }
+        ownedContainer_ = nullptr; containerOpening_.reset(); containerClosing_ = false;
+    }
+}
+
 std::vector<baritone::EntityInfo> GamePlayerContext::entities() const {
     std::vector<baritone::EntityInfo> out;
     if (!level_) return out;
@@ -321,6 +469,9 @@ std::vector<baritone::EntityInfo> GamePlayerContext::entities() const {
         e.type = actor->identifier();
         e.isPlayer = actor->isPlayer();
         e.isItem = actor->isItem();
+        e.baby = actor->dataFlag(11); e.inLove = actor->dataFlag(7);
+        e.tamed = actor->dataFlag(28); e.saddled = actor->dataFlag(8); e.dead = actor->isDead();
+        if (auto health = actor->attribute("minecraft:health")) e.health = health->value;
         if (e.isPlayer) e.name = static_cast<sdk::Player*>(actor)->name();
         if (e.isItem) {
             const auto& stack = mem::member<sdk::ItemStack>(actor, offsets::ItemActor_stack);
@@ -336,6 +487,9 @@ std::vector<baritone::EntityInfo> GamePlayerContext::entities() const {
 }
 
 bool GamePlayerContext::startOrContinueBreaking(const BlockPos& pos, baritone::Direction face) {
+    if (auto world = WorldTracker::get().snapshot(); world) {
+        if (auto policy = world->protection(); policy && !policy->permitsModify(pos)) { stopBreaking(); return false; }
+    }
     sdk::GameMode* gm = player_->gameMode();
     auto isAirNow = [this](const BlockPos& p) {
         const sdk::Block* b = region_ ? region_->getBlock(toSdk(p)) : nullptr;
@@ -384,6 +538,9 @@ void GamePlayerContext::stopBreaking() {
 }
 
 void GamePlayerContext::useItemOn(const BlockPos& pos, baritone::Direction face, const Vec3d&) {
+    if (auto world = WorldTracker::get().snapshot(); world) {
+        if (auto policy = world->protection(); policy && (!policy->permitsModify(pos) || !policy->permitsModify(pos.offset(face)))) return;
+    }
     baritone::HotbarStack held = hotbar(selectedSlot());
     if (held.count > 0 && !held.isBlock) {
         // items (bone meal, seeds, buckets...): GameMode::buildBlock only places blocks, so a real

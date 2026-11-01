@@ -20,6 +20,7 @@ struct Node {
 };
 
 bool solid(BlockStateInterface& bsi, int x, int y, int z, bool useCache) {
+    if (const auto& policy = bsi.protection(); policy && !policy->permitsEntry({x, y, z})) return true;
     if (!useCache && !bsi.isLoadedLive(x, z)) return false;  // only what is loaded now
     const BlockProps& p = bsi.props(x, y, z);
     return p.collides || p.fluid == Fluid::Lava;

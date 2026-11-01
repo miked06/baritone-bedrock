@@ -52,6 +52,7 @@ bool isLiquid(const BlockProps& p) { return p.type == BlockType::Water || p.type
 // buildSkipBlocks (Java: a mask on the desired block)
 class SkipBlocksSchematic : public Schematic {
 public:
+    bool mayBreak(int x,int y,int z) const override { return inner_->mayBreak(x,y,z); }
     void reset() const override { inner_->reset(); }
     explicit SkipBlocksSchematic(SchematicPtr inner) : inner_(std::move(inner)) {}
     BlockPos size() const override { return inner_->size(); }
@@ -354,6 +355,8 @@ void BuilderProcess::customizeContext(CalculationContext& ctx) {
         return hasThrowaway ? placeBlockCost : costs::COST_INF;
     };
     ctx.breakMultiplierOverride = [=](int x, int y, int z, const BlockProps& current) {
+        int rx=x-origin.x,ry=y-origin.y,rz=z-origin.z;
+        if (sch->inBounds(rx,ry,rz) && !sch->mayBreak(rx,ry,rz)) return costs::COST_INF;
         if (!allowBreak && !allowBreakAnyway.contains(current.name)) return costs::COST_INF;
         auto d = getSchematic(x, y, z, current);
         if (d) {
@@ -459,6 +462,7 @@ std::optional<std::pair<BlockPos, Rotation>> BuilderProcess::toBreakNearPlayer(E
         for (int dy = fromAbove ? -1 : 0; dy <= 5; dy++)
             for (int dz = -5; dz <= 5; dz++) {
                 int x = center.x + dx, y = center.y + dy, z = center.z + dz;
+                if (!ec.calc.permitsModify({x, y, z})) continue;
                 if (dy == -1 && x == pathStart.x && z == pathStart.z) continue;  // don't mine what supports us
                 const BlockProps& current = ec.calc.props(x, y, z);
                 auto desired = getSchematic(x, y, z, current);
@@ -478,6 +482,7 @@ bool BuilderProcess::tryPlace(const BlockPos& pos, const DesiredBlock& block, Ex
     const auto& settings = Settings::get();
     if (!settings.allowPlace) return false;
     CalculationContext& ctx = ec.calc;
+    if (!ctx.permitsModify(pos)) return false;
     const auto& current = ctx.props(pos.x, pos.y, pos.z);
     if (current.hasFluid() && ((current.fluidLevel == 0 && !settings.allowPlaceInFluidsSource) ||
         (current.fluidLevel != 0 && !settings.allowPlaceInFluidsFlow))) return false;

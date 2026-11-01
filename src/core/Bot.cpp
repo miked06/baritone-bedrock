@@ -58,6 +58,7 @@ void Bot::stop() {
     devpipe::stop();
     notify::shutdown();
     cancelAll();
+    taskWriter_.wait();
     schematicLoad_.wait();
     updateFocusOverride(false);
     platform::PathRenderer::get().shutdown();
@@ -73,10 +74,17 @@ void Bot::saveSettings() {
 }
 
 void Bot::cancelAll() {
+    if (!dispatchingTask_) { tasks_.pause(); saveTasks(); }
+    if (!dispatchingTask_ && baritone_) baritone_->survival().setEnabled(false);
+    survey_.clear(); surveyReport_ = false;
+    quarryActive_ = false;
+    quarryChecking_ = false; quarryVerification_.clear();
+    quarryUnloading_ = false;
     cancelSchematicLoad();
     stopClickSelection();
     player_.cancelDisconnectRequest();
     walkTicks_ = 0;
+    jumpTicks_ = 0;
     testAction_.reset();
     manualLook_.reset();
     if (baritone_) baritone_->cancelEverything();
@@ -193,11 +201,24 @@ void Bot::loadSchematicAsync(std::string file, baritone::BlockPos origin, bool p
     if (!player_.valid()) throw std::invalid_argument("Enter a world first");
     cancelAll();
     loadingSchematicName_ = std::filesystem::path(file).filename().string();
+    loadingSchematicFile_ = file;
+    loadingPlacement_.reset();
     loadingSchematicOrigin_ = origin;
     loadingSchematicPreview_ = preview;
     loadingSchematicGeneration_ = worldGeneration_;
+    lastLoadFailure_.clear();
     schematicLoad_.start(std::move(file));
     chat::info("Loading " + loadingSchematicName_ + " in the background. Wait for Loaded before editing or building; #stop discards the result");
+}
+
+void Bot::selectPlacement(const std::string& key) {
+    prepareTasks();
+    if (schematicLoading()) throw std::invalid_argument("Wait for the schematic load to finish");
+    auto preset = placements_.entry(key).preset;
+    cancelAll();
+    if (placements_.select(key, schematics_)) return;
+    loadSchematicAsync(preset.file, preset.origin, true);
+    loadingPlacement_ = std::move(preset);
 }
 
 void Bot::runDiagnosticAsync(std::function<void()> task) {
@@ -211,23 +232,52 @@ void Bot::runDiagnosticAsync(std::function<void()> task) {
     });
 }
 
+void Bot::startSchematicSurvey(bool materials) {
+    if (schematicLoading()) throw std::invalid_argument("Wait for the schematic to finish loading");
+    if (!player_.valid() || !schematics_.loaded()) throw std::invalid_argument("Enter a world and load a schematic first");
+    survey_.start(schematics_.schematic(), schematics_.origin(), schematics_.revision());
+    surveyMaterials_ = materials; surveyReport_ = true;
+    chat::info("Comparing the placement with loaded blocks in the background across ticks");
+}
+
+std::filesystem::path Bot::worldDataPath(const std::string& category, bool perDimension) const {
+    if (worldName_.empty() || !player_.valid()) throw std::invalid_argument("Enter a world first");
+    uint64_t hash = 14695981039346656037ull;
+    for (unsigned char c : worldName_) { hash ^= c; hash *= 1099511628211ull; }
+    const auto dimension = platform::WorldTracker::get().dimension();
+    return paths::dataDir() / category / (perDimension ? std::format("{:016x}_dim{}.txt", hash, dimension) : std::format("{:016x}.txt", hash));
+}
+void Bot::applyProtection(std::shared_ptr<const baritone::ProtectionPolicy> policy) {
+    auto world = platform::WorldTracker::get().snapshot();
+    if (!world || !player_.valid()) throw std::invalid_argument("Enter a world first");
+    policy->save(worldDataPath("protection"));
+    cancelAll();
+    world->setProtection(std::move(policy));
+}
+
 void Bot::pollSchematicLoad() {
     auto result = schematicLoad_.poll();
     if (!result) return;
     if (perf::enabled()) perf::record(perf::Metric::BackgroundLoad, result->milliseconds);
     if (result->cancelled || loadingSchematicGeneration_ != worldGeneration_ || !player_.valid()) return;
     if (!result->error.empty()) {
+        lastLoadFailure_ = result->error;
         chat::error(std::format("Could not read {}: {}", loadingSchematicName_, result->error));
         return;
     }
     const auto size = result->schematic->size();
     const auto warnings = result->schematic->warnings();
     try {
-        if (loadingSchematicPreview_)
-            schematics_.load(loadingSchematicName_, std::move(result->schematic), loadingSchematicOrigin_);
+        if (loadingSchematicPreview_) {
+            baritone::SchematicWorkspace next;
+            next.load(loadingSchematicName_, std::move(result->schematic), loadingSchematicOrigin_, loadingSchematicFile_);
+            if (loadingPlacement_) loadingPlacement_->apply(next);
+            schematics_ = std::move(next);
+        }
         else
             baritone_->builder().build(loadingSchematicName_, std::move(result->schematic), loadingSchematicOrigin_, true);
     } catch (const std::exception& error) {
+        lastLoadFailure_ = error.what();
         chat::error(std::format("Could not place {}: {}", loadingSchematicName_, error.what()));
         return;
     }
@@ -250,12 +300,17 @@ void Bot::onFrame() {
         cancelSchematicLoad();
         if (player) logger::info("Entered a world (LocalPlayer {})", static_cast<void*>(player));
         else logger::info("Left the world");
+        devpipe::setStatus(player ? "connection=Loading world\n" : "connection=Connected; enter a world\n");
         lastPlayer_ = player;
         {
             player_.bind(nullptr, nullptr);  // first: the old LocalPlayer is gone
             player_.setLevel(nullptr);
             worldName_.clear();
+            protectionKey_.clear();
+            baritone_->survival().resetWorld();
             schematics_.clear();
+            placements_.clear();
+            placementsFile_.clear();
             schematicPreview_.clear();
             schematicDimension_.reset();
             platform::PathRenderer::get().clear();
@@ -264,6 +319,7 @@ void Bot::onFrame() {
         }
     }
     while (auto line = devpipe::poll()) commands_.execute(*line);
+    if (auto error = taskWriter_.poll()) chat::error("Task checkpoint error: " + *error);
     pollSchematicLoad();
     if (player) {
         updateClickSelection();
@@ -333,12 +389,53 @@ void Bot::onTick(void* level) {
     { perf::Scope refreshTiming(perf::Metric::LocalRefresh); tracker.refreshAround({feet.x, feet.y, feet.z}, 4); }
 
     if (schematicDimension_ && *schematicDimension_ != tracker.dimension()) {
+        baritone_->survival().resetWorld();
         ++worldGeneration_;
         cancelAll();
         schematics_.clear();
+        placements_.clear();
         schematicPreview_.clear();
     }
     schematicDimension_ = tracker.dimension();
+    const auto protectionFile = worldDataPath("protection");
+    if (protectionKey_ != protectionFile.string()) {
+        protectionKey_ = protectionFile.string();
+        try { tracker.snapshot()->setProtection(std::make_shared<baritone::ProtectionPolicy>(baritone::ProtectionPolicy::load(protectionFile))); }
+        catch (const std::exception& error) {
+            cancelAll();
+            // Fail closed: unreadable configured protections must never silently vanish.
+            auto policy = std::make_shared<baritone::ProtectionPolicy>();
+            policy->add({"invalid-protection-file", {{INT32_MIN, INT32_MIN, INT32_MIN}, {INT32_MAX, INT32_MAX, INT32_MAX}}, baritone::ProtectionPolicy::Both});
+            tracker.snapshot()->setProtection(policy);
+            chat::error(std::string("Protected zones could not be loaded; bot actions blocked: ") + error.what());
+        }
+    }
+
+    if (surveyReport_) {
+        if (!schematics_.loaded() || survey_.revision() != schematics_.revision()) {
+            survey_.clear(); surveyReport_ = false;
+            chat::info("Schematic comparison cancelled because the placement changed");
+        } else if (survey_.step(*tracker.snapshot())) {
+            surveyReport_ = false;
+            const auto& result = survey_.result();
+            chat::info(std::format("Verification: {} matching, {} missing, {} wrong, {} extra, {} unknown, {} ignored",
+                result.matching, result.missing, result.wrong, result.extra, result.unknown, result.ignored));
+            if (surveyMaterials_) {
+                auto plan = baritone::planMaterials(result.items, player_, baritone::Settings::get().buildSubstitutes);
+                for (const auto& row : plan)
+                    chat::info(std::format("{}: need {}, inventory allocated {}, missing {}", row.item, row.required, row.available, row.missing));
+                for (const auto& warning : result.warnings) chat::error("Material note: " + warning);
+                if (result.unknown) chat::error("Unloaded positions are excluded from material requirements; load those chunks and verify again");
+            }
+        }
+    }
+
+    if (jumpTicks_ > 0) {
+        --jumpTicks_;
+        input_.set(Key::Jump, jumpTicks_ > 0);
+        input_.setControlling(jumpTicks_ > 0);
+        return;
+    }
 
     if (walkTicks_ > 0) {
         --walkTicks_;
@@ -355,8 +452,20 @@ void Bot::onTick(void* level) {
     }
 
     if (!clickSelection_.active()) {
+        tickTasks();
+        tickQuarry();
         perf::Scope coreTiming(perf::Metric::CoreTick);
         baritone_->tick(tracker.snapshot());
+    }
+    if (ticks_ % 20 == 0) {
+        auto* process = baritone_->control().mostRecentInControl();
+        std::string status = std::format("connection=Connected\nversion={}\nworld={}\ndimension={}\nposition={}\nactivity={}\nqueue={}\nqueue_progress={}/{}\nallowBreak={}\nallowPlace={}\n",
+            BARITONE_BEDROCK_VERSION, worldName_, tracker.dimension(), baritone_->playerFeet(),
+            process ? process->displayName() : "Idle", tasks_.running() ? "Running" : "Paused", tasks_.currentIndex(), tasks_.tasks().size(),
+            baritone::Settings::get().allowBreak ? "true" : "false", baritone::Settings::get().allowPlace ? "true" : "false");
+        if (schematics_.loaded()) status += std::format("schematic={}\norigin={}\n", schematics_.name(), schematics_.origin());
+        if (!baritone_->diagnostics().events().empty()) status += "latest=" + baritone_->diagnostics().events().back().message + "\n";
+        devpipe::setStatus(std::move(status));
     }
     const baritone::MovementState& out = baritone_->controls();
     applyOutput(out, !clickSelection_.active() && (out.inputs.any() || out.target.rotation.has_value()));
@@ -380,15 +489,15 @@ void Bot::onTick(void* level) {
     frame.clickStart = clickSelection_.dragStart();
     frame.selections = selectionBoxes();
     frame.build = baritone_->builder().bounds();
-    if (schematics_.loaded() && schematics_.previewEnabled()) {
+    if (schematics_.loaded() || !placements_.entries().empty()) {
         if (ticks_ % 10 == 0 || schematicPreviewRevision_ != schematics_.revision()) {
             perf::Scope previewTiming(perf::Metric::Preview);
-            schematicPreview_ = schematics_.preview(*tracker.snapshot(), {feet.x, feet.y, feet.z}, 16, 512);
+            schematicPreview_ = placements_.preview(*tracker.snapshot(), {feet.x, feet.y, feet.z}, schematics_);
             if (schematicPreviewRevision_ != schematics_.revision())
                 logger::debug("Schematic preview: {} difference boxes, origin {}", schematicPreview_.size(), schematics_.origin());
             schematicPreviewRevision_ = schematics_.revision();
         }
-        frame.schematicBounds = schematics_.bounds();
+        if (schematics_.loaded() && schematics_.previewEnabled()) frame.schematicBounds = schematics_.bounds();
         frame.schematicPreview = schematicPreview_;
     } else {
         schematicPreview_.clear();
@@ -515,7 +624,7 @@ void Bot::runTestAction() {
 
 void Bot::applyOutput(const baritone::MovementState& out, bool active) {
     // A process may request an inventory move during this very tick.
-    if (!active || player_.inventoryScreenPending()) {
+    if (!active || player_.containerOpen() || player_.inventoryScreenPending()) {
         if (controlling_) releaseControl();
         return;
     }

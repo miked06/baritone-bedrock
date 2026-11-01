@@ -16,6 +16,58 @@ public:
     std::vector<baritone::EntityInfo> nearby;
     bool grounded = true;
     int useRequests = 0;
+    int hunger = 20;
+    float hitpoints = 20;
+    bool heldUse = false;
+    int interactions = 0, attacks = 0;
+    bool containerOpened = false, ownedContainer = false, rejectTransfer = false;
+    baritone::TransferState transfer = baritone::TransferState::Idle;
+    std::vector<baritone::ContainerSlot> externalSlots;
+    std::vector<baritone::RecipeOption> recipeOptions;
+    baritone::TransferState crafting=baritone::TransferState::Idle;
+    int craftRequests=0;
+    std::vector<baritone::RecipeOption> recipes(std::string_view item = {}) const override {
+        std::vector<baritone::RecipeOption> result;
+        for (const auto& r:recipeOptions) if (item.empty() || r.item==item) result.push_back(r);
+        return result;
+    }
+    bool craftRecipe(const baritone::RecipeOption&) override { ++craftRequests; crafting=baritone::TransferState::Pending; return true; }
+    baritone::TransferState craftState() const override { return crafting; }
+    std::string craftError() const override { return "Craft request refused by test server"; }
+    bool interactEntity(uint64_t id) override {
+        for (auto& entity : nearby) if (entity.id == id) { ++interactions; entity.inLove = true; return true; }
+        return false;
+    }
+    bool attackEntity(uint64_t id) override {
+        for (auto& entity : nearby) if (entity.id == id) { ++attacks; entity.health = 0; entity.dead = true; return true; }
+        return false;
+    }
+    bool containerOpen() const override { return containerOpened; }
+    bool ownedContainerReady() const override { return containerOpened && ownedContainer; }
+    bool openContainerAt(baritone::BlockPos) override { containerOpened = ownedContainer = true; return true; }
+    void closeOwnedContainer() override { if (ownedContainer) containerOpened = ownedContainer = false; }
+    std::vector<baritone::ContainerSlot> containerSlots() const override {
+        auto slots = externalSlots;
+        for (int i = 0; i < 36; ++i) slots.push_back({"player", i, true, inventory.at(i)});
+        return slots;
+    }
+    bool transferContainerItem(const baritone::ContainerSlot& a, const baritone::ContainerSlot& b, int count) override {
+        transfer = rejectTransfer ? baritone::TransferState::Rejected : baritone::TransferState::Accepted;
+        if (rejectTransfer) return true;
+        auto stack = [&](const baritone::ContainerSlot& slot) -> baritone::HotbarStack& {
+            if (slot.playerInventory) return inventory.at(slot.slot);
+            for (auto& item : externalSlots) if (item.collection == slot.collection && item.slot == slot.slot) return item.stack;
+            throw std::out_of_range("Unknown test container slot");
+        };
+        auto& from = stack(a); auto& to = stack(b);
+        if (count > from.count || !to.empty()) return false;
+        to = from; to.count = count; from.count -= count; return true;
+    }
+    baritone::TransferState transferState() const override { return transfer; }
+    std::string transferError() const override { return rejectTransfer ? "Transfer refused by test server" : ""; }
+    int foodLevel() const override { return hunger; }
+    float health() const override { return hitpoints; }
+    bool holdUseItem(bool held) override { heldUse = held; return true; }
     bool useHeldItem() override { ++useRequests; return true; }
     bool requestDisconnect() override { ++disconnectRequests; return true; }
     std::optional<std::pair<int, int>> lastSwap;

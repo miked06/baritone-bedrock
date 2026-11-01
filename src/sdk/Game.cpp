@@ -6,6 +6,8 @@
 #include <memory>
 
 #include "memory/Signatures.h"
+#include <Windows.h>
+#include "core/Log.h"
 
 namespace sdk {
 
@@ -49,6 +51,20 @@ void LocalPlayer::openInventory() {
     packet.vtable = sigs::InteractPacket_vtable.address;
     packet.targetId = runtimeId();
     mem::callVirtual<void, InventoryOpenPacket&>(this, offsets::Player_vt_sendNetworkPacket, packet);
+}
+
+void LocalPlayer::closeInventory() {
+    if (!containerManager()) return;
+    auto* client=ClientInstance::get();
+    // 1.26.6005.0 ClientInstance::getClientSceneStack returns a checked weak
+    // wrapper around this pointer. Queue the normal pop: the UI's onExit owns
+    // container cleanup, after all its bound callbacks have finished.
+    auto* scene=client ? mem::member<void*>(client,0x5E8) : nullptr;
+    const auto base=reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr));
+    if (!mem::isReadable(scene,0x40) || reinterpret_cast<uintptr_t>(mem::vtable(scene)[26])!=base+0x56C490) {
+        logger::warn("Cannot close container: native scene-stack interface does not match this game profile"); return;
+    }
+    mem::callVirtual<void,int>(scene,26,1);
 }
 
 ClientInstance* ClientInstance::get() {

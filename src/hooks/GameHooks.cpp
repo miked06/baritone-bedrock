@@ -18,12 +18,14 @@
 #include "memory/Signatures.h"
 #include "platform/PathRenderer.h"
 #include "sdk/Game.h"
+#include "sdk/Recipes.h"
 #include "sdk/Render.h"
 
 namespace gamehooks {
 namespace {
 
 DWORD g_updateThread = 0;  // the thread running MinecraftGame::_update (logged with the mouse thread)
+std::atomic<uint64_t> g_holdUseUntil{0};
 
 // ---- MultiPlayerLevel::_subTick: one call per client tick (20/s) while in a world ----
 using SubTickFn = void(__fastcall*)(void* level);
@@ -123,6 +125,13 @@ bool __fastcall sendChat(void* model, std::string& message) {
 // requests (logged: the server refuses a request silently otherwise) ----
 using HandleResponseFn = void(__fastcall*)(void* manager, const void* responses);
 HandleResponseFn g_handleResponse = nullptr;
+using AddActionFn = void(__fastcall*)(void*,void**);
+AddActionFn g_addAction = nullptr;
+void __fastcall addAction(void* manager,void** owned) {
+    hooks::Guard guard;
+    safe::run("craft request capture",[&] { if (owned && *owned) sdk::captureRecipeAction(manager,*owned); });
+    g_addAction(manager,owned);
+}
 
 void __fastcall handleResponse(void* manager, const void* responses) {
     hooks::Guard guard;
@@ -134,7 +143,15 @@ void __fastcall handleResponse(void* manager, const void* responses) {
             auto containers = (*reinterpret_cast<const uintptr_t*>(r + 0x20) - *reinterpret_cast<const uintptr_t*>(r + 0x18));
             int id = *reinterpret_cast<const int32_t*>(r + 0x10);
             logger::debug("ItemStackResponse: request {} result {} ({} bytes of container info)", id, r[0], containers);
-            Bot::get().player().onItemStackResponse(id, r[0]);
+            if (containers && containers <= 5120 && containers % 40 == 0) {
+                const auto* c = *reinterpret_cast<const uint8_t* const*>(r + 0x18);
+                if (mem::isReadable(c, 40)) {
+                    const auto* slots = mem::member<const uint8_t*>(c, 16);
+                    const auto* end = mem::member<const uint8_t*>(c, 24);
+                    logger::debug("ItemStackResponse layout: first container {}, slot bytes {}", c[0], end - slots);
+                }
+            }
+            Bot::get().player().onItemStackResponse(id, r[0], r);
         }
     });
     g_handleResponse(manager, responses);
@@ -198,6 +215,13 @@ bool __fastcall mouseInput(void* a1, void* a2, void* a3) {
         auto feed = g_feed;  // bot-generated clicks bypass the physical selection capture
         if (!device || !feed) return;
         short x = *reinterpret_cast<int16_t*>(device + 4), y = *reinterpret_cast<int16_t*>(device + 6);
+        if (GetTickCount64() < g_holdUseUntil.load()) {
+            if (g_pressedButton == 2) return;
+            if (!g_pressedButton) {
+                feed(device, 2, 1, x, y, 0, 0, false);
+                g_pressedButton = 2; g_pressedAt = GetTickCount64(); return;
+            }
+        }
         if (g_pressedButton) {
             if (GetTickCount64() - g_pressedAt < kClickHoldMs) return;
             feed(device, static_cast<char>(g_pressedButton), 0, x, y, 0, 0, false);
@@ -220,6 +244,7 @@ bool __fastcall mouseInput(void* a1, void* a2, void* a3) {
 }  // namespace
 
 void requestClick(int button) { g_clickRequest = button; }
+void holdUseItem(int milliseconds) { g_holdUseUntil = milliseconds > 0 ? GetTickCount64() + milliseconds : 0; }
 
 void autoUseWhileTargeting(int ms) { g_autoUseUntil = GetTickCount64() + ms; }
 
@@ -240,6 +265,7 @@ std::optional<SelectionClick> pollSelectionClick() {
 
 bool install() {
     bool ok = true;
+    ok &= hooks::create("ItemStackNetManagerClient::addRequestAction",sigs::ItemStackNet_addRequestAction.address,&addAction,&g_addAction);
     ok &= hooks::create("MouseDevice::feed", sigs::MouseDevice_feed.address, &feedMouse, &g_feed);
     ok &= hooks::create("GameCore::handleMouseInput", sigs::GameCore_handleMouseInput.address, &mouseInput,
                         &g_mouseInput);

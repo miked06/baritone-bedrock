@@ -24,6 +24,7 @@
 #include "baritone/pathing/movement/MovementHelper.h"
 #include "baritone/schematic/Schematic.h"
 #include "command/SchematicCommands.h"
+#include "command/ModuleCommands.h"
 #include "core/Perf.h"
 #include "baritone/utils/RayTrace.h"
 #include "core/Bot.h"
@@ -218,6 +219,7 @@ void registerAll(CommandManager& manager, Bot& bot) {
         for (const auto& line : perf::report()) chat::info(line);
     }});
     registerSchematicCommands(manager, bot);
+    registerModuleCommands(manager, bot);
     manager.setCompletionProvider([&bot, &manager](const Args& words) -> Args {
         if (words.size() < 2) return {};
         const auto* command = manager.find(words[0]);
@@ -1501,6 +1503,14 @@ void registerAll(CommandManager& manager, Bot& bot) {
                      bot.walkFor(ticks, sprint);
                      chat::info(std::format("Walking for {} ticks{}", ticks, sprint ? " while sprinting" : ""));
                  }});
+
+    manager.add({{"jump"}, "jump <ticks>", "Dev: hold normal jump/swim input for 1..200 ticks", [&bot](const Args& args) {
+        if (args.size() != 1) throw CommandError("Usage: #jump <ticks>");
+        const int ticks = parseInt(args[0], "ticks");
+        if (ticks < 1 || ticks > 200) throw CommandError("Jump duration must be 1..200 ticks");
+        requirePlayer(); bot.jumpFor(ticks);
+        chat::info(std::format("Holding jump/swim input for {} ticks", ticks));
+    }});
 
     manager.add({{"look"}, "look <yaw> <pitch>", "Test: force the player's rotation", [&bot](const Args& args) {
         if (args.size() < 2) throw CommandError("Usage: #look <yaw> <pitch>");

@@ -9,6 +9,7 @@ bool install();
 // Clicks a mouse button (1 left, 2 right) through the game's mouse queue on its next mouse
 // update: pressed then released one update later, like a real click.
 void requestClick(int button);
+void holdUseItem(int milliseconds);
 // For the next `ms` milliseconds, right click on the first frame the game targets a block.
 void autoUseWhileTargeting(int ms);
 // Physical mouse events consumed by #click; polled only on the game frame thread.

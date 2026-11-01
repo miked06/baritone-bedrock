@@ -26,6 +26,7 @@ double handBreakSpeed(const BlockProps& block) {
 CalculationContext::CalculationContext(std::shared_ptr<const WorldSnapshot> world, PlayerAbilities abilities, bool)
     : bsi(std::move(world)), breakSpeed_(std::move(abilities.breakSpeed)) {
     const Settings& s = Settings::get();
+    protection = bsi.world().protection();
     hasWaterBucket = s.allowWaterBucketFall && abilities.hasWaterBucket && bsi.world().dimension() != 1;  // water evaporates in the nether
     hasThrowaway = s.allowPlace && abilities.hasThrowaway;
     canSprint = s.allowSprint && abilities.foodLevel > 6;
@@ -70,6 +71,7 @@ CalculationContext::CalculationContext(std::shared_ptr<const WorldSnapshot> worl
 }
 
 double CalculationContext::costOfPlacingAt(int x, int y, int z, const BlockProps& current) const {
+    if (!permitsModify({x, y, z})) return costs::COST_INF;
     if (!allowPlace || y < bsi.minY() || y >= bsi.maxY()) return costs::COST_INF;
     if (current.hasFluid() && ((current.fluidLevel == 0 && !allowPlaceInFluidsSource) ||
         (current.fluidLevel != 0 && !allowPlaceInFluidsFlow))) return costs::COST_INF;
@@ -82,6 +84,7 @@ double CalculationContext::costOfPlacingAt(int x, int y, int z, const BlockProps
 }
 
 double CalculationContext::breakCostMultiplierAt(int x, int y, int z, const BlockProps& current) const {
+    if (!permitsModify({x, y, z})) return costs::COST_INF;
     if (ignoreBreakRestrictions) return 1;
     if (breakMultiplierOverride) return breakMultiplierOverride(x, y, z, current);
     if (!allowBreak && !allowBreakAnyway.contains(current.name)) return costs::COST_INF;

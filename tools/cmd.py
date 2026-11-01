@@ -10,6 +10,7 @@ import os
 import subprocess
 import sys
 import time
+import ctypes
 
 LOG = os.path.join(os.environ["LOCALAPPDATA"], "BaritoneBedrock", "log.txt")
 
@@ -34,7 +35,18 @@ def main():
         sys.exit(__doc__)
     pid = find_pid()
     start = os.path.getsize(LOG) if os.path.exists(LOG) else 0
-    with open(rf"\\.\pipe\BaritoneBedrock_{pid}", "wb", buffering=0) as pipe:
+    pipe_name = rf"\\.\pipe\BaritoneBedrock_{pid}"
+    deadline = time.monotonic() + 3
+    while True:
+        try:
+            pipe = open(pipe_name, "wb", buffering=0)
+            break
+        except OSError:
+            if time.monotonic() >= deadline:
+                raise
+            ctypes.windll.kernel32.WaitNamedPipeW(pipe_name, 100)
+            time.sleep(0.02)
+    with pipe:
         for line in args:
             pipe.write(line.encode("utf-8"))
     time.sleep(wait)

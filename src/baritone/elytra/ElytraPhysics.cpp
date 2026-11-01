@@ -11,6 +11,7 @@ constexpr double kGravity = 0.08;
 constexpr double kDegToRad = 3.14159265358979323846 / 180.0;
 
 bool solidAt(BlockStateInterface& bsi, int x, int y, int z) {
+    if (const auto& policy = bsi.protection(); policy && !policy->permitsEntry({x, y, z})) return true;
     const BlockProps& p = bsi.props(x, y, z);
     return p.collides || p.fluid == Fluid::Lava;  // lava is never flown through
 }

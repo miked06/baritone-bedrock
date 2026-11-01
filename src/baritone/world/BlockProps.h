@@ -65,6 +65,9 @@ struct BlockProps {
     std::string name;  // "minecraft:stone"
     // Block states as text ("pillar_axis" = "y", "upside_down_bit" = "1"...), for the builder.
     std::vector<std::pair<std::string, std::string>> states;
+    // Native NBT types retained for lossless supported-state export.
+    std::vector<std::pair<std::string, uint8_t>> stateTypes;
+    int32_t blockVersion = 0;
     std::string_view state(std::string_view key) const {
         for (const auto& [k, v] : states)
             if (k == key) return v;

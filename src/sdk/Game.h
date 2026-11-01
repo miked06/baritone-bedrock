@@ -17,6 +17,7 @@
 static_assert(sizeof(std::string) == 32, "Build in Release/RelWithDebInfo: the game's std::string is 32 bytes");
 
 namespace sdk {
+class Actor;
 
 struct HashedString {
     uint64_t hash;
@@ -101,6 +102,12 @@ public:
 // Vtable order of GameMode (index 0 is the destructor).
 class GameMode {
 public:
+    bool interact(Actor& actor, const Vec3& hit) {
+        return mem::callVirtual<bool, Actor&, const Vec3&, int>(this, 14, actor, hit, 0);
+    }
+    bool attack(Actor& actor, const Vec3& hit) {
+        return mem::callVirtual<bool, Actor&, const Vec3&>(this, 15, actor, hit);
+    }
     bool startDestroyBlock(const BlockPos& pos, Face face, bool& hasDestroyedBlock) {
         return mem::callVirtual<bool, const BlockPos&, uint8_t, bool&>(this, 1, pos, static_cast<uint8_t>(face),
                                                                        hasDestroyedBlock);
@@ -193,6 +200,12 @@ public:
         return armor;
     }
     bool isDead() { return hasComponent(componentHash("IsDeadFlagComponent")); }
+    std::optional<bool> dataFlag(unsigned index) const {
+        if (index >= 131) return std::nullopt;
+        const auto* flags = static_cast<const uint64_t*>(const_cast<Actor*>(this)->entityContext().raw(componentHash("ActorDataFlagComponent")));
+        if (!mem::isReadable(flags, ((index / 64) + 1) * sizeof(uint64_t))) return std::nullopt;
+        return (flags[index / 64] & (uint64_t{1} << (index % 64))) != 0;
+    }
     bool isSleeping() { return hasComponent(componentHash("PlayerIsSleepingFlagComponent")); }
     // MovementAbilitiesComponent: flags at +4, bit 0 = flying (creative flight), bits 1-3 set
     // when the player may fly.
@@ -234,13 +247,7 @@ public:
     void* containerManager() const { return mem::member<void*>(this, offsets::Player_containerManager); }
     // Tick only. 26.60 validates main-inventory slots against the open screen.
     void openInventory();
-    void closeInventory() {
-        // The game's own close sequence: request the UI close and dispose its manager.
-        // LocalPlayer::normalTick consumes these two bytes and resets them to {-9, false}.
-        mem::member<int8_t>(this, offsets::LocalPlayer_containerCloseInfo) = -1;
-        mem::member<bool>(this, offsets::LocalPlayer_containerCloseInfo + 1) = true;
-        mem::callVirtual<void>(this, offsets::Player_vt_deleteContainerManager);
-    }
+    void closeInventory();
 };
 
 // Frees memory allocated by the game (its operator delete / custom allocator).

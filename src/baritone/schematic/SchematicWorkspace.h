@@ -16,7 +16,8 @@ public:
     enum class Difference { Missing, Wrong, Remove, Unloaded };
     struct PreviewCell { BlockPos pos; Difference difference; };
     using Materials = SchematicMaterials;
-    void load(std::string name, SchematicPtr source, BlockPos origin);
+    void load(std::string name, SchematicPtr source, BlockPos origin, std::string sourcePath = {});
+    const std::string& sourcePath() const { return sourcePath_; }
     void clear();
     bool loaded() const { return source_ != nullptr; }
     const std::string& name() const { return name_; }
@@ -43,6 +44,7 @@ private:
     void rebuild();
     void requireLoaded() const;
     std::string name_;
+    std::string sourcePath_;
     SchematicPtr source_, placed_;
     BlockPos origin_{};
     int turns_ = 0, mirror_ = 0;

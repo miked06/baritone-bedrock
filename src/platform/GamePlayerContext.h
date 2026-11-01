@@ -1,8 +1,10 @@
 #pragma once
 #include <optional>
+#include <map>
 #include <vector>
 
 #include "baritone/api/PlayerContext.h"
+#include "sdk/Containers.h"
 
 namespace sdk {
 class LocalPlayer;
@@ -24,12 +26,15 @@ public:
             ownedInventory_ = nullptr;
             inventoryClosedAt_ = 0;
             disconnectRequested_ = false;
+            ownedContainer_ = nullptr; containerOpening_.reset(); transfer_.reset(); containerClosing_ = false;
+            craft_.reset();
         }
         player_ = player;
         region_ = region;
         ++tick_;
         if (player_ && openingMove_) advanceInventoryOpen();
         if (player_ && !moves_.empty()) applyAnsweredMoves();
+        if (player_) advanceContainer();
         if (player_ && !clickRefreshes_.empty()) refreshClickedBlocks();
     }
 
@@ -57,10 +62,27 @@ public:
     baritone::HotbarStack hotbar(int slot) const override;
     baritone::HotbarStack armor(int slot) const override;
     int foodLevel() const override;
+    float health() const override;
+    bool holdUseItem(bool held) override;
+    std::optional<bool> ridingState() const override;
+    bool interactEntity(uint64_t id) override;
+    bool attackEntity(uint64_t id) override;
+    bool containerOpen() const override;
+    bool ownedContainerReady() const override;
+    bool openContainerAt(baritone::BlockPos pos) override;
+    void closeOwnedContainer() override;
+    std::vector<baritone::ContainerSlot> containerSlots() const override;
+    bool transferContainerItem(const baritone::ContainerSlot& source, const baritone::ContainerSlot& target, int count) override;
+    baritone::TransferState transferState() const override { return transferState_; }
+    std::string transferError() const override { return transferError_; }
+    std::vector<baritone::RecipeOption> recipes(std::string_view item = {}) const override;
+    bool craftRecipe(const baritone::RecipeOption&) override;
+    baritone::TransferState craftState() const override { return craftState_; }
+    std::string craftError() const override { return craftError_; }
     int effectAmplifier(std::string_view effect) const override;
     bool swapSlots(int slotA, int slotB) override;
     bool inventoryMovePending() const override {
-        return !moves_.empty() || openingMove_.has_value() || tick_ - inventoryClosedAt_ < 4;
+        return !moves_.empty() || openingMove_.has_value() || transfer_.has_value() || craft_.has_value() || tick_ - inventoryClosedAt_ < 4;
     }
     bool inventoryScreenPending() const {
         return openingMove_.has_value() || ownedInventory_ || tick_ - inventoryClosedAt_ < 4;
@@ -71,7 +93,7 @@ public:
     bool useHeldItem() override;
     void useHeldItemWhenTargeting() override;
     // From the response hook: the server's answer to an inventory request.
-    void onItemStackResponse(int requestId, int result);
+    void onItemStackResponse(int requestId, int result, const void* response = nullptr);
     int countItem(std::string_view name) const override;
     std::vector<baritone::EntityInfo> entities() const override;
     void setLevel(sdk::Level* level) { level_ = level; }
@@ -89,6 +111,25 @@ private:
     sdk::BlockSource* region_ = nullptr;
     int hitTicks_ = 0;  // ticks spent hitting breaking_
     sdk::Level* level_ = nullptr;
+    bool actOnEntity(uint64_t id, bool attack);
+    void* ownedContainer_ = nullptr;
+    std::optional<std::pair<baritone::BlockPos, uint64_t>> containerOpening_;
+    bool containerClosing_ = false;
+    struct Transfer {
+        int id, count, fromCount, toCount, result = -1;
+        uint64_t sent;
+        sdk::ContainerSlotRef source, target;
+        sdk::TransferReceipt receipt;
+        sdk::TransferSnapshot snapshot;
+    };
+    std::optional<Transfer> transfer_;
+    struct Craft { std::map<int,int> responses; std::string item; int before=0; uint64_t sent=0; };
+    std::optional<Craft> craft_;
+    baritone::TransferState craftState_=baritone::TransferState::Idle;
+    std::string craftError_;
+    baritone::TransferState transferState_ = baritone::TransferState::Idle;
+    std::string transferError_;
+    void advanceContainer();
     std::optional<baritone::BlockPos> breaking_;
     uint64_t tick_ = 100;
     uint64_t slotChangedAt_ = 0;
@@ -98,6 +139,8 @@ private:
         int requestId, slotA, slotB;
         uint64_t sentAt;
         int result = -1;  // -1: no answer yet
+        sdk::TransferSnapshot snapshot;
+        sdk::TransferReceipt receipt;
     };
     std::vector<Move> moves_;
     void applyAnsweredMoves();

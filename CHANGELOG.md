@@ -2,6 +2,48 @@
 
 All notable changes to Baritone Bedrock. Versions follow [semantic versioning](https://semver.org/).
 
+## 1.5.0
+
+Module expansion for Windows Bedrock package `1.26.6005.0`. Commands and limits are
+documented in [the module guide](docs/MODULES.md); the
+[validation roadmap](docs/MODULE_ROADMAP.md) distinguishes implemented behavior
+from completed native gameplay checks.
+
+### Added
+
+- Incremental schematic verification, repair and inventory-aware material planning.
+- Named schematic placements with persisted transforms and shared preview limits;
+  block/state export to `.mcstructure`.
+- Named storage locations and confirmed whole-stack deposit/withdrawal.
+- Native recipe discovery and workstation crafting; furnace batch smelting with
+  confirmed input, fuel and collected output.
+- Persistent task queues, paused recovery, bounded retries and failure diagnostics.
+- Native Windows control panel, including live status, schematic and task controls.
+- Survival food/retreat assistance; selected-tree harvesting/replanting and animal
+  breeding/harvesting with observed age, breeding and population checks.
+- Protected areas enforced in pathing, block actions and module interactions.
+- Quarry preflight and layered excavation with preserved access ramps, optional
+  lighting/unloading and a final comparison against the quarry plan.
+- Registered portal graph routing and coordinate scaling; boat and saddled-mount
+  corridor planning, boarding, navigation and dismount processes.
+- Repeatable gameplay scenarios with command/status assertions and JSON reports.
+
+### Fixed
+
+- Reconcile native container transfers from original stack snapshots and accepted
+  server receipts without overwriting independent furnace updates.
+- Address furnace fuel/output by network slot 1/2 while retaining local UI model
+  index 0. Queue normal screen closure to prevent expired furnace UI bindings.
+- Confirm entity interactions from observed state rather than the native dispatch
+  return value, which can report false after successful feeding.
+- Allow swimming toward the surface when the destination is still water and the
+  block above it is clear air; continue rejecting solid ceilings and hazards.
+
+The adaptive performance controller is excluded. Recursive ingredient crafting,
+automatic continuation through portal transitions and textured schematic previews
+are not included. Native validation remains incomplete for the scenarios identified
+in the roadmap.
+
 ## 1.4.1
 
 Stability/performance fixes for Minecraft Bedrock 26.60 (`1.26.6005.0`). See [the audit report](docs/STABILITY_AUDIT.md) for the measured scope and remaining gameplay validation.

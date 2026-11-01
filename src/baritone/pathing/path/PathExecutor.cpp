@@ -171,6 +171,10 @@ bool PathExecutor::onTick(ExecContext& ctx) {
     }
     Movement* movement = movements_[pathPosition_].get();
     BlockPos whereAmI = ctx.playerFeet();
+    if (!ctx.calc.permitsSegment(whereAmI, movement->dest())) {
+        cancel("movement intersects a protected zone");
+        return true;
+    }
     if (!movement->validPositions().contains(whereAmI)) {
         for (std::size_t i = 0; i < pathPosition_ && i < movements_.size(); ++i) {
             // lagged back: go back to that movement

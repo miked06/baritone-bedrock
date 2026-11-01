@@ -137,7 +137,9 @@ StateId WorldTracker::idOf(const sdk::Block* block) {
     if (it != blockIds_.end()) return it->second;
     const sdk::nbt::CompoundTag& tag = block->serializationId();
     std::string name = tag.string("name").value_or(block->legacy()->name());
-    StateId id = baritone::BlockRegistry::get().add(classifyBlock(name, tag.compound("states")));
+    auto props = classifyBlock(name, tag.compound("states"));
+    props.blockVersion = static_cast<int32_t>(tag.integer("version").value_or(0));
+    StateId id = baritone::BlockRegistry::get().add(std::move(props));
     blockIds_.emplace(block, id);
     return id;
 }

@@ -7,6 +7,7 @@ namespace baritone {
 
 BlockStateInterface::BlockStateInterface(std::shared_ptr<const WorldSnapshot> world)
     : world_(std::move(world)),
+      protection_(world_->protection()),
       cache_(world_->cache()),
       registry_(BlockRegistry::get()),
       minY_(world_->minY()),

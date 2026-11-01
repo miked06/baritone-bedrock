@@ -8,9 +8,11 @@ namespace baritone {
 
 Baritone::Baritone(PlayerContext& player, Notify notify)
     : player_(player),
-      notify_(notify),
+      notify_([this, notify = std::move(notify)](const std::string& message, bool error) {
+          diagnostics_.record(message, error); notify(message, error);
+      }),
       inventory_(player),
-      pathing_(player, inventory_, notify),
+      pathing_(player, inventory_, notify_),
       control_(*this),
       customGoal_(*this),
       getToBlock_(*this),
@@ -20,6 +22,13 @@ Baritone::Baritone(PlayerContext& player, Notify notify)
       farm_(*this),
       builder_(*this),
       pause_(*this),
+      survival_(*this),
+      animals_(*this),
+      storage_(*this),
+      trees_(*this),
+      vehicle_(*this),
+      smelt_(*this),
+      craft_(*this),
       backfill_(*this),
       elytra_(*this),
       inventoryPauser_(*this) {
@@ -32,6 +41,13 @@ Baritone::Baritone(PlayerContext& player, Notify notify)
     control_.registerProcess(&farm_);
     control_.registerProcess(&builder_);
     control_.registerProcess(&pause_);
+    control_.registerProcess(&survival_);
+    control_.registerProcess(&animals_);
+    control_.registerProcess(&storage_);
+    control_.registerProcess(&trees_);
+    control_.registerProcess(&vehicle_);
+    control_.registerProcess(&smelt_);
+    control_.registerProcess(&craft_);
     control_.registerProcess(&backfill_);
     control_.registerProcess(&elytra_);
     control_.registerProcess(&inventoryPauser_);
@@ -75,6 +91,7 @@ void Baritone::shutdown() {
     getToBlock_.shutdown();
     farm_.shutdown();
     elytra_.shutdown();
+    vehicle_.shutdown();
 }
 
 void Baritone::cancelEverything() {

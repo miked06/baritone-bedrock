@@ -155,11 +155,12 @@ void CommandManager::logRanCommand(std::string_view command, std::string_view re
 }
 
 bool CommandManager::runCommand(std::string_view msg, bool echo) {
+    lastError_.clear();
     msg = trim(msg);
     if (msg.empty()) return runCommand("help", echo);
     Args words;
     try { words = baritone::commandArguments(msg); }
-    catch (const std::invalid_argument& error) { chat::error(error.what()); return true; }
+    catch (const std::invalid_argument& error) { lastError_ = error.what(); chat::error(error.what()); return true; }
     const std::string& name = words.front();
     std::string_view rest = msg.substr(std::min(msg.size(), name.size()));
     Args args(words.begin() + 1, words.end());
@@ -181,10 +182,13 @@ bool CommandManager::runCommand(std::string_view msg, bool echo) {
     try {
         cmd->run(args);
     } catch (const CommandError& e) {
+        lastError_ = e.what();
         chat::error(e.what());
     } catch (const std::invalid_argument& e) {
+        lastError_ = e.what();
         chat::error(e.what());
     } catch (const std::exception& e) {
+        lastError_ = e.what();
         logger::error("Command {} threw: {}", name, e.what());
         chat::error(baritone::Settings::get().verboseCommandExceptions ? std::format("Internal error: {}", e.what())
                                                                       : "Internal error (details in log.txt)");

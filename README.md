@@ -28,6 +28,12 @@ The pathfinding engine, movements and processes started as a port of Baritone Ja
 
 The [stability audit](docs/STABILITY_AUDIT.md) records automated coverage, native performance measurements and the gameplay scenarios that still need validation. Use `#perf on` / `#perf off` to measure bot work on your machine.
 
+The 1.5 development version adds storage/workstations, task workflows, protected
+areas, survival assistance, tree/animal farming, quarry planning, portal routes,
+vehicle navigation and an external control panel. See the [module guide](docs/MODULES.md)
+for commands and limits, and the [validation roadmap](docs/MODULE_ROADMAP.md) for
+completed checks and remaining gameplay scenarios.
+
 > [!IMPORTANT]
 > **Supported game version: Minecraft Bedrock 26.60 for Windows** (package `1.26.6005.0`).
 > The DLL checks the package version before installing hooks and refuses unsupported builds. Other versions need updated signatures, offsets and calling conventions (see [Updating to a new game version](docs/DEVELOPMENT.md#updating-to-a-new-game-version)).

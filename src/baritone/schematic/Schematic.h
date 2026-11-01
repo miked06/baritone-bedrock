@@ -34,6 +34,7 @@ public:
     virtual ~Schematic() = default;
     virtual BlockPos size() const = 0;
     virtual void reset() const {}
+    virtual bool mayBreak(int, int, int) const { return true; }
     virtual std::vector<std::string> warnings() const { return {}; }
     // `current` is the block in the world now (used by #sel replace).
     virtual DesiredBlock desired(int x, int y, int z, const BlockProps& current) const = 0;
@@ -200,6 +201,7 @@ private:
 class MaskSchematic : public Schematic {
 public:
     using Schematic::desired;
+    bool mayBreak(int x,int y,int z) const override { return inner_->mayBreak(x,y,z); }
     void reset() const override { inner_->reset(); }
     using Mask = std::function<bool(int x, int y, int z)>;
     MaskSchematic(SchematicPtr inner, Mask mask) : inner_(std::move(inner)), mask_(std::move(mask)) {}

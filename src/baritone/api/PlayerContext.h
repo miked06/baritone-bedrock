@@ -38,7 +38,19 @@ struct EntityInfo {
     Vec3d position;        // feet
     bool isPlayer = false;
     bool isItem = false;
+    std::optional<bool> baby, inLove, tamed, saddled;
+    std::optional<float> health;
+    bool dead = false;
 };
+struct ContainerSlot {
+    std::string collection;
+    int slot = 0;
+    bool playerInventory = false;
+    HotbarStack stack;
+    uint8_t networkName = 0;
+};
+enum class TransferState { Idle, Pending, Accepted, Rejected };
+struct RecipeOption { std::string collection,item; int slot=0,count=0; };
 
 // Everything the bot reads from or does to the local player (Baritone's IPlayerContext +
 // PlayerController). Implemented on the game side; only used on the game thread.
@@ -75,6 +87,24 @@ public:
     virtual bool isFlying() const { return false; }  // creative flight
     virtual bool isCreative() const { return false; }  // blocks break instantly
     virtual int foodLevel() const { return 20; }       // hunger 0-20
+    virtual float health() const { return 20; }
+    virtual bool holdUseItem(bool) { return false; }
+    virtual std::optional<bool> ridingState() const { return std::nullopt; }
+    // True means the interaction was dispatched, not accepted by the server.
+    virtual bool interactEntity(uint64_t) { return false; }
+    virtual bool attackEntity(uint64_t) { return false; }
+    virtual bool containerOpen() const { return false; }
+    virtual bool ownedContainerReady() const { return false; }
+    virtual bool openContainerAt(BlockPos) { return false; }
+    virtual void closeOwnedContainer() {}
+    virtual std::vector<ContainerSlot> containerSlots() const { return {}; }
+    virtual bool transferContainerItem(const ContainerSlot&, const ContainerSlot&, int) { return false; }
+    virtual TransferState transferState() const { return TransferState::Idle; }
+    virtual std::string transferError() const { return {}; }
+    virtual std::vector<RecipeOption> recipes(std::string_view = {}) const { return {}; }
+    virtual bool craftRecipe(const RecipeOption&) { return false; }
+    virtual TransferState craftState() const { return TransferState::Idle; }
+    virtual std::string craftError() const { return {}; }
     // Amplifier (0 = level I) of an active effect ("haste", "mining_fatigue"), -1 if none.
     virtual int effectAmplifier(std::string_view) const { return -1; }
     virtual bool useHeldItem() { return false; }

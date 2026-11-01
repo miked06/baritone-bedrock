@@ -365,9 +365,12 @@ double pillar(CalculationContext& ctx, int x, int y, int z) {
     const BlockProps& toBreak = ctx.props(x, y + 2, z);
     if (toBreak.type == T::FenceGate) return COST_INF;
     const BlockProps* srcUp = nullptr;
-    if (isWater(toBreak) && isWater(fromState)) {
+    if (isWater(fromState)) {
         srcUp = &ctx.props(x, y + 1, z);
-        if (isWater(*srcUp)) return LADDER_UP_ONE_COST;  // swim up a water column
+        // The final submerged step has air above the destination. Requiring
+        // water at head height traps the search one block below the surface.
+        if (isWater(*srcUp) && (isWater(toBreak) || canWalkThrough(ctx, x, y + 2, z, toBreak)))
+            return LADDER_UP_ONE_COST;
     }
     double placeCost = 0;
     if (!ladder) {

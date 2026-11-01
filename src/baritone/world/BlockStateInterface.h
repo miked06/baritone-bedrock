@@ -46,6 +46,7 @@ public:
     int minY() const { return minY_; }
     int maxY() const { return maxY_; }
     const WorldSnapshot& world() const { return *world_; }
+    const std::shared_ptr<const ProtectionPolicy>& protection() const { return protection_; }
 
 private:
     struct Entry {
@@ -56,6 +57,7 @@ private:
     Entry lookup(int cx, int cz);
 
     std::shared_ptr<const WorldSnapshot> world_;
+    std::shared_ptr<const ProtectionPolicy> protection_;
     std::shared_ptr<CachedWorld> cache_;
     StateId cachedIds_[4] = {kAir, kAir, kAir, kAir};
     const BlockRegistry& registry_;

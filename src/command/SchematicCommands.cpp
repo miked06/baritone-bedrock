@@ -72,6 +72,22 @@ void registerSchematicCommands(CommandManager& manager, Bot& bot) {
     auto run = [&bot](const Args& args) {
         auto& work = bot.schematics();
         const std::string action = args.empty() ? "info" : lower(args[0]);
+        if (action == "store" || action == "use" || action == "drop" || action == "placements") {
+            if (bot.schematicLoading()) throw CommandError("Wait for the schematic load to finish");
+            bot.prepareTasks();
+            auto& catalog = bot.placements();
+            if (action == "placements" && args.size() == 1) {
+                for (const auto& [name, entry] : catalog.entries()) chat::info(std::format("{}: {}, origin {}, {}", name, entry.preset.file, entry.preset.origin, entry.resident ? "resident" : "saved preset"));
+                return;
+            }
+            if (args.size() != 2) throw CommandError("Usage: #schematic store|use|drop name; #schematic placements");
+            if (action == "use") { bot.selectPlacement(args[1]); if (!bot.schematicLoading()) info(bot); return; }
+            if (action == "store") catalog.store(args[1], work);
+            else if (action == "drop") catalog.remove(args[1]);
+            else throw CommandError("Usage: #schematic placements");
+            catalog.save(bot.worldDataPath("placements"));
+            chat::info("Placement presets saved for this world and dimension"); return;
+        }
         if (bot.schematicLoading() && action != "info" && action != "list" && action != "load" && action != "clear" && action != "unload")
             throw CommandError("A schematic is still loading; wait for Loaded before editing or building");
         auto stopBuild = [&] { if (bot.baritone().builder().isActive()) bot.cancelAll(); };
@@ -109,6 +125,21 @@ void registerSchematicCommands(CommandManager& manager, Bot& bot) {
         if (action == "build") {
             if (args.size() != 1) throw CommandError("Usage: #schematic build");
             startBuild(bot); return;
+        }
+        if (action == "verify" || action == "requirements") {
+            if (args.size() == 2 && args[1] == "status") {
+                const auto& survey = bot.schematicSurvey();
+                chat::info(std::format("Comparison: {}/{} positions, {}", survey.scanned(), survey.volume(), survey.active() ? "running" : survey.ready() ? "complete" : "not started"));
+                return;
+            }
+            if (args.size() != 1) throw CommandError("Usage: #schematic verify|requirements [status]");
+            bot.startSchematicSurvey(action == "requirements"); return;
+        }
+        if (action == "repair") {
+            if (args.size() != 1) throw CommandError("Usage: #schematic repair");
+            startBuild(bot);
+            chat::info("Repair compares each position again and modifies only differences permitted by your build settings");
+            return;
         }
         if (action == "clear" || action == "unload") {
             if (args.size() != 1) throw CommandError("Usage: #schematic clear");

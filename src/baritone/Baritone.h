@@ -15,7 +15,15 @@
 #include "baritone/process/MineProcess.h"
 #include "baritone/process/PathingControlManager.h"
 #include "baritone/process/PauseProcess.h"
+#include "baritone/process/SurvivalProcess.h"
+#include "baritone/process/AnimalProcess.h"
+#include "baritone/process/StorageProcess.h"
+#include "baritone/process/TreeProcess.h"
+#include "baritone/process/VehicleProcess.h"
+#include "baritone/process/SmeltProcess.h"
+#include "baritone/process/CraftProcess.h"
 #include "baritone/selection/SelectionManager.h"
+#include "baritone/task/Diagnostics.h"
 
 namespace baritone {
 
@@ -48,7 +56,15 @@ public:
     BuilderProcess& builder() { return builder_; }
     ElytraProcess& elytra() { return elytra_; }
     PauseProcess& pauser() { return pause_; }
+    SurvivalProcess& survival() { return survival_; }
+    AnimalProcess& animals() { return animals_; }
+    StorageProcess& storage() { return storage_; }
+    TreeProcess& trees() { return trees_; }
+    VehicleProcess& vehicle() { return vehicle_; }
+    SmeltProcess& smelt() { return smelt_; }
+    CraftProcess& craft() { return craft_; }
     SelectionManager& selections() { return selections_; }
+    Diagnostics& diagnostics() { return diagnostics_; }
 
     const std::shared_ptr<const WorldSnapshot>& world() const { return world_; }
     // Live context of this tick (nullptr outside a world).
@@ -62,6 +78,7 @@ public:
 
 private:
     PlayerContext& player_;
+    Diagnostics diagnostics_;
     Notify notify_;
     InventoryBehavior inventory_;
     PathingBehavior pathing_;
@@ -74,6 +91,13 @@ private:
     FarmProcess farm_;
     BuilderProcess builder_;
     PauseProcess pause_;
+    SurvivalProcess survival_;
+    AnimalProcess animals_;
+    StorageProcess storage_;
+    TreeProcess trees_;
+    VehicleProcess vehicle_;
+    SmeltProcess smelt_;
+    CraftProcess craft_;
     SelectionManager selections_;
     BackfillProcess backfill_;
     ElytraProcess elytra_;

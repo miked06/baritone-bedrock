@@ -8,12 +8,13 @@ namespace baritone {
 void SchematicWorkspace::requireLoaded() const {
     if (!loaded()) throw std::invalid_argument("No schematic loaded. Use #schematic load <file> first");
 }
-void SchematicWorkspace::load(std::string name, SchematicPtr source, BlockPos origin) {
+void SchematicWorkspace::load(std::string name, SchematicPtr source, BlockPos origin, std::string sourcePath) {
     if (!source) throw std::invalid_argument("Missing schematic");
     schematicVolume(source->size());
     for (auto [pos, size] : {std::pair{origin.x, source->size().x}, {origin.y, source->size().y}, {origin.z, source->size().z}})
         if (static_cast<int64_t>(pos) + size - 1 > INT32_MAX) throw std::invalid_argument("Placement coordinates overflow");
     name_ = std::move(name);
+    sourcePath_ = std::move(sourcePath);
     source_ = std::move(source);
     origin_ = origin;
     turns_ = mirror_ = 0;
@@ -22,7 +23,7 @@ void SchematicWorkspace::load(std::string name, SchematicPtr source, BlockPos or
     rebuild();
 }
 void SchematicWorkspace::clear() {
-    source_.reset(); placed_.reset(); name_.clear(); layers_.reset(); ++revision_;
+    source_.reset(); placed_.reset(); name_.clear(); sourcePath_.clear(); layers_.reset(); ++revision_;
 }
 void SchematicWorkspace::rebuild() {
     placed_ = source_;
