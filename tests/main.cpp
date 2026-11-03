@@ -9,6 +9,8 @@
 #include <set>
 #include <string>
 #include <vector>
+#include <thread>
+#include "baritone/production/RecipePlanner.h"
 
 #include "TestWorld.h"
 #include "TestPlayer.h"
@@ -31,11 +33,15 @@
 #include "baritone/schematic/SchematicCatalog.h"
 #include "baritone/api/TransferReconciliation.h"
 #include "baritone/world/PortalGraph.h"
+#include "baritone/world/PortalJourney.h"
 #include "baritone/schematic/QuarryPlan.h"
+#include "baritone/schematic/MiningPlan.h"
+#include "baritone/schematic/PreviewExport.h"
 #include "baritone/schematic/SchematicLoadJob.h"
 #include "baritone/schematic/SchematicSurvey.h"
 #include "baritone/schematic/SchematicExport.h"
 #include "baritone/task/TaskQueue.h"
+#include "baritone/task/Workflow.h"
 #include "baritone/task/CheckpointWriter.h"
 #include "baritone/schematic/NbtReader.h"
 #include "baritone/utils/CommandLine.h"
@@ -1921,6 +1927,461 @@ TEST(smelting_collects_confirmed_output_and_preserves_preexisting_furnace_items)
     bot.smelt().start({1,1,0},"raw_iron","iron_ingot",8,"coal",1);
     for (int i=0;i<4 && bot.smelt().isActive();++i) bot.smelt().onTick(false,true);
     CHECK(!bot.smelt().succeeded() && player.externalSlots[0].stack.count==3 && player.countItem("minecraft:raw_iron")==8);
+}
+
+TEST(recursive_recipe_planning_reserves_surplus_and_chooses_available_wood) {
+    auto book = RecipeBook::vanillaBasics();
+    auto plan = book.plan("torch", 4, {{"minecraft:spruce_log", 1}, {"minecraft:coal", 1}, {"minecraft:torch", 8}});
+    CHECK(plan.ready() && plan.steps.size() == 3);
+    CHECK(plan.steps[0].item == "minecraft:spruce_planks" && plan.steps[0].amount == 4);
+    CHECK(plan.steps[1].item == "minecraft:stick" && plan.steps[1].amount == 4);
+    CHECK(plan.steps[2].item == "minecraft:torch" && plan.steps[2].amount == 4);
+    CHECK(plan.remaining.at("minecraft:spruce_planks") == 2);
+    CHECK(plan.remaining.at("minecraft:stick") == 3);
+    CHECK(plan.remaining.at("minecraft:torch") == 12);
+    auto missing = book.plan("torch", 8, {{"minecraft:oak_log", 1}, {"minecraft:coal", 1}});
+    CHECK(!missing.ready() && missing.missing.at("minecraft:coal") == 1);
+    RecipeBook branching;
+    branching.set({"result", 1, {{{"stick"}, 1}, {{"stick"}, 2}}});
+    branching.set({"stick", 4, {{{"oak_planks"}, 2}}});
+    const auto reserved = branching.plan("result", 1, {{"oak_planks", 2}});
+    CHECK(reserved.ready() && reserved.steps.size() == 2 && reserved.remaining.at("minecraft:stick") == 1);
+}
+
+TEST(loadout_profiles_preserve_reserves_and_reject_conflicting_hotbar_roles) {
+    LoadoutStore profiles;
+    profiles.set("mining", {"torch", 5, 32, 0, 0});
+    profiles.set("mining", {"diamond_pickaxe", 1, 1, 1, 25});
+    profiles.activate("mining");
+    CHECK(profiles.reserved("minecraft:torch") == 5 && profiles.reserved("minecraft:dirt") == 0);
+    bool rejected = false;
+    try { profiles.set("mining", {"bread", 1, 16, 0, 0}); } catch (const std::invalid_argument&) { rejected = true; }
+    CHECK(rejected && profiles.profile("mining").size() == 2);
+    test::TestPlayer player;
+    player.inventory[3] = {"minecraft:torch", 12};
+    player.inventory[9] = {"minecraft:diamond_pickaxe", 1}; player.inventory[9].maxDamage = 100; player.inventory[9].damage = 95;
+    player.inventory[12] = player.inventory[9]; player.inventory[12].damage = 20;
+    const auto needs = profiles.check("mining", player);
+    const auto torches = std::ranges::find_if(needs, [](const LoadoutNeed& n) { return n.rule.item == "minecraft:torch"; });
+    CHECK(torches != needs.end() && torches->missing == 20 && !torches->hotbarReady);
+    TestWorld world(1); Baritone bot(player, [](const std::string&, bool) {}); bot.tick(world.snapshot());
+    bot.loadout().start("mining", profiles.profile("mining"));
+    for (int tick = 0; tick < 8 && bot.loadout().isActive(); ++tick) bot.loadout().onTick(false, true);
+    CHECK_MSG(bot.loadout().succeeded(), bot.loadout().failure());
+    CHECK(player.inventory[0].name == "minecraft:torch" && player.inventory[0].count == 12);
+    CHECK(player.inventory[1].name == "minecraft:diamond_pickaxe" && player.inventory[1].damage == 20);
+    CHECK(player.inventory[9].damage == 95 && player.countItem("minecraft:diamond_pickaxe") == 2);
+}
+
+TEST(loadout_policy_roundtrip_and_failed_reload_blocks_deposits) {
+    LoadoutStore store; store.set("builder", {"stone", 8, 64, 2, 0}); store.activate("builder");
+    TempDir tmp; const auto file = tmp.path / "loadouts.txt"; store.save(file);
+    LoadoutStore restored; restored.load(file);
+    CHECK(restored.active() == "builder" && restored.reserved("minecraft:stone") == 8);
+    { std::ofstream invalid(file); invalid << "BARITONE_LOADOUTS 1 \"builder\"\n\"builder\" \"stone\" 8 64 2 0\n\"builder\" \"stone\" 0 64 3 0\n"; }
+    bool rejected = false;
+    try { restored.load(file); } catch (const std::invalid_argument&) { rejected = true; }
+    CHECK(rejected && !restored.healthy());
+    rejected = false;
+    try { (void)restored.reserved("minecraft:stone"); } catch (const std::invalid_argument&) { rejected = true; }
+    CHECK(rejected);
+    TestWorld world(1); test::TestPlayer player; player.inventory[0] = {"minecraft:stone", 10};
+    Baritone bot(player, [](const std::string&, bool) {}); bot.tick(world.snapshot());
+    bot.loadouts() = store; bot.storage().addLocation("supplies", {1, 1, 0});
+    rejected = false;
+    try { bot.storage().start("supplies", "stone", 3, false); } catch (const std::invalid_argument&) { rejected = true; }
+    CHECK(rejected && !bot.storage().isActive() && player.countItem("minecraft:stone") == 10);
+    player.externalSlots = {{"container_items", 0, false, {}}};
+    bot.storage().start("supplies", "stone", 2, false);
+    for (int i = 0; i < 8 && bot.storage().isActive(); ++i) bot.storage().onTick(false, true);
+    CHECK(bot.storage().succeeded() && player.countItem("minecraft:stone") == 8);
+}
+
+TEST(recursive_recipe_planning_rejects_cycles_and_restores_catalog_transactionally) {
+    RecipeBook cyclic;
+    cyclic.set({"a", 1, {{{"b"}, 1}}}); cyclic.set({"b", 1, {{{"a"}, 1}}});
+    bool refused = false;
+    try { (void)cyclic.plan("a", 1, {}); } catch (const std::invalid_argument&) { refused = true; }
+    CHECK(refused);
+    TempDir tmp;
+    const auto file = tmp.path / "recipes.txt";
+    auto original = RecipeBook::vanillaBasics(); original.save(file);
+    RecipeBook restored; restored.load(file);
+    CHECK(restored.plan("stick", 4, {{"oak_log", 1}}).ready());
+    { std::ofstream bad(file); bad << "BARITONE_RECIPES 1\n\"stick\" 4 1 2 1 \"oak_planks\"\n\"minecraft:stick\" 1 1 1 1 \"dirt\"\n"; }
+    refused = false;
+    try { restored.load(file); } catch (const std::invalid_argument&) { refused = true; }
+    CHECK(refused && restored.recipes().at("minecraft:stick").count == 4);
+}
+
+TEST(recursive_production_drives_native_recipe_adapter_and_confirms_each_step) {
+    TestWorld world(1); world.floor(0, Blocks::get().stone);
+    test::TestPlayer player;
+    player.inventory[0] = {"minecraft:spruce_log", 1};
+    player.inventory[1] = {"minecraft:coal", 1};
+    player.inventory[2] = {"minecraft:torch", 8};
+    player.recipeOptions = {{"recipes", "minecraft:spruce_planks", 0, 4}, {"recipes", "minecraft:stick", 1, 4}, {"recipes", "minecraft:torch", 2, 4}};
+    Baritone bot(player, [](const std::string&, bool) {}); bot.tick(world.snapshot());
+    bot.production().start(RecipeBook::vanillaBasics(), {1, 1, 0}, "torch", 4, true);
+    int handled = 0;
+    std::vector<std::string> order;
+    for (int tick = 0; tick < 400 && bot.production().isActive(); ++tick) {
+        bot.tick(world.snapshot());
+        if (player.craftRequests > handled) {
+            ++handled; const auto& item = player.lastCraft.item; order.push_back(item);
+            if (item == "minecraft:spruce_planks") {
+                --player.inventory[0].count; player.inventory[10] = {item, 4};
+            } else if (item == "minecraft:stick") {
+                player.inventory[10].count -= 2; player.inventory[11] = {item, 4};
+            } else if (item == "minecraft:torch") {
+                --player.inventory[1].count; --player.inventory[11].count; player.inventory[2].count += 4;
+            }
+            player.crafting = TransferState::Accepted;
+        }
+        if (order.empty()) std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    CHECK_MSG(bot.production().succeeded(), bot.production().failure());
+    CHECK(order == std::vector<std::string>({"minecraft:spruce_planks", "minecraft:stick", "minecraft:torch"}));
+    CHECK(player.countItem("minecraft:torch") == 12 && player.countItem("minecraft:stick") == 3);
+    CHECK(!player.containerOpen());
+    bot.production().start(RecipeBook::vanillaBasics(), {1, 1, 0}, "diamond_pickaxe", 1, true);
+    for (int tick = 0; tick < 400 && bot.production().isActive(); ++tick) {
+        bot.tick(world.snapshot()); std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    CHECK(!bot.production().succeeded() && player.craftRequests == 3 && !bot.production().failure().empty());
+}
+
+TEST(storage_merges_only_supported_identities_and_respects_stack_capacity) {
+    HotbarStack pearls; pearls.name = "minecraft:ender_pearl"; pearls.count = 12; pearls.maxStackSize = 16; pearls.stackKey = "plain-pearl";
+    auto target = pearls; target.count = 15;
+    CHECK(mergeRoom(pearls, target) == 1);
+    target.stackKey = "custom-pearl"; CHECK(mergeRoom(pearls, target) == 0);
+    target.stackKey.clear(); CHECK(mergeRoom(pearls, target) == 0);
+    CHECK(mergeRoom(pearls, {}) == 16);
+    target = pearls; target.count = 10;
+    std::vector<ContainerSlot> slots{{"container", 0, false, pearls}, {"player", 0, true, {}}, {"player", 1, true, target}};
+    auto move = planStorageTransfer(slots, pearls.name, 12, true);
+    CHECK(move && move->destination == 2 && move->count == 6);
+    slots[0].networkName = 26; // A furnace is not a general storage source.
+    CHECK(!planStorageTransfer(slots, pearls.name, 12, true));
+}
+
+TEST(storage_sort_uses_scratch_space_and_preserves_unknown_metadata) {
+    TestWorld world(1); test::TestPlayer player;
+    HotbarStack stone; stone.name = "minecraft:stone"; stone.count = 30; stone.stackKey = "stone";
+    auto more = stone; more.count = 40;
+    HotbarStack apples; apples.name = "minecraft:apple"; apples.count = 3; // Unknown data: move intact, never merge.
+    player.externalSlots = {{"container", 0, false, stone}, {"container", 1, false, more}, {"container", 2, false, apples}};
+    Baritone bot(player, [](const std::string&, bool) {}); bot.tick(world.snapshot());
+    bot.storage().addLocation("test", {1, 1, 0}); bot.storage().sort("test");
+    for (int tick = 0; tick < 80 && bot.storage().isActive(); ++tick) bot.storage().onTick(false, true);
+    CHECK_MSG(bot.storage().succeeded(), bot.storage().failure());
+    CHECK(player.externalSlots[0].stack.name == "minecraft:apple" && player.externalSlots[0].stack.count == 3);
+    CHECK(player.externalSlots[1].stack.count + player.externalSlots[2].stack.count == 70);
+    CHECK(player.countItem("minecraft:stone") == 0 && player.countItem("minecraft:apple") == 0);
+    CHECK(bot.storage().observations().at("test").items.at("minecraft:stone") == 70);
+}
+
+TEST(logistics_scans_supply_then_confirms_absolute_inventory_targets) {
+    TestWorld world(1); test::TestPlayer player;
+    HotbarStack stone; stone.name = "minecraft:stone"; stone.count = 12; stone.stackKey = "stone";
+    player.externalSlots = {{"container", 0, false, stone}};
+    player.inventory[0] = stone; player.inventory[0].count = 3;
+    Baritone bot(player, [](const std::string&, bool) {}); bot.tick(world.snapshot());
+    bot.storage().addLocation("test", {1, 1, 0}); bot.logistics().start({{"stone", 10}});
+    for (int tick = 0; tick < 80 && bot.logistics().isActive(); ++tick) {
+        bot.logistics().onTick(false, true);
+        if (bot.storage().isActive()) bot.storage().onTick(false, true);
+    }
+    CHECK_MSG(bot.logistics().succeeded(), bot.logistics().failure());
+    CHECK(player.countItem("minecraft:stone") == 10 && player.externalSlots[0].stack.count == 5 && !player.containerOpen());
+    bot.logistics().start({{"stone", 20}});
+    for (int tick = 0; tick < 100 && bot.logistics().isActive(); ++tick) {
+        bot.logistics().onTick(false, true);
+        if (bot.storage().isActive()) bot.storage().onTick(false, true);
+    }
+    CHECK(!bot.logistics().succeeded() && !bot.logistics().failure().empty());
+    CHECK(player.countItem("minecraft:stone") == 15); // Partial supply is retained, not invented.
+}
+
+TEST(portal_journey_continues_only_after_confirmed_world_link_and_arrival) {
+    PortalGraph graph; graph.add("entry", 0, {0, 1, 0}); graph.add("exit", 1, {10, 64, 10}); graph.add("home", 1, {100, 64, 10});
+    graph.link("entry", "exit", true);
+    PortalJourney journey; journey.start(graph, {"world", 0}, {0, 1, 0}, "home");
+    CHECK(journey.step({"world", 0}, {0, 1, 0}, true).has_value() && journey.awaitingTransition());
+    CHECK(journey.transition({"world", 1}, {11, 64, 10}));
+    for (int tick = 0; tick < 20; ++tick) CHECK(!journey.step({"world", 1}, {11, 64, 10}, true));
+    auto goal = journey.step({"world", 1}, {11, 64, 10}, false);
+    CHECK(goal && (*goal == BlockPos{100, 64, 10}));
+    journey.step({"world", 1}, {100, 64, 10}, false); CHECK(!journey.active() && journey.failure().empty());
+    journey.start(graph, {"world", 0}, {0, 1, 0}, "home"); journey.step({"world", 0}, {0, 1, 0}, true);
+    CHECK(!journey.transition({"another world", 1}, {10, 64, 10}) && !journey.active());
+    journey.start(graph, {"world", 0}, {0, 1, 0}, "home");
+    CHECK(!journey.transition({"world", 1}, {10, 64, 10})); // Not armed merely because a route exists.
+    journey.start(graph, {"world", 0}, {0, 1, 0}, "home"); journey.step({"world", 0}, {0, 1, 0}, true);
+    CHECK(!journey.transition({"world", 1}, {100, 64, 10})); // Unrelated teleport.
+}
+
+TEST(workflow_branches_on_results_and_limits_cycles_and_recovers_paused) {
+    Workflow flow; flow.bind({"world", 0});
+    flow.set(0, {{"ifitem", {"stone", "4"}}, -1, 1, 3});
+    flow.set(1, {{"restock", {"stone", "4"}}, 0, -2, 1});
+    flow.resume({"world", 0}); int have = 0;
+    auto start = [&](const Task& task) -> TaskOutcome {
+        if (task.kind == "ifitem") return {have >= 4 ? TaskStatus::Succeeded : TaskStatus::Failed, "Condition"};
+        have = 4; return {TaskStatus::Succeeded, {}};
+    };
+    auto poll = [](const Task&) -> TaskOutcome { return {}; };
+    for (int i = 0; i < 5 && flow.running(); ++i) flow.tick({"world", 0}, start, poll);
+    CHECK(flow.complete() && have == 4 && flow.nodes()[0].visits == 2 && flow.nodes()[1].visits == 1);
+    flow = Workflow::decode(flow.encode()); CHECK(flow.complete() && !flow.running());
+    flow.clear(); flow.set(0, {{"wait", {"1"}}, 0, -2, 2}); flow.resume({"world", 0});
+    for (int i = 0; i < 8 && flow.running(); ++i) flow.tick({"world", 0}, [](const Task&) -> TaskOutcome { return {TaskStatus::Succeeded, {}}; }, poll);
+    CHECK(!flow.complete() && !flow.running() && flow.nodes()[0].visits == 2 && !flow.reason().empty());
+    flow.restart(); flow.resume({"world", 0}); flow.tick({"different", 0}, start, poll);
+    CHECK(!flow.running() && flow.nodes()[0].visits == 0);
+    bool rejected = false;
+    try { Workflow::decode("BARITONE_WORKFLOW 1 \"world\" 0 0 0 0 1\n5 -2 1 0 \"wait\" 10 0 1 \"1\"\n"); } catch (...) { rejected = true; }
+    CHECK(rejected);
+}
+
+TEST(construction_plans_grounded_supports_and_conditionally_cleans_temporary_columns) {
+    TestWorld world(1); world.floor(0, Blocks::get().stone);
+    auto source = std::make_shared<FillSchematic>(BlockPos{1, 1, 1}, DesiredBlock::block("minecraft:stone"));
+    ConstructionPlan plan; plan.start(source, {2, 3, 2}, "minecraft:cobblestone", 4, false);
+    for (int i = 0; i < 20 && !plan.ready() && plan.failure().empty(); ++i) plan.step(*world.snapshot(), 1);
+    CHECK_MSG(plan.ready(), plan.failure()); CHECK(plan.supports().size() == 2 && plan.dependencies().size() == 2);
+    CHECK((plan.phaseOrigin() == BlockPos{2, 1, 2}));
+    CHECK(plan.phase(0)->desired(0, 0, 0, BlockProps{}).name == "minecraft:cobblestone");
+    BlockProps support; support.name = "minecraft:cobblestone";
+    CHECK(plan.phase(2)->desired(0, 0, 0, support).kind == DesiredBlock::Kind::Air);
+    support.name = "minecraft:chest"; CHECK(plan.phase(2)->desired(0, 0, 0, support).kind == DesiredBlock::Kind::Any);
+    CHECK(!plan.phase(1)->mayBreak(0, 0, 0));
+    plan.start(source, {2, 10, 2}, "minecraft:stone", 2, false);
+    for (int i = 0; i < 10 && plan.failure().empty(); ++i) plan.step(*world.snapshot());
+    CHECK(!plan.ready() && !plan.failure().empty());
+    auto policy = std::make_shared<ProtectionPolicy>(); policy->add({"foundation", {{2, 1, 2}, {2, 1, 2}}, ProtectionPolicy::NoModify}); world.snapshot()->setProtection(policy);
+    plan.start(source, {2, 3, 2}, "minecraft:cobblestone", 4, false);
+    for (int i = 0; i < 10 && plan.failure().empty(); ++i) plan.step(*world.snapshot());
+    CHECK(!plan.ready() && !plan.failure().empty());
+}
+
+TEST(planned_construction_rejects_substitutions_before_any_builder_action) {
+    SettingsGuard settings;
+    TestWorld world(1); world.floor(0, Blocks::get().stone); test::TestPlayer player;
+    Baritone bot(player, [](const std::string&, bool) {}); bot.tick(world.snapshot());
+    auto source = std::make_shared<FillSchematic>(BlockPos{1,1,1}, DesiredBlock::block("minecraft:stone"));
+    for (bool acceptedSubstitute : {false, true}) {
+        Settings::get().buildSubstitutes.clear(); Settings::get().buildValidSubstitutes.clear();
+        auto& rules = acceptedSubstitute ? Settings::get().buildValidSubstitutes : Settings::get().buildSubstitutes;
+        rules.push_back("minecraft:stone>minecraft:cobblestone");
+        bool rejected = false;
+        try { bot.construction().start(source, {2,3,2}, "minecraft:stone", 4, false, true); }
+        catch (const std::invalid_argument&) { rejected = true; }
+        CHECK(rejected && !bot.construction().isActive() && !bot.builder().isActive());
+    }
+    // A read-only preflight remains useful even while normal building uses substitutes.
+    bot.construction().start(source, {2,3,2}, "minecraft:stone", 4, false, false);
+    CHECK(bot.construction().isActive());
+}
+
+TEST(tool_maintenance_preserves_worn_tool_and_pauses_without_suitable_spares) {
+    TestWorld world(1); test::TestPlayer player; HotbarStack pick;
+    pick.name = "minecraft:diamond_pickaxe"; pick.count = 1; pick.tool = Tool::Pickaxe; pick.toolTier = 4; pick.maxDamage = 1561; pick.damage = 1500;
+    player.inventory[0] = pick; pick.damage = 100; player.inventory[12] = pick;
+    Baritone bot(player, [](const std::string&, bool) {}); bot.tick(world.snapshot());
+    bot.maintenance().enable(10); CHECK(bot.maintenance().isActive()); bot.maintenance().onTick(false, true); bot.maintenance().onTick(false, true);
+    CHECK(player.inventory[0].damage == 100 && player.inventory[12].damage == 1500 && !bot.maintenance().isActive());
+    player.inventory[0].damage = 1500; bot.maintenance().onTick(false, true); CHECK(bot.pauser().paused());
+    CHECK(player.inventory[0].damage == 1500 && !bot.maintenance().permits(player.inventory[0]));
+    player.inventory[12].damage = 0; bot.pauser().setPaused(false); bot.maintenance().onTick(false, true); bot.maintenance().onTick(false, true);
+    CHECK(player.inventory[0].damage == 0 && !bot.pauser().paused());
+}
+
+TEST(mining_plans_preserve_floor_and_prevent_navigation_modifications_outside_layout) {
+    TestWorld world(1); world.floor(0, Blocks::get().stone); world.fill(0,1,0,7,2,7,Blocks::get().stone); test::TestPlayer player;
+    auto plan = std::make_shared<MiningPlan>(Selection{{0,1,0},{7,2,7}}, "branch", BlockFilter({"stone"}));
+    for (int i = 0; i < 20 && !plan->ready() && plan->failure().empty(); ++i) plan->step(*world.snapshot(), player);
+    CHECK_MSG(plan->ready(), plan->failure()); CHECK(plan->blocks() == 44 && plan->objectives() == 44);
+    CHECK(!plan->mayBreak(1,0,0) && plan->mayBreak(0,0,0) && !plan->mayPlace(0,0,0));
+    Baritone bot(player, [](const std::string&, bool) {}); bot.tick(world.snapshot()); bot.builder().build("Mining", plan, plan->origin(),false,false);
+    CalculationContext ctx(world.snapshot(), {}, false); bot.builder().customizeContext(ctx);
+    CHECK(ctx.breakMultiplierOverride(-1,1,0,BlockProps{}) >= costs::COST_INF);
+    CHECK(ctx.placeCostOverride(-1,1,0,BlockProps{}) >= costs::COST_INF);
+    world.set(1,1,4,Blocks::get().water); MiningPlan liquid({{0,1,0},{7,2,7}}, "tunnel", BlockFilter({"stone"}));
+    for (int i = 0; i < 20 && liquid.failure().empty(); ++i) liquid.step(*world.snapshot(),player);
+    CHECK(!liquid.ready() && !liquid.failure().empty());
+}
+
+TEST(action_history_records_stable_observations_and_conditional_undo_skips_changed_cells) {
+    ActionHistory history; history.bind({"world",0}); history.intent({2,1,2},Blocks::get().stone,1);
+    StateId current = kAir; auto reader = [&](BlockPos) -> std::optional<StateId> { return current; };
+    history.observe(2,reader); current = Blocks::get().stone; history.observe(3,reader); history.observe(7,reader); CHECK(history.entries().empty());
+    current = kAir; history.observe(8,reader); history.observe(11,reader); CHECK(history.entries().size() == 1 && history.entries()[0].before == Blocks::get().stone);
+    TestWorld world(1); test::TestPlayer player; Baritone bot(player,[](const std::string&,bool){}); bot.tick(world.snapshot()); bot.history() = history;
+    world.set(2,1,2,Blocks::get().dirt); bot.undo().start(history.recent(1)); bot.undo().onTick(false,true); bot.undo().onTick(false,true);
+    CHECK(!bot.undo().isActive() && !bot.builder().isActive() && !bot.history().entries()[0].undone);
+    world.set(2,1,2,kAir); bot.undo().start(history.recent(1)); bot.undo().onTick(false,true); CHECK(bot.builder().isActive());
+    world.set(2,1,2,Blocks::get().stone); bot.undo().onTick(false,true); bot.undo().onTick(false,true);
+    CHECK(!bot.undo().isActive() && bot.history().entries()[0].undone);
+    history.bind({"another world",0}); CHECK(history.entries().empty() && history.pending().empty());
+}
+
+TEST(textured_preview_export_is_script_safe_and_keeps_transformed_states) {
+    auto block = DesiredBlock::block("minecraft:oak_log"); block.states = {{"pillar_axis","x"}};
+    auto source = std::make_shared<FillSchematic>(BlockPos{1,1,2},block); RotatedSchematic rotated(source,1);
+    std::ostringstream out; writePreviewJson(out,rotated,{10,64,-3},"</script><script>alert(1)</script>");
+    const auto json = out.str(); CHECK(json.find("</script>") == json.npos && json.find("\\u003c") != json.npos);
+    CHECK(json.find("\"pillar_axis\":\"z\"") != json.npos && json.find("\"origin\":[10,64,-3]") != json.npos);
+    bool rejected = false; try { FillSchematic huge({256,256,256},block); writePreviewJson(out,huge,{},"huge"); } catch (...) { rejected = true; } CHECK(rejected);
+}
+
+TEST(action_history_placement_intent_tracks_the_changed_cell_and_excludes_its_support) {
+    BlockProps support; support.name = "minecraft:grass_block";
+    CHECK((ActionHistory::placementTarget({3,4,5},Direction::Up,support) == BlockPos{3,5,5}));
+    BlockProps plant; plant.name = "minecraft:fern"; plant.replaceable = true;
+    CHECK((ActionHistory::placementTarget({3,4,5},Direction::Up,plant) == BlockPos{3,4,5}));
+    BlockProps air; air.type = BlockType::Air;
+    CHECK((ActionHistory::placementTarget({3,4,5},Direction::West,air) == BlockPos{3,4,5}));
+}
+
+TEST(builder_completes_conditional_cleanup_when_a_former_mismatch_becomes_ignored) {
+    class ConditionalRemoval : public Schematic {
+    public:
+        BlockPos size() const override { return {1,1,1}; }
+        DesiredBlock desired(int,int,int,const BlockProps& current) const override {
+            return current.type == BlockType::Air ? DesiredBlock::any() : DesiredBlock::air();
+        }
+    };
+    SettingsGuard settings; TestWorld world(1); world.floor(0,Blocks::get().stone); world.set(2,1,2,Blocks::get().stone);
+    test::TestPlayer player; Baritone bot(player,[](const std::string&,bool){}); bot.tick(world.snapshot());
+    bot.builder().build("Conditional cleanup",std::make_shared<ConditionalRemoval>(),{2,1,2},false,false);
+    bot.builder().onTick(false,true); CHECK(bot.builder().isActive());
+    world.set(2,1,2,kAir); bot.builder().onTick(false,true);
+    CHECK(!bot.builder().isActive() && !bot.builder().isPaused());
+}
+
+TEST(automatic_restock_preserves_and_resumes_the_interrupted_builder_session) {
+    SettingsGuard settings; Settings::get().allowInventory=false;
+    TestWorld world(1); world.floor(0,Blocks::get().stone); test::TestPlayer player;
+    HotbarStack stone; stone.name="minecraft:stone"; stone.count=4; stone.isBlock=true; stone.stackKey="stone";
+    player.externalSlots={{"container",0,false,stone}};
+    Baritone bot(player,[](const std::string&,bool){}); bot.tick(world.snapshot());
+    bot.storage().addLocation("supplies",{1,1,0});
+    bot.builder().build("Interrupted build",std::make_shared<FillSchematic>(BlockPos{1,1,1},DesiredBlock::block("minecraft:stone")),{2,1,2},false,false);
+    const auto session=bot.builder().session(); bot.autoRestock(true,"supplies");
+    bool sawPaused=false, resumed=false;
+    for(int tick=0;tick<100;++tick){
+        bot.tick(world.snapshot()); sawPaused|=bot.builder().isPaused();
+        if(sawPaused&&!bot.builder().isPaused()&&player.countItem("minecraft:stone")==1){resumed=true;break;}
+    }
+    CHECK(sawPaused&&resumed&&bot.builder().isActive()&&bot.builder().session()==session);
+    CHECK(player.externalSlots[0].stack.count==3&&!player.containerOpen());
+    bot.cancelEverything(); CHECK(!bot.autoRestockEnabled());
+
+    player.inventory={}; player.externalSlots[0].stack={};
+    bot.builder().build("Empty supplies",std::make_shared<FillSchematic>(BlockPos{1,1,1},DesiredBlock::block("minecraft:stone")),{2,1,2},false,false);
+    bot.autoRestock(true,"supplies");
+    for(int tick=0;tick<100&&bot.autoRestockEnabled();++tick)bot.tick(world.snapshot());
+    CHECK(!bot.autoRestockEnabled()&&bot.builder().isActive()&&bot.builder().isPaused());
+    CHECK(player.countItem("minecraft:stone")==0&&!player.containerOpen());
+}
+
+TEST(repair_policy_preserves_names_enchantments_and_checks_native_costs) {
+    HotbarStack tool; tool.name="minecraft:diamond_pickaxe"; tool.count=1; tool.damage=1000; tool.maxDamage=1561;
+    tool.enchantments={{15,5},{26,1}}; tool.customName="My pick";
+    HotbarStack diamonds; diamonds.name="minecraft:diamond"; diamonds.count=4;
+    validateRepairInputs("anvil",tool,diamonds,2,10);
+    RepairPreview preview{"anvil",tool,4,2,true}; preview.output.damage=220;
+    validateRepairOutput(preview,"anvil",tool,2,10);
+    auto rejects=[&](auto action) { bool refused=false; try { action(); } catch(const std::invalid_argument&) { refused=true; } CHECK(refused); };
+    rejects([&]{validateRepairOutput(preview,"anvil",tool,2,3);});
+    rejects([&]{validateRepairOutput(preview,"anvil",tool,1,10);});
+    preview.output.enchantments.clear(); rejects([&]{validateRepairOutput(preview,"anvil",tool,2,10);});
+    preview.output=tool; preview.output.damage=220; preview.output.customName.clear(); rejects([&]{validateRepairOutput(preview,"anvil",tool,2,10);});
+    rejects([&]{validateRepairInputs("grindstone",tool,tool,1,0);});
+    tool.customName.clear(); tool.enchantments.clear(); validateRepairInputs("grindstone",tool,tool,1,0);
+    HotbarStack book; book.name="minecraft:enchanted_book"; book.count=1;
+    rejects([&]{validateRepairInputs("anvil",tool,book,1,39);});
+}
+
+TEST(repair_process_previews_returns_inputs_and_requires_accepted_improved_output) {
+    TestWorld world(1); world.floor(0,Blocks::get().stone); test::TestPlayer player;
+    HotbarStack tool; tool.name="minecraft:iron_pickaxe"; tool.count=1; tool.damage=160; tool.maxDamage=250;
+    tool.enchantments={{15,3}}; tool.customName="Kept name";
+    HotbarStack ingots; ingots.name="minecraft:iron_ingot"; ingots.count=4;
+    player.inventory[0]=tool; player.inventory[12]=ingots; player.returnRepairInputs=true;
+    player.externalSlots={{"anvil_input_items",0,false,{},0},{"anvil_material_items",0,false,{},1}};
+    auto output=tool; output.damage=35; player.repairResult={"anvil",output,3,2,true};
+    Baritone bot(player,[](const std::string&,bool){}); bot.tick(world.snapshot());
+    auto run=[&] { for(int tick=0;tick<150&&bot.repair().isActive();++tick)bot.repair().onTick(false,true); };
+    bot.repair().start("anvil",{1,1,0},0,12,2,3,false); run();
+    CHECK_MSG(bot.repair().succeeded(),bot.repair().failure());
+    CHECK(player.repairRequests==0&&player.countItem(ingots.name)==4&&player.hotbar(0).damage==160&&!player.containerOpen());
+    // Recovered material may occupy another free inventory slot.
+    int materialSlot=-1; for(int i=0;i<36;++i)if(player.hotbar(i).name==ingots.name&&player.hotbar(i).count>=2)materialSlot=i;
+    bot.repair().start("anvil",{1,1,0},0,materialSlot,2,2,true); run();
+    CHECK(!bot.repair().succeeded()&&player.repairRequests==0&&player.countItem(ingots.name)==4);
+    materialSlot=-1; for(int i=0;i<36;++i)if(player.hotbar(i).name==ingots.name&&player.hotbar(i).count>=2)materialSlot=i;
+    player.rejectRepair=true; bot.repair().start("anvil",{1,1,0},0,materialSlot,2,3,true); run();
+    CHECK(!bot.repair().succeeded()&&player.repairRequests==1&&player.countItem(ingots.name)==4);
+    materialSlot=-1; for(int i=0;i<36;++i)if(player.hotbar(i).name==ingots.name&&player.hotbar(i).count>=2)materialSlot=i;
+    player.rejectRepair=false; bot.repair().start("anvil",{1,1,0},0,materialSlot,2,3,true); run();
+    CHECK_MSG(bot.repair().succeeded(),bot.repair().failure());
+    CHECK(player.repairRequests==2&&player.countItem(ingots.name)==2&&player.hotbar(0).damage==35);
+    CHECK(player.hotbar(0).enchantments==tool.enchantments&&player.hotbar(0).customName==tool.customName&&!player.containerOpen());
+}
+
+TEST(mending_waits_for_real_durability_progress_and_restores_borrowed_hotbar) {
+    TestWorld world(1); world.floor(0,Blocks::get().stone); test::TestPlayer player;
+    HotbarStack tool; tool.name="minecraft:diamond_pickaxe"; tool.count=1; tool.damage=90; tool.maxDamage=100; tool.enchantments={{15,4},{26,1}}; tool.customName="Mending tool";
+    player.inventory[20]=tool; player.inventory[2]={"minecraft:dirt",3}; player.selected=2;
+    Baritone bot(player,[](const std::string&,bool){}); bot.tick(world.snapshot());
+    bot.mending().start({0,1,0},20,90,120);
+    bot.mending().onTick(false,true); bot.mending().onTick(false,true);
+    CHECK(player.inventory[2].name==tool.name&&player.inventory[20].name=="minecraft:dirt");
+    // The native main-inventory swap briefly owns an inventory screen. It must
+    // settle before that screen is considered an unrelated interruption.
+    player.pendingInventory=player.containerOpened=true;
+    bot.mending().onTick(false,true); CHECK(bot.mending().isActive());
+    player.pendingInventory=player.containerOpened=false;
+    for(int tick=0;tick<6;++tick)bot.mending().onTick(false,true);
+    CHECK(bot.mending().isActive()&&!bot.mending().succeeded()&&player.inventory[2].damage==90);
+    player.inventory[2].damage=9;
+    for(int tick=0;tick<20&&bot.mending().isActive();++tick)bot.mending().onTick(false,true);
+    CHECK_MSG(bot.mending().succeeded(),bot.mending().failure());
+    CHECK(player.selected==2&&player.inventory[2].name=="minecraft:dirt"&&player.inventory[2].count==3);
+    CHECK(player.inventory[20].damage==9&&player.inventory[20].customName==tool.customName&&player.inventory[20].enchantments==tool.enchantments);
+}
+
+TEST(mending_refuses_missing_enchantment_and_stops_on_damage_or_missing_xp) {
+    TestWorld world(1); world.floor(0,Blocks::get().stone); test::TestPlayer player;
+    HotbarStack tool; tool.name="minecraft:iron_pickaxe"; tool.count=1; tool.damage=200; tool.maxDamage=250;
+    player.inventory[0]=tool;
+    Baritone bot(player,[](const std::string&,bool){}); bot.tick(world.snapshot());
+    bool refused=false;try{bot.mending().start({0,1,0},0,100,120);}catch(const std::invalid_argument&){refused=true;}
+    CHECK(refused&&!bot.mending().isActive());
+    player.inventory[0].enchantments={{26,1}};
+    bot.mending().start({0,1,0},0,100,120); bot.mending().onTick(false,true); bot.mending().onTick(false,true);
+    player.hitpoints=19;bot.mending().onTick(false,true);
+    CHECK(!bot.mending().isActive()&&!bot.mending().succeeded()&&player.inventory[0].damage==200);
+    player.hitpoints=20;bot.mending().start({0,1,0},0,100,120);
+    for(int tick=0;tick<1300&&bot.mending().isActive();++tick)bot.mending().onTick(false,true);
+    CHECK(!bot.mending().isActive()&&!bot.mending().succeeded());
+    CHECK(bot.mending().failure().find("sixty seconds")!=std::string::npos&&player.inventory[0].damage==200&&player.inventory[0].count==1);
+}
+
+TEST(grindstone_repair_combines_only_the_explicit_unenchanted_donor) {
+    TestWorld world(1); world.floor(0,Blocks::get().stone); test::TestPlayer player;
+    HotbarStack tool; tool.name="minecraft:stone_pickaxe"; tool.count=1; tool.damage=110; tool.maxDamage=131; tool.maxStackSize=1;
+    player.inventory[0]=tool; player.inventory[19]=tool; player.inventory[19].damage=100;
+    player.externalSlots={{"grindstone_input_items",0,false,{},50},{"grindstone_additional_items",0,false,{},51}}; player.returnRepairInputs=true;
+    auto output=tool;output.damage=72;player.repairResult={"grindstone",output,0,1,true};
+    Baritone bot(player,[](const std::string&,bool){});bot.tick(world.snapshot());
+    bot.repair().start("grindstone",{1,1,0},0,19,1,0,true);
+    for(int tick=0;tick<100&&bot.repair().isActive();++tick)bot.repair().onTick(false,true);
+    CHECK_MSG(bot.repair().succeeded(),bot.repair().failure());
+    CHECK(player.repairRequests==1&&player.countItem(tool.name)==1&&player.inventory[0].damage==72&&!player.containerOpen());
 }
 
 TEST(performance_random_terrain) {

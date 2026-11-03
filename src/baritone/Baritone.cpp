@@ -29,6 +29,14 @@ Baritone::Baritone(PlayerContext& player, Notify notify)
       vehicle_(*this),
       smelt_(*this),
       craft_(*this),
+      production_(*this),
+      loadout_(*this),
+      logistics_(*this),
+      construction_(*this),
+      maintenance_(*this),
+      undo_(*this),
+      repair_(*this),
+      mending_(*this),
       backfill_(*this),
       elytra_(*this),
       inventoryPauser_(*this) {
@@ -48,6 +56,14 @@ Baritone::Baritone(PlayerContext& player, Notify notify)
     control_.registerProcess(&vehicle_);
     control_.registerProcess(&smelt_);
     control_.registerProcess(&craft_);
+    control_.registerProcess(&production_);
+    control_.registerProcess(&loadout_);
+    control_.registerProcess(&logistics_);
+    control_.registerProcess(&construction_);
+    control_.registerProcess(&maintenance_);
+    control_.registerProcess(&undo_);
+    control_.registerProcess(&repair_);
+    control_.registerProcess(&mending_);
     control_.registerProcess(&backfill_);
     control_.registerProcess(&elytra_);
     control_.registerProcess(&inventoryPauser_);
@@ -92,9 +108,11 @@ void Baritone::shutdown() {
     farm_.shutdown();
     elytra_.shutdown();
     vehicle_.shutdown();
+    production_.shutdown();
 }
 
 void Baritone::cancelEverything() {
+    autoRestock_ = restockWaiting_ = false;
     pause_.setPaused(false);
     control_.cancelEverything();
     pathing_.cancelEverything();
@@ -113,6 +131,7 @@ void Baritone::tick(std::shared_ptr<const WorldSnapshot> world) {
     pathing_.beginTick(std::move(world));
     if (!world_ || !player_.valid()) return;
     inventory_.tick();
+    tickRestock();
     control_.preTick();  // processes may set controls_ directly (e.g. mining what's in reach)
     std::function<void(CalculationContext&)> customizer;
     if (Process* p = control_.mostRecentInControl()) {
@@ -123,6 +142,36 @@ void Baritone::tick(std::shared_ptr<const WorldSnapshot> world) {
     pathing_.tickPath();
     if (pathing_.producedOutput()) controls_ = pathing_.output();
     control_.postTick();
+}
+
+void Baritone::autoRestock(bool enabled, std::string source) {
+    if (enabled && !source.empty() && !storage_.locations().contains(source)) throw std::invalid_argument("Unknown supply location");
+    autoRestock_ = enabled; restockSource_ = std::move(source);
+}
+void Baritone::tickRestock() {
+    if (pause_.paused()) return;
+    if (restockWaiting_) {
+        if (logistics_.isActive()) return;
+        restockWaiting_ = false;
+        if (!logistics_.succeeded()) { autoRestock_ = false; logDirect("Automatic builder restocking stopped: " + logistics_.failure(), true); return; }
+        if (builder_.isActive() && builder_.session() == restockSession_) builder_.resume();
+    }
+    if (!autoRestock_ || !builder_.isActive() || !builder_.isPaused() || builder_.missingMaterials().empty() || logistics_.isActive()) return;
+    int free = 0;
+    for (int slot = 0; slot < 36; ++slot) if (player_.hotbar(slot).empty()) ++free;
+    if (!free) { autoRestock_ = false; logDirect("Builder restocking needs an empty inventory slot", true); return; }
+    std::map<std::string, int> batch;
+    for (const auto& [block, count] : builder_.missingMaterials()) {
+        std::string item = block;
+        if (item == "minecraft:wall_torch") item = "minecraft:torch";
+        if (item == "minecraft:lit_furnace") item = "minecraft:furnace";
+        if (item == "minecraft:standing_sign" || item == "minecraft:wall_sign") item = "minecraft:oak_sign";
+        batch[item] = player_.countItem(item) + std::min(count, 64);
+        if (--free == 0) break;
+    }
+    try {
+        logistics_.start(std::move(batch), restockSource_); restockSession_ = builder_.session(); restockWaiting_ = true;
+    } catch (const std::exception& e) { autoRestock_ = false; logDirect(e.what(), true); }
 }
 
 }  // namespace baritone

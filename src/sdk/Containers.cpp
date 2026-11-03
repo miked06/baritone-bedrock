@@ -1,4 +1,5 @@
 #include "sdk/Containers.h"
+#include <Windows.h>
 #include <cstring>
 #include <memory>
 #include <unordered_map>
@@ -53,6 +54,16 @@ struct Copy {
     void netId(uint32_t id) { std::memset(bytes + offsets::ItemStack_netIdVariant, 0, 0x18); std::memcpy(bytes + offsets::ItemStack_netIdVariant, &id, sizeof(id)); }
     const ItemStack& item() const { return *reinterpret_cast<const ItemStack*>(bytes); }
 };
+const ItemStack* emptyStack() {
+    // Unique initialized ItemStack with null item/data and count zero in the
+    // 1.26.6005.0 image. Native code uses it as its empty-stack fallback.
+    const auto base = reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr));
+    const auto* empty = reinterpret_cast<const ItemStack*>(base + 0x1293AE90);
+    if (!mem::isReadable(empty, offsets::ItemStack_size) ||
+        *reinterpret_cast<const uintptr_t*>(empty) != base + 0xEFF9E80 ||
+        mem::member<uintptr_t>(empty, 8) || mem::member<uintptr_t>(empty, 0x10) || empty->count()) return nullptr;
+    return empty;
+}
 }
 std::vector<ContainerView> openContainerViews(LocalPlayer& player) {
     std::vector<ContainerView> result;
@@ -75,8 +86,12 @@ ContainerSlotRef containerSlotRef(LocalPlayer& player, const std::string& collec
     if (slot < 0 || slot >= size || size > 256) throw std::invalid_argument("Container slot outside supported bounds");
     ContainerSlotRef result; result.slot = slot; result.modelSlot=slot;
     std::memcpy(result.name.data(), static_cast<uint8_t*>(entry->second.get()) + 0x30, 12);
-    if (result.name[0]==24) result.slot+=1;
-    else if (result.name[0]==26) result.slot+=2;
+    // Network indices differ from the one-slot UI model indices. Anvil inputs
+    // use 1/2; grindstone uses shared-UI slots 16/17; furnace uses 0/1/2.
+    if (result.name[0]==24 || result.name[0]==0) result.slot+=1;
+    else if (result.name[0]==26 || result.name[0]==1) result.slot+=2;
+    else if (result.name[0]==50) result.slot+=16;
+    else if (result.name[0]==51) result.slot+=17;
     return result;
 }
 const ItemStack* containerItem(LocalPlayer& player, const ContainerSlotRef& ref) {
@@ -88,8 +103,12 @@ const ItemStack* containerItem(LocalPlayer& player, const ContainerSlotRef& ref)
     return model ? &mem::callVirtual<const ItemStack&, int>(model, 8, ref.modelSlot>=0 ? ref.modelSlot : ref.slot) : nullptr;
 }
 int sendContainerTransfer(LocalPlayer& player, const ContainerSlotRef& source, const ContainerSlotRef& target, int count) {
+    // Workstation previews require the native create/consume/XP operation.
+    if (source.name[0] == 2 || target.name[0] == 2 || source.name[0] == 52 || target.name[0] == 52) return 0;
     auto* from = containerItem(player, source); auto* to = containerItem(player, target);
-    if (!from || !to || from->empty() || !to->empty() || count < 1 || count > from->count() || source == target) return 0;
+    if (!from || !to || from->empty() || count < 1 || count > from->count() || source == target ||
+        (!to->empty() && !from->mergeCompatible(*to)) || count + (to->empty() ? 0 : to->count()) > from->maxStackSize()) return 0;
+    if (!to->empty() && count == from->count() && !emptyStack()) return 0;
     void* manager = mem::member<void*>(&player, offsets::Player_itemStackNetManager);
     if (!mem::isReadable(manager, 0x70) || !mem::member<bool>(manager, offsets::ItemStackNetManager_enabled) || mem::member<void*>(manager, offsets::ItemStackNetManager_currentRequest)) return 0;
     auto* action = static_cast<uint8_t*>(gameAlloc(offsets::ItemStackRequestTransfer_size)); if (!action) return 0;
@@ -153,20 +172,25 @@ bool applyInventorySwap(LocalPlayer& player,int a,int b,TransferReceipt receipt,
 bool applyContainerTransfer(LocalPlayer& player, const ContainerSlotRef& source, const ContainerSlotRef& target, int count, int sourceBefore, int targetBefore, TransferReceipt receipt, const TransferSnapshot& snapshot) {
     logger::debug("Transfer reconcile valid {} receipt {} -> {}, expected {} -> {}", receipt.valid, receipt.sourceCount, receipt.targetCount, sourceBefore - count, targetBefore + count);
     if (!snapshot.source || !snapshot.target || !receipt.valid || receipt.sourceCount != sourceBefore - count ||
-        !baritone::transferTargetReceiptValid(target.name[0],targetBefore+count,receipt.targetCount) || targetBefore != 0) return false;
+        !baritone::transferTargetReceiptValid(target.name[0],targetBefore+count,receipt.targetCount)) return false;
     auto* from = containerItem(player, source); auto* to = containerItem(player, target);
     if (!from || !to) return false;
     logger::debug("Transfer local counts {} -> {}, empty {} -> {} (before {} -> {})", from->count(), to->count(), from->empty(), to->empty(), sourceBefore, targetBefore);
     const auto& original = static_cast<const Copy*>(snapshot.source.get())->item();
-    const auto& empty = static_cast<const Copy*>(snapshot.target.get())->item();
+    const auto& originalTarget = static_cast<const Copy*>(snapshot.target.get())->item();
+    if (sourceBefore != original.count() || targetBefore != (originalTarget.empty() ? 0 : originalTarget.count()) ||
+        (targetBefore && !original.mergeCompatible(originalTarget))) return false;
+    const auto* empty = originalTarget.empty() ? &originalTarget : emptyStack();
+    if (sourceBefore == count && !empty) return false;
     auto compatible = [&](const ItemStack& stack, int before, int after) {
-        return baritone::transferSideCompatible(stack.empty(), stack.item() == original.item(), stack.count(), before, after);
+        const bool same = original.plainStackKey().empty() ? stack.item() == original.item() : stack.plainStackKey() == original.plainStackKey();
+        return baritone::transferSideCompatible(stack.empty(), same, stack.count(), before, after);
     };
     // External container models receive native server updates independently of the
     // player's inventory. Either side can already be updated when this tick runs.
     const auto inventory=[](const ContainerSlotRef& slot) { return slot.name[0]==28 || slot.name[0]==29; };
     if ((inventory(source) && !compatible(*from, sourceBefore, receipt.sourceCount)) || (inventory(target) && !compatible(*to, targetBefore, receipt.targetCount))) return false;
-    Copy a(sourceBefore == count ? empty : original), b(original);
+    Copy a(sourceBefore == count ? *empty : original), b(originalTarget.empty() ? original : originalTarget);
     a.count(receipt.sourceCount); b.count(receipt.targetCount); a.netId(receipt.sourceId); b.netId(receipt.targetId);
     // External models receive the game's own authoritative updates. Rewriting
     // furnace input/fuel here could undo a consumption that happened after the

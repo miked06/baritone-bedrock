@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.25)
-project(BaritoneBedrock VERSION 1.5.0 LANGUAGES C CXX)
+project(BaritoneBedrock VERSION 1.6.0 LANGUAGES C CXX)
 
 if(NOT CMAKE_SIZEOF_VOID_P EQUAL 8)
     message(FATAL_ERROR "Minecraft Bedrock is x64 only: configure with -A x64")
@@ -36,7 +36,10 @@ file(GLOB_RECURSE DLL_SOURCES CONFIGURE_DEPENDS
     src/platform/*.cpp src/platform/*.h
 )
 add_library(BaritoneBedrock SHARED ${DLL_SOURCES})
-target_include_directories(BaritoneBedrock PRIVATE src)
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/apps/schematic-viewer.html")
+file(READ "${CMAKE_CURRENT_SOURCE_DIR}/apps/schematic-viewer.html" PREVIEW_VIEWER_HTML)
+configure_file(src/core/PreviewViewerAssets.h.in generated/PreviewViewerAssets.h @ONLY)
+target_include_directories(BaritoneBedrock PRIVATE src "${CMAKE_CURRENT_BINARY_DIR}/generated")
 target_compile_definitions(BaritoneBedrock PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX _CRT_SECURE_NO_WARNINGS
     BARITONE_BEDROCK_VERSION="${PROJECT_VERSION}")
 target_compile_options(BaritoneBedrock PRIVATE /W4 /permissive- /utf-8 /MP /wd4201 /wd4324)
@@ -50,7 +53,7 @@ target_link_options(BaritoneBedrock PRIVATE /DEBUG /OPT:REF /OPT:ICF)
 add_executable(BaritoneControlPanel WIN32 apps/ControlPanel.cpp)
 target_compile_options(BaritoneControlPanel PRIVATE /W4 /permissive- /utf-8)
 target_compile_definitions(BaritoneControlPanel PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
-target_link_libraries(BaritoneControlPanel PRIVATE comctl32 comdlg32)
+target_link_libraries(BaritoneControlPanel PRIVATE comctl32 comdlg32 baritone_core)
 set_target_properties(BaritoneControlPanel PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
 
 # ---------------------------------------------------------------------------

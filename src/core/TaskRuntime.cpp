@@ -53,6 +53,12 @@ baritone::TaskOutcome Bot::startTask(const baritone::Task& task) {
         if (args.size() != 1 || command::parseInt(args[0], "ticks") < 1) throw std::invalid_argument("Wait task needs a positive tick duration");
     } else if (task.kind == "inventory") {
         if (args.size() != 2 || command::parseInt(args[1], "quantity") < 1) throw std::invalid_argument("Inventory condition needs an item and positive quantity");
+    } else if (task.kind == "ifitem") {
+        if (args.size() != 2 || command::parseInt(args[1], "quantity") < 0) throw std::invalid_argument("Item condition needs an item and non-negative quantity");
+        return {player_.countItem(BlockFilter::normalize(args[0])) >= command::parseInt(args[1], "quantity") ? TaskStatus::Succeeded : TaskStatus::Failed, "Inventory branch evaluated"};
+    } else if (task.kind == "restock") {
+        if (args.size() < 2 || args.size() > 3) throw std::invalid_argument("Restock node needs item, absolute inventory target and optional source");
+        baritone_->logistics().start({{args[0], command::parseInt(args[1], "target")}}, args.size() == 3 ? args[2] : "");
     } else throw std::invalid_argument("Unsupported task kind: " + task.kind);
     return {};
 }
@@ -61,6 +67,10 @@ baritone::TaskOutcome Bot::pollTask(const baritone::Task& task) {
     const auto& args = task.arguments;
     if (task.kind == "wait") return {task.elapsedTicks >= static_cast<uint64_t>(command::parseInt(args[0], "ticks")) ? TaskStatus::Succeeded : TaskStatus::Running, {}};
     if (task.kind == "inventory") return {player_.countItem(BlockFilter::normalize(args[0])) >= command::parseInt(args[1], "quantity") ? TaskStatus::Succeeded : TaskStatus::Running, {}};
+    if (task.kind == "restock") {
+        if (baritone_->logistics().isActive()) return {};
+        return {baritone_->logistics().succeeded() ? TaskStatus::Succeeded : TaskStatus::Blocked, baritone_->logistics().failure()};
+    }
     const auto error = baritone_->diagnostics().errorsAfter(taskDiagnosticStart_);
     if (task.kind == "goto") {
         if (baritone_->customGoal().isActive()) return {};
@@ -94,6 +104,17 @@ baritone::TaskOutcome Bot::pollTask(const baritone::Task& task) {
 }
 void Bot::prepareTasks() {
     using namespace baritone;
+    const auto flowFile = worldDataPath("workflows");
+    if (workflowFile_ != flowFile) {
+        workflow_.pause(); saveWorkflow(); workflowFile_ = flowFile; workflow_ = {}; workflow_.bind(identity()); workflowHealthy_ = true;
+        try {
+            if (std::filesystem::exists(flowFile)) {
+                if (std::filesystem::file_size(flowFile) > 2 * 1024 * 1024) throw std::invalid_argument("Workflow checkpoint is too large");
+                std::ifstream input(flowFile); if (!input) throw std::runtime_error("Cannot read workflow checkpoint");
+                auto parsed = Workflow::decode(std::string(std::istreambuf_iterator<char>(input), {})); parsed.bind(identity()); workflow_ = std::move(parsed);
+            }
+        } catch (const std::exception& e) { workflowHealthy_ = false; chat::error(std::string("Workflow recovery failed; existing file preserved until explicitly cleared or loaded: ") + e.what()); }
+    }
     const auto placementFile = worldDataPath("placements");
     if (placementsFile_ != placementFile) {
         placementsFile_ = placementFile;
@@ -131,7 +152,9 @@ void Bot::prepareTasks() {
 void Bot::tickTasks() {
     using namespace baritone;
     prepareTasks();
+    if (workflow_.running()) { tickWorkflow(); return; }
     if (!tasks_.running() || baritone_->pauser().paused()) return;
+    if (baritone_->production().executing() || baritone_->logistics().isActive() || baritone_->construction().isActive() || baritone_->undo().isActive() || baritone_->repair().isActive() || baritone_->mending().isActive() || miningActive_ || portalJourney_.active()) return;
     if (baritone_->craft().isActive() || baritone_->smelt().isActive()) return;
     if (baritone_->storage().isActive()) {
         const auto& kind = tasks_.tasks().at(tasks_.currentIndex()).kind;

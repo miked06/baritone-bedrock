@@ -1,9 +1,11 @@
-# Module commands (1.5 development)
+# Base module commands (1.5 / 1.6)
 
 These additions target Bedrock Windows package **1.26.6005.0**. See
 [MODULE_ROADMAP.md](MODULE_ROADMAP.md) for the distinction between implemented
-behavior, offline regression coverage and live gameplay validation. This working
-version is released as 1.5.0 with the validation limits recorded below.
+behavior, offline regression coverage and live gameplay validation. These base
+modules were released in 1.5.0. The [1.6.0 expansion guide](WINDOWS_EXPANSION.md)
+and [tool repair guide](TOOL_REPAIR.md) describe the additional commands and their
+current validation limits.
 
 ## Schematic comparison, materials and repair
 

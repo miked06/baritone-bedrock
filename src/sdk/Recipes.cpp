@@ -41,6 +41,50 @@ struct NativeResults {
         gameFree(allocated>=4096 ? mem::member<void*>(first,-8) : first);
     }
 };
+void* repairController(LocalPlayer& player, bool& anvil) {
+    auto* manager = player.containerManager(); if (!mem::isReadable(manager, 0x108)) return nullptr;
+    const auto* callbacks = reinterpret_cast<const Controllers*>(static_cast<const uint8_t*>(manager) + 0x60);
+    if (callbacks->size() > 32) return nullptr;
+    const auto base = reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr));
+    for (const auto& [pointer, callback] : *callbacks) {
+        if (!mem::isReadable(pointer, 0x208)) continue;
+        const auto vt = reinterpret_cast<uintptr_t>(*reinterpret_cast<void* const*>(pointer));
+        anvil = vt == base + 0xF499460;
+        if (!anvil && vt != base + 0xF497C50) continue;
+        if (reinterpret_cast<uintptr_t>(mem::vtable(pointer)[8]) != base + (anvil ? 0xCC9C7B0 : 0xCC57970) ||
+            reinterpret_cast<uintptr_t>(mem::vtable(pointer)[15]) != base + (anvil ? 0xCC9A9D0 : 0xCC57F10)) return nullptr;
+        return const_cast<void*>(pointer);
+    }
+    return nullptr;
+}
+}
+WorkstationPreview workstationPreview(LocalPlayer& player) {
+    bool anvil = false; auto* control = repairController(player, anvil); if (!control) return {};
+    WorkstationPreview result;
+    result.method = anvil ? "anvil" : "grindstone";
+    result.collection = anvil ? "anvil_result_items" : "grindstone_result_items";
+    Slot slot{result.collection, 0};
+    result.output = &mem::callVirtual<const ItemStack&, const Slot&>(control, 8, slot);
+    // getTakeableItemStackBase returns an ItemInstance (0x80), not an ItemStack.
+    if (!mem::isReadable(result.output, 0x80)) return {};
+    result.levels = anvil ? mem::member<int>(control, 0xC8) : 0;
+    result.materialCost = anvil ? mem::member<int>(control, 0x1F4) : 1;
+    return result;
+}
+std::vector<int> takeWorkstationOutput(LocalPlayer& player, const WorkstationPreview& expected) {
+    std::vector<int> ids; bool anvil = false;
+    auto* control = repairController(player, anvil); if (!control || captured) return ids;
+    const auto current = workstationPreview(player);
+    if (!current.output || current.output->empty() || current.method != expected.method || current.levels != expected.levels ||
+        current.materialCost != expected.materialCost || current.levels < 0) return ids;
+    Slot slot{current.collection, 0};
+    const std::vector<AutoPlace> destinations{{"hotbar_items", false}, {"inventory_items", false}};
+    NativeResults results;
+    struct CaptureScope { explicit CaptureScope(std::vector<int>& ids) { captured = &ids; } ~CaptureScope() { captured = nullptr; } } scope(ids);
+    // Workstation vt15 owns create-item, consume-input and XP requests. A raw
+    // transfer from the result preview would omit those operations.
+    mem::callVirtual<int, const Slot&, int, const std::vector<AutoPlace>&, NativeResults&>(control, 15, slot, 1, destinations, results);
+    return ids;
 }
 std::vector<RecipeChoice> visibleRecipes(LocalPlayer& player,std::string_view item) {
     std::vector<RecipeChoice> result;
@@ -86,13 +130,19 @@ bool discardInventoryStack(LocalPlayer& player,int index,int count) {
 }
 
 void captureRecipeAction(void* manager,const void* action) {
-    if (!captured || !mem::isReadable(action,16)) return;
+    if (!mem::isReadable(action,16)) return;
     const auto kind=mem::member<uint8_t>(action,8);
-    if (kind<12 || kind>15) return;
+    if (kind <= 2 && mem::isReadable(action, offsets::ItemStackRequestTransfer_size)) {
+        const auto* source = static_cast<const uint8_t*>(action) + offsets::ItemStackRequestTransfer_src;
+        const auto* target = static_cast<const uint8_t*>(action) + offsets::ItemStackRequestTransfer_dst;
+        if (source[0] <= 2 || target[0] <= 2 || (source[0] >= 50 && source[0] <= 52) || (target[0] >= 50 && target[0] <= 52))
+            logger::debug("Workstation action {} count {}: {}:{} -> {}:{}", kind, mem::member<uint8_t>(action,0x12),source[0],source[12],target[0],target[12]);
+    }
+    if (!captured) return;
     auto* request=mem::member<void*>(manager,offsets::ItemStackNetManager_currentRequest);
     if (!mem::isReadable(request,12)) return;
     int id=mem::member<int32_t>(request,8);
     logger::debug("Craft request action {} id {}",kind,id);
-    if (id && std::ranges::find(*captured,id)==captured->end()) captured->push_back(id);
+    if (id && captured->size() < 64 && std::ranges::find(*captured,id)==captured->end()) captured->push_back(id);
 }
 }

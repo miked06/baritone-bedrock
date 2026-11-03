@@ -12,6 +12,8 @@
 #include <map>
 #include <sstream>
 #include <string>
+#include "baritone/task/Workflow.h"
+#include "baritone/utils/CommandLine.h"
 
 namespace {
 HWND window, statusBox, logBox, progress, commandBox, xBox, yBox, zBox, itemBox, countBox, fileBox;
@@ -19,8 +21,9 @@ HFONT font;
 DWORD minecraftPid = 0;
 std::future<std::string> statusJob, commandJob;
 std::deque<std::string> commands;
+std::map<std::string, std::string> latestFields;
 enum Id { Send = 100, Stop, Pause, Resume, Go, Mine, Browse, Preview, Verify, Requirements, Repair, Clear,
-    Rotate0, Rotate90, Rotate180, Rotate270, MirrorX, MirrorNone, AddGoal, AddMine, AddBuild, AddWait, TaskRun, TaskPause, TaskList, Why };
+    Rotate0, Rotate90, Rotate180, Rotate270, MirrorX, MirrorNone, AddGoal, AddMine, AddBuild, AddWait, TaskRun, TaskPause, TaskList, Why, Doctor, WorkflowEditor, TexturedPreview };
 std::wstring wide(const std::string& text) {
     int n = MultiByteToWideChar(CP_UTF8, 0, text.data(), static_cast<int>(text.size()), nullptr, 0);
     std::wstring out(n, 0); if (n) MultiByteToWideChar(CP_UTF8, 0, text.data(), static_cast<int>(text.size()), out.data(), n); return out;
@@ -78,11 +81,13 @@ HWND control(const wchar_t* type, const wchar_t* label, DWORD style, int x, int 
     SendMessageW(out, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE); return out;
 }
 void button(const wchar_t* label, int x, int y, int width, int id) { control(L"BUTTON", label, WS_TABSTOP | BS_PUSHBUTTON, x, y, width, 28, id); }
+#include "WorkflowEditor.inl"
 void createControls() {
     font = CreateFontW(-16, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
     statusBox = control(L"EDIT", L"Connecting to Minecraft...", ES_READONLY | ES_MULTILINE | WS_VSCROLL, 16, 16, 868, 140);
     progress = control(PROGRESS_CLASSW, L"", 0, 16, 164, 868, 16);
     button(L"Stop all", 16, 190, 110, Stop); button(L"Pause", 134, 190, 90, Pause); button(L"Resume", 232, 190, 90, Resume); button(L"Explain failure", 330, 190, 150, Why);
+    button(L"Compatibility", 490, 190, 155, Doctor);
     control(L"STATIC", L"Destination X / Y / Z", 0, 16, 232, 190, 24);
     xBox = control(L"EDIT", L"~", ES_AUTOHSCROLL | WS_TABSTOP, 210, 228, 90, 27); yBox = control(L"EDIT", L"~", ES_AUTOHSCROLL | WS_TABSTOP, 310, 228, 90, 27); zBox = control(L"EDIT", L"~", ES_AUTOHSCROLL | WS_TABSTOP, 410, 228, 90, 27);
     button(L"Go", 510, 228, 80, Go); button(L"Queue goal", 600, 228, 120, AddGoal);
@@ -93,6 +98,8 @@ void createControls() {
     button(L"Load preview", 16, 345, 140, Preview); button(L"Verify", 166, 345, 100, Verify); button(L"Materials needed", 276, 345, 170, Requirements); button(L"Repair / build", 456, 345, 140, Repair); button(L"Queue build", 606, 345, 140, AddBuild); button(L"Clear", 756, 345, 114, Clear);
     button(L"Rotate 0", 16, 383, 100, Rotate0); button(L"90", 126, 383, 70, Rotate90); button(L"180", 206, 383, 70, Rotate180); button(L"270", 286, 383, 70, Rotate270); button(L"Mirror X", 376, 383, 110, MirrorX); button(L"No mirror", 496, 383, 120, MirrorNone);
     button(L"Run queue", 16, 425, 140, TaskRun); button(L"Pause queue", 166, 425, 140, TaskPause); button(L"List tasks", 316, 425, 140, TaskList);
+    button(L"Workflow editor", 466, 425, 160, WorkflowEditor);
+    button(L"Export textured 3D", 636, 425, 234, TexturedPreview);
     control(L"STATIC", L"Command", 0, 16, 469, 100, 24); commandBox = control(L"EDIT", L"#help", ES_AUTOHSCROLL | WS_TABSTOP, 116, 464, 644, 27); button(L"Send", 770, 464, 100, Send);
     logBox = control(L"EDIT", L"", ES_READONLY | ES_MULTILINE | ES_AUTOVSCROLL | WS_VSCROLL | WS_HSCROLL, 16, 505, 868, 210);
     SetTimer(window, 1, 100, nullptr);
@@ -101,6 +108,12 @@ std::string coordinates() { return utf8(value(xBox)) + " " + utf8(value(yBox)) +
 void action(int id) {
     switch (id) {
         case Stop: send("#stop"); break; case Pause: send("#pause"); break; case Resume: send("#resume"); break;
+        case Doctor: send("#doctor"); break;
+        case WorkflowEditor: openWorkflowEditor(); break;
+        case TexturedPreview: {
+            wchar_t path[32768]{}; OPENFILENAMEW ofn{}; ofn.lStructSize = sizeof(ofn); ofn.hwndOwner = window; ofn.lpstrFile = path; ofn.nMaxFile = 32768; ofn.lpstrDefExt = L"html"; ofn.lpstrFilter = L"Local 3D viewer\0*.html\0"; ofn.Flags = OFN_NOCHANGEDIR;
+            if (GetSaveFileNameW(&ofn)) { std::ostringstream request; request << "#preview3d " << std::quoted(utf8(path)); send(request.str()); } break;
+        }
         case Send: { auto text = utf8(value(commandBox)); if (!text.starts_with('#')) text.insert(text.begin(), '#'); send(text); break; }
         case Go: send("#goto " + coordinates()); break; case Mine: send("#mine " + utf8(value(countBox)) + " " + quoted(itemBox)); break;
         case Browse: { wchar_t path[32768]{}; OPENFILENAMEW ofn{}; ofn.lStructSize = sizeof(ofn); ofn.hwndOwner = window; ofn.lpstrFile = path; ofn.nMaxFile = 32768; ofn.lpstrFilter = L"Schematics\0*.schem;*.schematic;*.litematic;*.mcstructure\0All files\0*.*\0"; ofn.Flags = OFN_FILEMUSTEXIST | OFN_NOCHANGEDIR; if (GetOpenFileNameW(&ofn)) SetWindowTextW(fileBox, path); break; }
@@ -127,6 +140,7 @@ void refresh() {
                 SendMessageW(progress, PBM_SETRANGE32, 0, total ? total : 1); SendMessageW(progress, PBM_SETPOS, completed, 0); key = "Tasks completed";
             }
         }
+        latestFields = fields;
         display = wide("Connection: " + fields["connection"] + " | Version: " + fields["version"] + "\r\nWorld: " + fields["world"] + " | Dimension: " + fields["dimension"]
             + "\r\nPosition: " + fields["position"] + "\r\nActivity: " + fields["activity"] + "\r\nTasks: " + fields["queue_progress"] + " | " + fields["queue"]
             + "\r\nSchematic: " + fields["schematic"] + "\r\nLatest: " + fields["latest"]);
@@ -159,6 +173,6 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show) {
     window = CreateWindowExW(0, cls.lpszClassName, L"Baritone Bedrock - Control Panel", WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX, CW_USEDEFAULT, CW_USEDEFAULT, 920, 770, nullptr, nullptr, instance, nullptr);
     if (!window) return 1;
     ShowWindow(window, show); MSG message{};
-    while (GetMessageW(&message, nullptr, 0, 0) > 0) if (!IsDialogMessageW(window, &message)) { TranslateMessage(&message); DispatchMessageW(&message); }
+    while (GetMessageW(&message, nullptr, 0, 0) > 0) if (!(flowWindow && IsDialogMessageW(flowWindow, &message)) && !IsDialogMessageW(window, &message)) { TranslateMessage(&message); DispatchMessageW(&message); }
     return 0;
 }

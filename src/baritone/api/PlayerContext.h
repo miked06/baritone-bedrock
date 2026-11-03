@@ -25,6 +25,12 @@ struct HotbarStack {
     bool silkTouch = false;
     int frostWalker = 0;   // boots
     int depthStrider = 0;  // boots: affects the cost of walking through water
+    int maxStackSize = 64;
+    // Ephemeral exact identity for supported plain stacks. Empty means merging
+    // is unavailable; this key is never a substitute for native/server checks.
+    std::string stackKey;
+    std::vector<std::pair<int, int>> enchantments;
+    std::string customName;
     bool empty() const { return count == 0 || name.empty(); }
 };
 
@@ -51,6 +57,12 @@ struct ContainerSlot {
 };
 enum class TransferState { Idle, Pending, Accepted, Rejected };
 struct RecipeOption { std::string collection,item; int slot=0,count=0; };
+struct RepairPreview {
+    std::string method;
+    HotbarStack output;
+    int levels = -1, materialCost = 0;
+    bool supported = false;
+};
 
 // Everything the bot reads from or does to the local player (Baritone's IPlayerContext +
 // PlayerController). Implemented on the game side; only used on the game thread.
@@ -105,6 +117,10 @@ public:
     virtual bool craftRecipe(const RecipeOption&) { return false; }
     virtual TransferState craftState() const { return TransferState::Idle; }
     virtual std::string craftError() const { return {}; }
+    virtual RepairPreview repairPreview() const { return {}; }
+    virtual bool takeRepairOutput(const RepairPreview&) { return false; }
+    virtual TransferState repairState() const { return TransferState::Idle; }
+    virtual std::string repairError() const { return {}; }
     // Amplifier (0 = level I) of an active effect ("haste", "mining_fatigue"), -1 if none.
     virtual int effectAmplifier(std::string_view) const { return -1; }
     virtual bool useHeldItem() { return false; }

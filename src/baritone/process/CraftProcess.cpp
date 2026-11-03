@@ -2,12 +2,12 @@
 #include "baritone/Baritone.h"
 #include "baritone/cache/WorldScanner.h"
 namespace baritone {
-void CraftProcess::start(BlockPos station,std::string item,int additional) {
+void CraftProcess::start(BlockPos station,std::string item,int additional,bool returnToStart) {
     auto& player=baritone_.player();
     if (active_ || player.containerOpen() || player.inventoryMovePending()) throw std::invalid_argument("Close the current container and wait for pending inventory actions first");
     item=BlockFilter::normalize(std::move(item));
     if (additional<1 || additional>2304 || player.countItem(item)+additional>2304) throw std::invalid_argument("Crafting target must fit within 2304 inventory items");
-    onLostControl(); item_=std::move(item); target_=player.countItem(item_)+additional; station_=station; origin_=baritone_.playerFeet();
+    onLostControl(); item_=std::move(item); target_=player.countItem(item_)+additional; station_=station; origin_=baritone_.playerFeet(); returnToStart_=returnToStart;
     ticks_=attempts_=recipeWait_=0; waiting_=closing_=succeeded_=false; failure_.clear(); active_=true;
 }
 bool CraftProcess::isActive() { return active_ && !baritone_.pauser().paused(); }
@@ -21,8 +21,8 @@ std::optional<PathingCommand> CraftProcess::onTick(bool failed,bool safe) {
     if (closing_) {
         player.closeOwnedContainer();
         if (player.containerOpen() || player.inventoryMovePending()) return PathingCommand{nullptr,PathingCommandType::RequestPause};
-        if (origin_.distSq(baritone_.playerFeet())>1) return PathingCommand{std::make_shared<GoalNear>(origin_,1),PathingCommandType::RevalidateGoalAndPath};
-        succeeded_=true; active_=false; baritone_.logDirect("Crafting output confirmed; returned to the task's start position");
+        if (returnToStart_ && origin_.distSq(baritone_.playerFeet())>1) return PathingCommand{std::make_shared<GoalNear>(origin_,1),PathingCommandType::RevalidateGoalAndPath};
+        succeeded_=true; active_=false; baritone_.logDirect(returnToStart_ ? "Crafting output confirmed; returned to the task's start position" : "Crafting output confirmed; workstation interaction closed");
         return PathingCommand{nullptr,PathingCommandType::CancelAndSetGoal};
     }
     if (!player.ownedContainerReady()) {

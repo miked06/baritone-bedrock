@@ -2,14 +2,269 @@
 #include <filesystem>
 #include <format>
 #include <cmath>
+#include <fstream>
+#include <sstream>
+#include "baritone/schematic/PreviewExport.h"
+#include "PreviewViewerAssets.h"
 #include "baritone/schematic/SchematicExport.h"
 #include "core/Bot.h"
 #include "sdk/Recipes.h"
+#include "sdk/Containers.h"
 #include "core/Chat.h"
 #include "core/Paths.h"
+#include "core/GameVersion.h"
+#include "memory/Signatures.h"
+#include "memory/Memory.h"
 
 namespace command {
 void registerModuleCommands(CommandManager& manager, Bot& bot) {
+    manager.add({{"repair"}, "repair <preview|start> <anvil|grindstone> station toolSlot materialSlot materialCount maxLevels; mend xpSource toolSlot targetPercent timeoutSeconds; open station; close; status", "Repair through confirmed workstation actions or observed Mending progress at a real XP source", [&bot](const Args& args) {
+        if (args.size()==5 && args[0]=="mend") {
+            bot.prepareTasks();
+            const auto sources=bot.waypoints().matching(args[1]);
+            if(sources.size()!=1)throw CommandError("Use one uniquely named XP waypoint; stand at the source and run #wp save user xp_farm");
+            if(sources.front().dimension!=bot.identity().dimension)throw CommandError("The XP waypoint is in another dimension");
+            const auto position=sources.front().pos;
+            const int slot=parseInt(args[2],"tool slot"), percent=parseInt(args[3],"durability target percent"), timeout=parseInt(args[4],"timeout seconds");
+            if(slot<0 || slot>=36)throw CommandError("Inventory slot must be 0..35");
+            baritone::validateMendingItem(bot.player().hotbar(slot),percent,timeout);
+            bot.cancelAll(); bot.baritone().mending().start(position,slot,percent,timeout); return;
+        }
+        if (args.size()==7 && (args[0]=="preview" || args[0]=="start")) {
+            bot.prepareTasks(); const auto found=bot.baritone().storage().locations().find(args[2]);
+            if (found==bot.baritone().storage().locations().end()) throw CommandError("Register the repair station with #storage add first");
+            const auto position=found->second;
+            const int tool=parseInt(args[3],"tool slot"), material=parseInt(args[4],"material slot"), count=parseInt(args[5],"material count"), levels=parseInt(args[6],"maximum XP-level cost");
+            if (tool<0 || tool>=36 || material<0 || material>=36 || tool==material) throw CommandError("Choose two distinct inventory slots 0..35");
+            baritone::validateRepairInputs(args[1],bot.player().hotbar(tool),bot.player().hotbar(material),count,levels);
+            bot.cancelAll(); bot.baritone().repair().start(args[1],position,tool,material,count,levels,args[0]=="start"); return;
+        }
+        if (args.size()==2 && args[0]=="open") {
+            bot.prepareTasks();
+            const auto found=bot.baritone().storage().locations().find(args[1]);
+            if (found==bot.baritone().storage().locations().end()) throw CommandError("Register the repair station with #storage add first");
+            const auto position=found->second;
+            bot.cancelAll(); bot.runInTick([&bot,position] {
+                if (!bot.player().openContainerAt(position)) chat::error("Repair station could not be opened; move within reach and close other interfaces");
+                else chat::info("Repair station interaction submitted; #repair status inspects the open models");
+            }); return;
+        }
+        if (args.size()==1 && args[0]=="close") { bot.baritone().repair().onLostControl(); bot.baritone().mending().onLostControl(); bot.runInTick([&bot] { bot.player().closeOwnedContainer(); }); return; }
+        if (args.size()==1 && args[0]=="status") {
+            auto& process=bot.baritone().repair();
+            chat::info(process.isActive()?process.displayName():process.succeeded()?"Repair completed":"Repair idle");
+            if (!process.failure().empty()) chat::error(process.failure());
+            auto& mending=bot.baritone().mending();
+            chat::info(mending.isActive()?mending.displayName():mending.succeeded()?"Mending completed":"Mending idle");
+            if(!mending.failure().empty())chat::error(mending.failure());
+            if (!bot.player().containerOpen()) return;
+            auto preview=bot.player().repairPreview();
+            if (preview.supported) chat::info(std::format("{} preview: {} damage {}/{}, cost {} levels, {} material item(s)",preview.method,preview.output.name,preview.output.damage,preview.output.maxDamage,preview.levels,preview.materialCost));
+            for (const auto& view:sdk::openContainerViews(*sdk::ClientInstance::get()->localPlayer()))
+                chat::info(std::format("{}: network {}, {} slots",view.name,view.networkName,view.size));
+            return;
+        }
+        throw CommandError("Usage: #repair preview|start anvil|grindstone registeredStation toolSlot materialSlot materialCount maxLevels; mend xpSource toolSlot targetPercent timeoutSeconds; open station; close; status");
+    }});
+    manager.add({{"merge"}, "merge sourceSlot destinationSlot count", "Move a quantity between compatible inventory piles through a normal server request", [&bot](const Args& args) {
+        if (args.size()!=3) throw CommandError("Usage: #merge sourceSlot destinationSlot count (slots 0..35)");
+        const int from=parseInt(args[0],"source slot"),to=parseInt(args[1],"destination slot"),count=parseInt(args[2],"quantity");
+        if (from<0 || from>=36 || to<0 || to>=36 || from==to || count<1 || count>64) throw CommandError("Use two distinct slots 0..35 and count 1..64");
+        if (bot.baritone().production().executing() || bot.baritone().logistics().isActive() || bot.baritone().loadout().isActive() || bot.baritone().storage().isActive() || bot.baritone().repair().isActive() || bot.baritone().mending().isActive()) throw CommandError("Finish current production/logistics/inventory/repair jobs first");
+        bot.runInTick([&bot,from,to,count] {
+            if (!bot.player().valid() || !bot.player().mergeInventorySlots(from,to,count)) chat::error("Inventory transfer unavailable: check matching plain items, capacity, quantity and pending actions");
+            else chat::info("Inventory quantity transfer submitted; verify #inv all after the server response");
+        });
+    }});
+    manager.add({{"preview3d"}, "preview3d output.html", "Export the transformed placement to a local interactive textured viewer", [&bot](const Args& args) {
+        if (args.size() != 1 || !bot.schematics().loaded() || bot.schematicLoading()) throw CommandError("Usage: #preview3d output.html after loading a schematic");
+        auto file = std::filesystem::u8path(args[0]);
+        if (file.extension() != ".html" || std::filesystem::exists(file)) throw CommandError("Choose a new .html output file; existing files are preserved");
+        auto source = bot.schematics().schematic(); const auto origin = bot.schematics().origin(); const auto name = bot.schematics().name();
+        bot.runDiagnosticAsync([source,origin,name,file] {
+            std::ostringstream json; baritone::writePreviewJson(json,*source,origin,name);
+            std::string html(previewViewerHtml); const auto marker = html.find("/*BARITONE_SCHEMATIC*/null");
+            if (marker == html.npos) throw std::runtime_error("Missing preview viewer data marker");
+            html.replace(marker,std::string_view("/*BARITONE_SCHEMATIC*/null").size(),json.str());
+            auto temporary = file; temporary += ".baritone-preview.tmp";
+            if (std::filesystem::exists(temporary)) throw std::runtime_error("A preview temporary file already exists; choose another output name");
+            if (!file.parent_path().empty()) std::filesystem::create_directories(file.parent_path());
+            std::ofstream output(temporary,std::ios::binary); output << html; output.close();
+            if (!output) { std::filesystem::remove(temporary); throw std::runtime_error("Could not write the preview file"); }
+            try { std::filesystem::rename(temporary,file); } catch (...) { std::filesystem::remove(temporary); throw; }
+            chat::info("Textured viewer exported. Open the HTML file and select an unpacked Bedrock resource pack; no files are uploaded");
+        });
+        chat::info("Exporting the transformed preview in the background");
+    }});
+    manager.add({{"history"}, "history <list|undo [count]|clear>", "Inspect observed bot block changes and conditionally restore supported placements/removals", [&bot](const Args& args) {
+        auto& history = bot.baritone().history();
+        if (args.empty() || (args.size() == 1 && args[0] == "list")) {
+            const auto& entries = history.entries(); const auto first = entries.size() > 16 ? entries.size() - 16 : 0;
+            for (std::size_t i = first; i < entries.size(); ++i) { const auto& e = entries[i]; chat::info(std::format("{} at {}: {} -> {}{}", e.id,e.position,baritone::BlockRegistry::get().props(e.before).name,baritone::BlockRegistry::get().props(e.after).name,e.undone ? " (restored)" : "")); }
+            chat::info("Session history: observations following bot actions; unrelated changes can coincide. Undo supports plain block placements/removals and skips changed, unloaded or protected cells"); return;
+        }
+        if (args.size() == 1 && args[0] == "clear") { bot.cancelAll(); history.clear(); return; }
+        if ((args.size() == 1 || args.size() == 2) && args[0] == "undo") {
+            if (!bot.player().valid()) throw CommandError("Enter a world first");
+            const int count = args.size() == 2 ? parseInt(args[1], "recent change count") : 1;
+            if (count < 1 || count > 64) throw CommandError("Undo count must be 1..64");
+            auto entries = history.recent(unsigned(count)); bot.cancelAll(); bot.baritone().undo().start(std::move(entries)); return;
+        }
+        throw CommandError("Usage: #history list; undo [count 1..64]; clear");
+    }});
+    manager.add({{"mining"}, "mining <plan|start> <vein|tunnel|branch> [objectiveBlock]", "Survey and excavate a bounded selected mining layout", [&bot](const Args& args) {
+        if (args.size() < 2 || args.size() > 3 || (args[0] != "plan" && args[0] != "start")) throw CommandError("Usage: #mining plan|start vein|tunnel|branch [objectiveBlock]; select an area with #sel first");
+        if (!bot.player().valid() || bot.baritone().selections().all().empty()) throw CommandError("Enter a world and select the mining volume first");
+        bot.startMiningPlan(bot.baritone().selections().all().back(), args[1], args.size() == 3 ? args[2] : "diamond_ore", args[0] == "start");
+    }});
+    manager.add({{"maintenance"}, "maintenance <on [remainingPercent]|off|check>", "Replace worn tools through confirmed swaps; pause if a suitable spare is unavailable", [&bot](const Args& args) {
+        auto& maintenance = bot.baritone().maintenance();
+        if (!bot.player().valid()) throw CommandError("Enter a world first");
+        if (args.size() >= 1 && args.size() <= 2 && args[0] == "on") { maintenance.enable(args.size() == 2 ? parseInt(args[1], "remaining durability percent") : 10); chat::info("Automatic tool protection enabled; it preserves worn tools and requires a suitable spare. Stop/world changes disable it"); return; }
+        if (args.size() == 1 && args[0] == "off") { maintenance.onLostControl(); return; }
+        if (args.size() == 1 && args[0] == "check") {
+            for (int slot = 0; slot < 36; ++slot) { const auto s = bot.player().hotbar(slot); if (s.maxDamage > 0) chat::info(std::format("Slot {}: {} {}/{} durability, {}", slot, s.name, s.maxDamage - s.damage, s.maxDamage, maintenance.permits(s) ? "usable" : "replacement needed")); }
+            chat::info("Maintenance replaces tools. #repair previews or runs explicit anvil/unenchanted-grindstone jobs; Mending requires an XP source"); return;
+        }
+        throw CommandError("Usage: #maintenance on [remainingPercent 1..90]; off; check");
+    }});
+    manager.add({{"construction"}, "construction <plan|start> [temporary|permanent] [supportBlock] [depth]", "Plan foundations and support dependencies before a three-phase build", [&bot](const Args& args) {
+        if (args.empty() || args.size() > 4 || (args[0] != "plan" && args[0] != "start")) throw CommandError("Usage: #construction plan|start [temporary|permanent] [cobblestone|stone|dirt] [depth 1..16]");
+        if (!bot.player().valid() || !bot.schematics().loaded() || bot.schematicLoading()) throw CommandError("Enter a world and load a schematic first");
+        if (args.size() > 1 && args[1] != "temporary" && args[1] != "permanent") throw CommandError("Foundation policy must be temporary or permanent");
+        const auto source = bot.schematics().schematic(); const auto origin = bot.schematics().origin();
+        const auto material = baritone::BlockFilter::normalize(args.size() > 2 ? args[2] : "cobblestone");
+        const int depth = args.size() > 3 ? parseInt(args[3], "support depth") : 16;
+        if (args[0] == "start") bot.cancelAll();
+        bot.baritone().construction().start(source, origin, material, depth, args.size() > 1 && args[1] == "permanent", args[0] == "start");
+    }});
+    manager.add({{"workflow"}, "workflow <node|list|run|pause|restart|clear>", "Edit a bounded graph with inventory branches, loops and failure paths", [&bot](const Args& args) {
+        bot.prepareTasks(); auto& flow = bot.workflow();
+        if (args.empty() || (args.size() == 1 && args[0] == "list")) {
+            chat::info(std::format("Workflow: {} nodes, current {}, {}. {}", flow.nodes().size(), flow.current(), flow.running() ? "running" : "paused", flow.reason()));
+            for (std::size_t i = 0; i < flow.nodes().size(); ++i) { const auto& n = flow.nodes()[i]; chat::info(std::format("{}: {} -> success {}, failure {}, visits {}/{}", i, n.task.kind, n.success, n.failure, n.visits, n.visitLimit)); } return;
+        }
+        if (args.size() == 1 && args[0] == "run") { bot.resumeWorkflow(); return; }
+        if (args.size() == 1 && args[0] == "pause") { bot.cancelAll(); return; }
+        if (args.size() == 1 && args[0] == "restart") { bot.cancelAll(); flow.restart(); bot.saveWorkflow(); return; }
+        if (args.size() == 1 && args[0] == "clear") { bot.cancelAll(); baritone::Workflow fresh; fresh.bind(bot.identity()); bot.replaceWorkflow(std::move(fresh)); return; }
+        if (args.size() == 2 && args[0] == "load") {
+            const auto file = std::filesystem::u8path(args[1]);
+            if (std::filesystem::file_size(file) > 2 * 1024 * 1024) throw CommandError("Workflow file exceeds two MiB");
+            std::ifstream input(file); if (!input) throw CommandError("Cannot read workflow file");
+            auto parsed = baritone::Workflow::decode(std::string(std::istreambuf_iterator<char>(input), {})); parsed.bind(bot.identity()); parsed.restart();
+            bot.cancelAll(); bot.replaceWorkflow(std::move(parsed)); chat::info("Workflow graph loaded and paused; #workflow run starts it"); return;
+        }
+        if (args.size() >= 7 && args[0] == "node") {
+            if (!bot.workflowHealthy()) throw CommandError("Repair the workflow checkpoint or explicitly clear/load it before editing");
+            const int index = parseInt(args[1], "node index"), limit = parseInt(args[4], "visit limit"), seconds = parseInt(args[5], "timeout seconds");
+            if (index < 0 || limit < 1 || seconds < 1 || seconds > 86400) throw CommandError("Invalid workflow index, visits or timeout (1..86400 seconds)");
+            baritone::Workflow::Node node; node.success = parseInt(args[2], "success branch"); node.failure = parseInt(args[3], "failure branch"); node.visitLimit = unsigned(limit); node.task.timeoutTicks = uint64_t(seconds) * 20;
+            node.task.kind = args[6]; node.task.arguments.assign(args.begin() + 7, args.end());
+            flow.bind(bot.identity()); flow.set(std::size_t(index), std::move(node)); bot.saveWorkflow(); chat::info("Workflow node saved; edits reset graph progress"); return;
+        }
+        throw CommandError("Usage: #workflow node index success failure visits timeoutSeconds kind arguments...; -1 finishes, -2 stops. list|run|pause|restart|clear");
+    }});
+    manager.add({{"doctor"}, "doctor", "Read compatibility and module prerequisites without changing game state", [&bot](const Args& args) {
+        if (!args.empty()) throw CommandError("Usage: #doctor");
+        const bool compatible = gameversion::check();
+        chat::info(std::format("Game profile {}: {}", compatible ? "matched" : "unsupported", gameversion::supported));
+        std::size_t resolved = 0;
+        for (const auto* signature : sigs::all()) {
+            if (signature->address && mem::isReadable(reinterpret_cast<const void*>(signature->address), 1)) ++resolved;
+            else chat::error("Missing native prerequisite: " + std::string(signature->name));
+        }
+        chat::info(std::format("Resolved native signatures: {}/{}", resolved, sigs::all().size()));
+        auto group = [](const char* name, std::initializer_list<const sigs::Signature*> required) {
+            const bool ready = std::ranges::all_of(required, [](const auto* sig) { return sig->address && mem::isReadable(reinterpret_cast<const void*>(sig->address), 1); });
+            chat::info(std::string(name) + ": " + (ready ? "native entry points resolved" : "native entry points unavailable"));
+        };
+        group("Movement", {&sigs::Level_subTick, &sigs::ClientInput_tick, &sigs::LocalPlayer_applyTurnDelta});
+        group("Inventory requests", {&sigs::ItemStackNet_beginRequest, &sigs::ItemStackNet_addRequestAction, &sigs::ItemStackNet_endRequest, &sigs::ItemStackNet_handleResponse, &sigs::ItemStackBase_copy});
+        group("Overlay rendering", {&sigs::LevelRenderer_renderLevel, &sigs::Tessellator_begin, &sigs::Tessellator_vertex, &sigs::MeshHelpers_renderImmediately});
+        chat::info(bot.player().valid() ? "World/player adapter: available" : "World/player adapter: enter an existing world");
+        chat::info(std::format("Recipe descriptions: {} outputs; loadout reserve policy {}", bot.recipeBook().recipes().size(), bot.baritone().loadouts().healthy() ? "ready" : "blocked by an unreadable file"));
+        chat::info("Resolved addresses establish prerequisites, not complete gameplay validation. See the module validation roadmap");
+    }});
+    manager.add({{"loadout"}, "loadout <capture|set|list|check|equip|use|off|remove|load|reset>", "Save inventory quantities, equip hotbar roles and preserve minimum item reserves", [&bot](const Args& args) {
+        if (args.empty()) throw CommandError("Usage: #loadout capture name; set name item minimum target [hotbarSlot] [durabilityPercent]; list; check|equip|use|remove name; off; load; reset");
+        auto& store = bot.baritone().loadouts(); const auto file = paths::dataDir() / "loadouts.txt";
+        if (args[0] == "fill" && (args.size() == 2 || args.size() == 3)) {
+            bot.prepareTasks(); std::map<std::string, int> targets;
+            for (const auto& [item, rule] : store.profile(args[1])) if (rule.target > 0) targets[item] = rule.target;
+            bot.baritone().logistics().start(std::move(targets), args.size() == 3 ? args[2] : "", args[1]); return;
+        }
+        if (args[0] == "list" && args.size() == 1) {
+            for (const auto& [name, rules] : store.profiles()) chat::info(std::format("{}: {} item rules{}", name, rules.size(), store.active() == name ? " (active reserves)" : ""));
+            chat::info(store.healthy() ? "Loadout policy ready" : "Loadout policy blocked; reload, repair or explicitly reset it"); return;
+        }
+        if (args[0] == "check" && args.size() == 2) {
+            if (!bot.player().valid()) throw CommandError("Enter a world first");
+            for (const auto& need : store.check(args[1], bot.player()))
+                chat::info(std::format("{}: have {}, minimum {}, target {}, missing {}, hotbar {}", need.rule.item, need.have, need.rule.minimum, need.rule.target, need.missing, need.hotbarReady ? "ready" : "needs equipping"));
+            return;
+        }
+        auto updated = store;
+        if (args[0] == "capture" && args.size() == 2) {
+            if (!bot.player().valid()) throw CommandError("Enter a world first");
+            updated.capture(args[1], bot.player());
+        } else if (args[0] == "set" && args.size() >= 5 && args.size() <= 7) {
+            updated.set(args[1], {args[2], parseInt(args[3], "minimum quantity"), parseInt(args[4], "target quantity"),
+                args.size() > 5 ? parseInt(args[5], "hotbar slot") : -1, args.size() > 6 ? parseInt(args[6], "minimum remaining durability percent") : 0});
+        } else if ((args[0] == "use" || args[0] == "equip") && args.size() == 2) {
+            updated.activate(args[1]);
+            if (args[0] == "equip" && (!bot.player().valid() || bot.player().containerOpen() || bot.player().inventoryMovePending()))
+                throw CommandError("Close containers and wait for inventory actions before equipping");
+        } else if (args[0] == "off" && args.size() == 1) updated.activate("");
+        else if (args[0] == "remove" && args.size() == 2) updated.remove(args[1]);
+        else if (args[0] == "load" && args.size() == 1) {
+            // A failed reload must leave reserves blocked until explicitly resolved.
+            store.load(file); chat::info("Loadout profiles loaded"); return;
+        } else if (args[0] == "reset" && args.size() == 1) updated = {};
+        else throw CommandError("Usage: #loadout capture|set|list|check|equip|use|off|remove|load|reset");
+        updated.save(file); store = std::move(updated);
+        if (args[0] == "equip") {
+            const auto rules = store.profile(args[1]); bot.cancelAll();
+            bot.baritone().loadout().start(args[1], rules);
+        }
+        chat::info("Loadout profiles saved; active minimum quantities are protected from storage deposits");
+    }});
+    manager.add({{"recipe"}, "recipe <list|set|remove|load|save|reset>", "Describe ingredient dependencies; native recipes and server output remain authoritative", [&bot](const Args& args) {
+        if (args.empty()) throw CommandError("Usage: #recipe list; set output count quantity*item|alternative ...; remove output; load; save; reset");
+        const auto file = paths::dataDir() / "recipes.txt";
+        if (args[0] == "list" && (args.size() == 1 || args.size() == 2)) {
+            std::size_t shown = 0;
+            for (const auto& [id, definition] : bot.recipeBook().recipes()) {
+                if (args.size() == 2 && id.find(args[1]) == std::string::npos) continue;
+                if (++shown <= 32) chat::info(std::format("{} x{}: {} ingredient groups", id, definition.count, definition.ingredients.size()));
+            }
+            chat::info(std::format("{} matching recipe descriptions; use #craft plan item count for dependencies", shown)); return;
+        }
+        auto updated = bot.recipeBook();
+        if (args[0] == "set" && args.size() >= 4 && args.size() <= 12) {
+            baritone::ProductionRecipe definition{args[1], parseInt(args[2], "recipe output count"), {}};
+            for (std::size_t i = 3; i < args.size(); ++i) {
+                const auto separator = args[i].find('*');
+                if (separator == std::string::npos) throw CommandError("Ingredients use quantity*item|alternative, for example 2*oak_planks|spruce_planks");
+                baritone::RecipeIngredient ingredient;
+                ingredient.count = parseInt(args[i].substr(0, separator), "ingredient count");
+                std::string alternatives = args[i].substr(separator + 1);
+                for (std::size_t from = 0;;) {
+                    const auto end = alternatives.find('|', from);
+                    ingredient.alternatives.push_back(alternatives.substr(from, end == std::string::npos ? end : end - from));
+                    if (end == std::string::npos) break;
+                    from = end + 1;
+                }
+                definition.ingredients.push_back(std::move(ingredient));
+            }
+            updated.set(std::move(definition));
+        } else if (args[0] == "remove" && args.size() == 2) updated.remove(args[1]);
+        else if (args[0] == "reset" && args.size() == 1) updated = baritone::RecipeBook::vanillaBasics();
+        else if (args[0] == "load" && args.size() == 1) updated.load(file);
+        else if (!(args[0] == "save" && args.size() == 1)) throw CommandError("Usage: #recipe list [item]; set output count quantity*item|alternative ...; remove output; load; save; reset");
+        updated.save(file); bot.recipeBook() = std::move(updated);
+        chat::info("Recipe descriptions saved; they do not override Minecraft's actual crafting recipes");
+    }});
     manager.add({{"testdiscard"}, "testdiscard slot expectedItem expectedCount", "Dev: discard an exact Creative test stack through the normal inventory action", [&bot](const Args& args) {
         if (args.size()!=3) throw CommandError("Usage: #testdiscard slot expectedItem expectedCount");
         const int slot=parseInt(args[0],"slot"),count=parseInt(args[2],"count");
@@ -28,11 +283,30 @@ void registerModuleCommands(CommandManager& manager, Bot& bot) {
             else chat::info("Creative discard submitted; verify the normal server response and #inv before continuing");
         });
     }});
-    manager.add({{"craft"}, "craft <list [item] | once item | state | station item count>", "Use live recipe entries and normal server-confirmed crafting actions", [&bot](const Args& args) {
+    manager.add({{"craft"}, "craft <plan item count | auto station item count | status | list [item] | once item | state | station item count>", "Use live recipe entries and normal server-confirmed crafting actions", [&bot](const Args& args) {
+        if (args.size() == 1 && args[0] == "status") {
+            auto& production = bot.baritone().production();
+            chat::info((production.isActive() ? production.displayName() : "Recursive production idle") +
+                (production.failure().empty() ? "" : ": " + production.failure())); return;
+        }
+        if (args.size() == 3 && args[0] == "plan") {
+            bot.baritone().production().start(bot.recipeBook(), {}, args[1], parseInt(args[2], "additional output"), false); return;
+        }
+        if (args.size() == 4 && args[0] == "auto") {
+            bot.prepareTasks(); const auto& locations = bot.baritone().storage().locations();
+            const auto found = locations.find(args[1]);
+            if (found == locations.end()) throw CommandError("Register the crafting table with #storage add first");
+            const auto position = found->second;
+            const int count = parseInt(args[3], "additional output");
+            if (count < 1 || count > 2304) throw CommandError("Additional output must be 1..2304");
+            bot.cancelAll();
+            bot.baritone().production().start(bot.recipeBook(), position, args[2], count, true); return;
+        }
         if (args.size()==1 && args[0]=="state") {
             chat::info(std::format("Craft state {}: {}",int(bot.player().craftState()),bot.player().craftError())); return;
         }
         if (args.size()==2 && args[0]=="once") {
+            if (bot.baritone().production().executing()) throw CommandError("Stop recursive production before manually crafting");
             if (!bot.player().containerOpen()) throw CommandError("Open a crafting interface first");
             const auto item=baritone::BlockFilter::normalize(args[1]);
             bot.runInTick([&bot,item] {
@@ -48,11 +322,13 @@ void registerModuleCommands(CommandManager& manager, Bot& bot) {
             chat::info(std::format("{} visible recipes; ingredients and unlocks are checked by Minecraft when crafting",choices.size())); return;
         }
         if (args.size()!=3) throw CommandError("Usage: #craft list [item]; #craft station item count");
+        if (bot.baritone().production().executing()) throw CommandError("Stop recursive production before starting another crafting job");
         bot.prepareTasks(); const auto& locations=bot.baritone().storage().locations(); auto found=locations.find(args[0]);
         if (found==locations.end()) throw CommandError("Register the crafting table with #storage add first");
         bot.baritone().craft().start(found->second,args[1],parseInt(args[2],"additional output target"));
     }});
     manager.add({{"smelt"}, "smelt station input output count fuel fuelCount", "Load an empty registered furnace, wait for a one-to-one recipe and collect the output", [&bot](const Args& args) {
+        if (bot.baritone().production().executing()) throw CommandError("Stop recursive production before starting a smelting job");
         if (args.size()!=6) throw CommandError("Usage: #smelt station input output count fuel fuelCount. Example: #smelt furnace raw_iron iron_ingot 8 coal 1");
         bot.prepareTasks(); const auto& locations=bot.baritone().storage().locations();
         auto location=locations.find(args[0]); if (location==locations.end()) throw CommandError("Register the furnace position with #storage add first");
@@ -108,9 +384,7 @@ void registerModuleCommands(CommandManager& manager, Bot& bot) {
             chat::info(std::format("Estimated route cost {:.0f} (terrain and portal loading time vary)",route.cost));
             for (const auto& stop : route.stops) { const auto& node = graph.nodes().at(stop); chat::info(std::format("{}: dimension {}, {}",stop,node.dimension,node.position)); }
             if (args[0] == "go") {
-                const auto& next = graph.nodes().at(route.stops.front());
-                bot.cancelAll(); bot.baritone().customGoal().setGoalAndPath(std::make_shared<baritone::GoalBlock>(next.position));
-                chat::info("Walking to the next portal. After changing dimension, run #portal go again to continue the route");
+                bot.startPortalJourney(args[1]);
             }
             return;
         }
@@ -122,9 +396,38 @@ void registerModuleCommands(CommandManager& manager, Bot& bot) {
         else throw CommandError("Usage: #portal add name [dimension x y z]; remove name; link from to [oneway]; unlink from to; list; route|go destination; scale dimension");
         graph.save(bot.worldDataPath("portals", false)); chat::info("Portal graph saved for this world");
     }});
-    manager.add({{"storage"}, "storage <add|remove|list|open|inspect|withdraw|deposit>", "Register containers, transfer supplies and return to the interrupted task", [&bot](const Args& args) {
+    manager.add({{"restock"}, "restock <item item target [source] | auto on [source] | auto off | status>", "Refill absolute inventory targets and resume a builder after a confirmed supply trip", [&bot](const Args& args) {
+        bot.prepareTasks(); auto& b = bot.baritone();
+        if (args.size() == 1 && args[0] == "status") {
+            chat::info(std::string("Automatic builder restocking: ") + (b.autoRestockEnabled() ? "enabled" : "disabled"));
+            chat::info(b.logistics().isActive() ? b.logistics().displayName() : "Logistics idle: " + b.logistics().failure()); return;
+        }
+        if (args.size() >= 2 && args.size() <= 3 && args[0] == "auto" && (args[1] == "on" || (args[1] == "off" && args.size() == 2))) {
+            b.autoRestock(args[1] == "on", args.size() == 3 ? args[2] : "");
+            chat::info(args[1] == "on" ? "Builder restocking enabled; stop/world changes disable it" : "Automatic builder restocking disabled"); return;
+        }
+        if ((args.size() == 3 || args.size() == 4) && args[0] == "item") {
+            b.logistics().start({{args[1], parseInt(args[2], "absolute inventory target")}}, args.size() == 4 ? args[3] : ""); return;
+        }
+        throw CommandError("Usage: #restock item item target [source]; auto on [source]; auto off; status");
+    }});
+    manager.add({{"storage"}, "storage <add|remove|list|open|inspect|scan|find|sort|withdraw|deposit>", "Register containers, transfer supplies and return to the interrupted task", [&bot](const Args& args) {
         bot.prepareTasks(); auto& storage = bot.baritone().storage();
+        if (args.size() == 2 && args[0] == "find") {
+            const auto item = baritone::BlockFilter::normalize(args[1]); std::size_t found = 0;
+            for (const auto& [name, seen] : storage.observations()) {
+                const auto count = seen.items.find(item);
+                if (count != seen.items.end()) { ++found; chat::info(std::format("{}: {} x{} (last observed at Unix time {}; inspect again if changed)", name, item, count->second, seen.observedAt)); }
+            }
+            chat::info(std::format("{} last-seen matches; #storage scan all refreshes registered containers", found)); return;
+        }
+        if (args.size() == 2 && args[0] == "scan") { bot.baritone().logistics().survey(args[1] == "all" ? "" : args[1]); return; }
+        if (args.size() == 2 && args[0] == "sort") {
+            if (bot.baritone().logistics().isActive() || bot.baritone().production().executing()) throw CommandError("Finish current production/logistics first");
+            storage.sort(args[1]); return;
+        }
         if (args.size()==2 && args[0]=="open") {
+            if (bot.baritone().production().executing() || bot.baritone().logistics().isActive()) throw CommandError("Stop production/logistics before opening another container");
             auto found=storage.locations().find(args[1]); if (found==storage.locations().end()) throw CommandError("Unknown storage location");
             const auto position=found->second;
             bot.runInTick([&bot,position] { if (!bot.player().openContainerAt(position)) chat::error("Could not open the registered container; check reach, line of sight and current screen"); });
@@ -146,6 +449,7 @@ void registerModuleCommands(CommandManager& manager, Bot& bot) {
         }
         if (args.size() == 2 && args[0] == "remove") { storage.removeLocation(args[1]); storage.save(bot.worldDataPath("storage")); return; }
         if ((args.size() == 3 || args.size() == 4) && (args[0] == "withdraw" || args[0] == "deposit")) {
+            if (bot.baritone().production().executing() || bot.baritone().logistics().isActive()) throw CommandError("Stop production/logistics before starting a manual storage job");
             const auto item = baritone::BlockFilter::normalize(args[2]);
             int count = args.size() == 4 ? parseInt(args[3], "count") : args[0] == "withdraw" ? 64 : bot.player().countItem(item);
             storage.start(args[1], item, count, args[0] == "withdraw"); return;

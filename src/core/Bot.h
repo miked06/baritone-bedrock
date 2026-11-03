@@ -14,11 +14,14 @@
 #include "baritone/schematic/SchematicWorkspace.h"
 #include "baritone/schematic/SchematicCatalog.h"
 #include "baritone/schematic/QuarryPlan.h"
+#include "baritone/schematic/MiningPlan.h"
 #include "baritone/schematic/SchematicLoadJob.h"
 #include "baritone/schematic/SchematicSurvey.h"
 #include "baritone/task/TaskQueue.h"
+#include "baritone/task/Workflow.h"
 #include "baritone/task/CheckpointWriter.h"
 #include "baritone/world/PortalGraph.h"
+#include "baritone/world/PortalJourney.h"
 #include "command/CommandManager.h"
 #include "core/InputOverride.h"
 #include "core/LookBehavior.h"
@@ -61,6 +64,7 @@ public:
     baritone::SchematicCatalog& placements() { return placements_; }
     void selectPlacement(const std::string& key);
     void startQuarry(baritone::Selection area, bool lighting, bool excavate);
+    void startMiningPlan(baritone::Selection area, std::string method, std::string objective, bool execute);
     const baritone::QuarryPreflight& quarry() const { return quarry_; }
     void setQuarryStorage(std::string name) { quarryStorage_ = std::move(name); }
     bool schematicLoading() const { return schematicLoad_.running(); }
@@ -72,12 +76,19 @@ public:
     const std::string& worldName() const { return worldName_; }
     std::filesystem::path worldDataPath(const std::string& category, bool perDimension = true) const;
     baritone::PortalGraph& portals() { return portals_; }
+    void startPortalJourney(const std::string& destination);
     void applyProtection(std::shared_ptr<const baritone::ProtectionPolicy> policy);
     baritone::TaskQueue& tasks() { return tasks_; }
+    baritone::Workflow& workflow() { return workflow_; }
+    void saveWorkflow();
+    void resumeWorkflow();
+    bool workflowHealthy() const { return workflowHealthy_; }
+    void replaceWorkflow(baritone::Workflow flow) { workflow_ = std::move(flow); workflowHealthy_ = true; saveWorkflow(); }
     baritone::WorldIdentity identity() const;
     void saveTasks();
     void resumeTasks();
     void prepareTasks();
+    baritone::RecipeBook& recipeBook() { return recipeBook_; }
 
     // #sel pos1 waiting for its pos2 (the selections themselves are in baritone().selections()).
     std::optional<baritone::BlockPos>& selectionPos1() { return selectionPos1_; }
@@ -141,6 +152,8 @@ private:
     baritone::SchematicCatalog placements_;
     std::filesystem::path placementsFile_;
     baritone::PortalGraph portals_;
+    baritone::PortalJourney portalJourney_;
+    void tickPortalJourney();
     std::filesystem::path portalsFile_;
     baritone::QuarryPreflight quarry_;
     baritone::SchematicSurvey quarryVerification_;
@@ -151,6 +164,13 @@ private:
     uint64_t quarryDiagnosticStart_ = 0;
     std::string quarryStorage_;
     void tickQuarry();
+    void tickMiningPlan();
+    void tickHistory();
+    void recordIntent(baritone::BlockPos position);
+    std::shared_ptr<baritone::MiningPlan> miningPlan_;
+    bool miningActive_ = false, miningExecute_ = false, miningStarted_ = false, miningChecking_ = false;
+    uint64_t miningDiagnostic_ = 0;
+    baritone::SchematicSurvey miningVerification_;
     std::optional<baritone::PlacementPreset> loadingPlacement_;
     std::string loadingSchematicFile_;
     baritone::SchematicLoadJob schematicLoad_;
@@ -158,6 +178,11 @@ private:
     bool surveyMaterials_ = false, surveyReport_ = false;
     std::string protectionKey_;
     baritone::TaskQueue tasks_;
+    baritone::Workflow workflow_;
+    std::filesystem::path workflowFile_;
+    bool workflowHealthy_ = true;
+    void tickWorkflow();
+    baritone::RecipeBook recipeBook_ = baritone::RecipeBook::vanillaBasics();
     baritone::CheckpointWriter taskWriter_;
     std::filesystem::path taskCheckpoint_;
     bool dispatchingTask_ = false;

@@ -34,6 +34,15 @@ vehicle navigation and an external control panel. See the [module guide](docs/MO
 for commands and limits, and the [validation roadmap](docs/MODULE_ROADMAP.md) for
 completed checks and remaining gameplay scenarios.
 
+The 1.6.0 Windows expansion adds production/loadout planning, restocking,
+storage sorting, construction/mining plans, a visual workflow editor, portal
+continuation, tool replacement/repair, conditional undo and a compatibility doctor.
+It also exports a local textured schematic viewer. See the
+[expansion guide and validation matrix](docs/WINDOWS_EXPANSION.md) for commands,
+supported cases and the native scenarios that still need testing.
+The [tool repair guide](docs/TOOL_REPAIR.md) covers bounded anvil/grindstone jobs
+and Mending at an existing XP source, including remaining gameplay validation.
+
 > [!IMPORTANT]
 > **Supported game version: Minecraft Bedrock 26.60 for Windows** (package `1.26.6005.0`).
 > The DLL checks the package version before installing hooks and refuses unsupported builds. Other versions need updated signatures, offsets and calling conventions (see [Updating to a new game version](docs/DEVELOPMENT.md#updating-to-a-new-game-version)).

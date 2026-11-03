@@ -50,6 +50,7 @@ inline constexpr std::ptrdiff_t ItemStackNetManager_currentRequest = 0x68;   // 
 inline constexpr std::ptrdiff_t ItemStackNetManager_requestQueue = 0x70;
 inline constexpr std::ptrdiff_t ItemStack_userData = 0x10;     // CompoundTag* (Damage, ench...)
 inline constexpr std::ptrdiff_t Item_maxDamage = 0x150;        // short, Item vtable 0x24 getMaxDamage
+inline constexpr std::ptrdiff_t Item_maxStackSize = 0xA8;      // byte, getter RVA 0x176E30 / vtable slot 100
 inline constexpr std::ptrdiff_t ItemStack_netIdVariant = 0x80;               // ItemStackNetIdVariant (0x18 bytes)
 inline constexpr std::size_t ItemStackRequestTransfer_size = 0x68;
 inline constexpr std::ptrdiff_t ItemStackRequestTransfer_src = 0x18;         // ItemStackRequestSlotInfo (0x28 bytes)

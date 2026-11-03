@@ -23,3 +23,56 @@ Primary reference declarations/implementations:
 - [Intrinsic block-state types/directions](https://learn.microsoft.com/en-us/minecraft/creator/reference/content/blockreference/examples/intrinsicblockstateslist)
 
 Declarations and disassembly checks do not establish end-to-end gameplay support. Individual modules still require tests of request acceptance, refusal, interruption and restored state.
+
+## Windows expansion checks (2026-11-02)
+
+- The inventory-key handler at RVA `0x657D810` takes `ClientInstance*` and the default layout (`0`). Creative inventory opening must follow this complete handler on the frame thread. Sending only InteractPacket action 6 timed out in Creative. Calling LocalPlayer virtual `0xC3` (`0x6DA8900`) directly omitted controller preparation, hit an expired weak-reference assertion and was removed. The same world was saved/reopened to clear the failed UI session. The corrected full-handler path subsequently opened, transferred and closed inventory normally.
+- Native main-inventory swaps (slots 18/0 and inverse) and quantity transfers (slots 9/10 and inverse) were accepted after automatic Creative UI opening. Original names, counts and pickaxe damage were verified restored.
+- Item `maxStackSize` is byte `+0xA8` in this binary (getter `+0x176E30`, virtual slot 100); do not copy the newer reference header's slot number. Plain compatible stacks require the same Item/Block identity and aux value with no user-data pointer. Unknown metadata never merges.
+- The guarded canonical empty ItemStack is at RVA `0x1293AE90`, vtable `0xEFF9E80`, null item/data and count zero. A live fully consumed merge returned source count/net ID zero and restored the original target count correctly.
+- A temporary chest at `1164 67 -8` was used for accepted partial deposits, full-source merging into an occupied pile, three-step sorting with an inventory scratch slot, fresh surveys, `#restock item` and `#loadout fill`. Contents were returned, the empty test chest removed, its Creative test item stack discarded through an accepted normal request, and original inventory slots/counts restored. The temporary location/profile/selection were removed.
+- Conditional history undo removed an owned cobblestone fixture and confirmed air. Placement history now records the actual replaced/adjacent target rather than the clicked support, avoiding attribution of natural changes in the support block.
+- Three-phase Creative construction placed two supports at `1164 67 -8` and `1164 68 -8`, placed the target stone at `1164 69 -8`, then removed both temporary supports. This exposed a builder mismatch-cache bug: a conditional cell becoming ignored after removal remained cached and paused completion. Removing ignored cells from that cache fixed the regression, covered by an offline test. Repeating the native job completed all three phases and final schematic verification reported one matching block, zero differences. Native selected-vein mining then removed the owned target and verified completion; all three fixture cells were checked as air.
+
+## Repair ABI and gameplay checks (2026-11-02/03)
+
+- Active repair controllers are found in the manager's callback map at `+0x60`.
+  This binary's anvil controller vtable is RVA `0xF499460`, grindstone
+  `0xF497C50`. Both profiles require exact vtable/method matches before calls.
+- Virtual slot 8 returns the takeable `ItemStackBase` from the output `SlotData`:
+  anvil RVA `0xCC9C7B0`, grindstone `0xCC57970`. The returned preview is an
+  `ItemInstance` (`0x80` bytes), not a full `ItemStack` (`0x98` bytes). Native
+  preview reads were verified in both interfaces. Anvil cost is `+0xC8`, material
+  count `+0x1F4`; these offsets were checked in preview-update disassembly and a
+  live one-plank/one-level preview.
+- Virtual slot 15 is the normal `handleAutoPlace(SlotData const&, int,
+  vector<AutoPlaceItem> const&, vector<AutoPlaceResult>&)` path: anvil
+  `0xCC9A9D0`, grindstone `0xCC57F10`. The amount is one. Anvil execution generated
+  action 15 (optional recipe), two consume actions and an output transfer in the
+  same accepted request. Capturing every request emitted inside this call, then
+  observing the improved output, avoids treating dispatch as a completed repair.
+  The grindstone output call has not yet been exercised with two damaged tools.
+- One-slot UI models do not supply usable network indices by themselves.
+  Anvil network container 0 uses slot **1**, material container 1 slot **2**.
+  Sending input to slot 0 was refused with result 55 (`CannotPlaceItem`), without
+  changing inventory. Normal UI deposit/return traces and corrected automatic
+  transfers confirmed the 1/2 mapping. Grindstone containers 50/51 use shared-UI
+  slots **16/17**, confirmed by normal UI deposits and accepted returns. Never
+  take from anvil/grindstone result-preview containers with a raw transfer.
+- Native Creative anvil tests confirmed input transfers, preview-only recovery,
+  zero-level cost-ceiling refusal and accepted execution. The wooden pickaxe's
+  damage changed from 1 to 0 of 59, one Creative test plank was consumed, and the
+  repaired pickaxe was returned to original slot 18. Temporary station blocks,
+  Creative item piles and registration/selection were removed; original item
+  quantities/slots and selected slot were restored. No new world or game-mode
+  change was used.
+- Mending's identifier is 26 in the reference `Enchant::Type`. The process waits
+  for actual durability changes rather than writing damage or XP. Offline tests
+  cover confirmed swaps, real-progress observation, no-progress timeout, health
+  loss and slot restoration. A real XP-source repair and Survival XP debit/anvil
+  wear still require gameplay validation.
+
+References: [AnvilContainerManagerController](https://github.com/LiteLDev/LeviLamina/blob/main/src/mc/world/containers/managers/controllers/AnvilContainerManagerController.h),
+[GrindstoneContainerManagerController](https://github.com/LiteLDev/LeviLamina/blob/main/src/mc/world/containers/managers/controllers/GrindstoneContainerManagerController.h),
+[ItemStackNetResult](https://github.com/LiteLDev/LeviLamina/blob/main/src/mc/world/inventory/network/ItemStackNetResult.h),
+[Enchant](https://github.com/LiteLDev/LeviLamina/blob/main/src/mc/world/item/enchanting/Enchant.h).

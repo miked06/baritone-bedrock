@@ -4,7 +4,7 @@ namespace baritone {
 class CraftProcess : public Process {
 public:
     using Process::Process;
-    void start(BlockPos station,std::string item,int additional);
+    void start(BlockPos station,std::string item,int additional,bool returnToStart = true);
     bool isActive() override;
     bool isTemporary() const override { return true; }
     double priority() const override { return 2; }
@@ -15,6 +15,7 @@ public:
     const std::string& failure() const { return failure_; }
 private:
     bool active_=false,waiting_=false,closing_=false,succeeded_=false;
+    bool returnToStart_ = true;
     int target_=0,ticks_=0,attempts_=0,recipeWait_=0;
     BlockPos station_,origin_;
     std::string item_,failure_;

@@ -2,6 +2,57 @@
 
 All notable changes to Baritone Bedrock. Versions follow [semantic versioning](https://semver.org/).
 
+## 1.6.0
+
+Windows automation expansion for **Minecraft Bedrock 26.60**, Windows x64 package
+**`1.26.6005.0`**. Download `BaritoneBedrock.dll` and optionally
+`BaritoneControlPanel.exe`; `BaritoneBedrock.pdb` provides crash symbols.
+
+### Added
+
+- Recursive crafting plans and confirmed intermediate crafting, with an editable
+  starter catalog of 18 recipe outputs.
+- Inventory loadouts, reserved deposit quantities, fresh supply surveys, automatic
+  builder restocking, compatible stack merging, chest sorting and last-seen search.
+- Construction support/foundation plans with conditional temporary-support cleanup,
+  and selected vein/tunnel/branch mining plans with hazard preflight.
+- Local textured HTML/WebGL schematic export with resource-pack import, layers,
+  opacity and orbit controls. No resource-pack textures are redistributed.
+- Native visual workflow editor with conditions, bounded loops, failure branches
+  and paused recovery; linked portal-journey continuation with exit validation.
+- Tool replacement policy, explicit anvil/unenchanted-grindstone repair jobs and
+  Mending jobs at an existing XP waypoint.
+- Session block-action history with conditional undo of supported plain blocks,
+  plus in-game and external read-only compatibility doctors.
+
+### Fixed
+
+- Open Creative inventory through the full native inventory-key handler on the
+  frame thread, retaining normal request/response and screen ownership behavior.
+- Reconcile partial/full-source stack merges using capacity and native receipts;
+  address anvil inputs by network slots 1/2 and grindstone inputs by 16/17.
+- Remove formerly mismatched conditional builder cells when they become ignored,
+  so completed support cleanup can finish instead of pausing.
+- Record the actual placed/replaced cell in history rather than the clicked
+  support. Reject incompatible skip/substitution settings before planned jobs.
+
+### Validation and limits
+
+**124 core tests passed**, including an AddressSanitizer build. Native Creative
+checks covered inventory swaps/merges, chest sorting, supply/loadout trips,
+three-phase construction, one-block vein mining, conditional placement undo,
+workflow branches, textured export and anvil preview/cost refusal/repair.
+
+Survival execution, real multi-portal travel, complete automated grindstone
+combining and live Mending progress at an XP source still need gameplay validation.
+The in-game schematic overlay remains colored outlines; textured viewing uses the
+local exported viewer and approximates complex geometry. No adaptive performance
+controller is included, and the test results do not guarantee zero bugs or lag.
+
+See the [expansion guide](https://github.com/miked06/baritone-bedrock/blob/v1.6.0/docs/WINDOWS_EXPANSION.md)
+and [tool repair guide](https://github.com/miked06/baritone-bedrock/blob/v1.6.0/docs/TOOL_REPAIR.md)
+for commands, supported cases and the detailed validation matrix.
+
 ## 1.5.0
 
 Module expansion for Windows Bedrock package `1.26.6005.0`. Commands and limits are

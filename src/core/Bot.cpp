@@ -38,8 +38,20 @@ bool Bot::start() {
         else chat::info(msg);
     });
     baritone::Baritone::setNotifier([](const std::string& msg, bool error) { notify::show("Baritone", msg, error); });
+    player_.setToolPolicy([this](const baritone::HotbarStack& stack) { return !baritone_ || baritone_->maintenance().permits(stack); });
+    player_.setActionObserver([this](baritone::BlockPos pos) { recordIntent(pos); });
     int loaded = baritone::loadSettings((paths::dataDir() / "settings.txt").string());
     if (loaded > 0) logger::info("{} settings loaded from settings.txt", loaded);
+    const auto recipeFile = paths::dataDir() / "recipes.txt";
+    if (std::filesystem::exists(recipeFile)) {
+        try { recipeBook_.load(recipeFile); }
+        catch (const std::exception& error) { chat::error(std::string("Recipe descriptions were not loaded: ") + error.what()); }
+    }
+    const auto loadoutFile = paths::dataDir() / "loadouts.txt";
+    if (std::filesystem::exists(loadoutFile)) {
+        try { baritone_->loadouts().load(loadoutFile); }
+        catch (const std::exception& error) { chat::error(std::string("Inventory reserve policy blocked: ") + error.what()); }
+    }
     command::registerAll(commands_, *this);
     if (!gamehooks::install()) return false;
     devpipe::start();
@@ -74,7 +86,9 @@ void Bot::saveSettings() {
 }
 
 void Bot::cancelAll() {
-    if (!dispatchingTask_) { tasks_.pause(); saveTasks(); }
+    portalJourney_.cancel();
+    miningActive_ = miningStarted_ = miningChecking_ = false;
+    if (!dispatchingTask_) { tasks_.pause(); saveTasks(); workflow_.pause(); saveWorkflow(); }
     if (!dispatchingTask_ && baritone_) baritone_->survival().setEnabled(false);
     survey_.clear(); surveyReport_ = false;
     quarryActive_ = false;
@@ -308,6 +322,7 @@ void Bot::onFrame() {
             worldName_.clear();
             protectionKey_.clear();
             baritone_->survival().resetWorld();
+            baritone_->history().clear();
             schematics_.clear();
             placements_.clear();
             placementsFile_.clear();
@@ -322,6 +337,7 @@ void Bot::onFrame() {
     if (auto error = taskWriter_.poll()) chat::error("Task checkpoint error: " + *error);
     pollSchematicLoad();
     if (player) {
+        player_.pumpInventoryUi();
         updateClickSelection();
         chat::flush();
         updateFocusOverride(input_.controlling());
@@ -389,14 +405,18 @@ void Bot::onTick(void* level) {
     { perf::Scope refreshTiming(perf::Metric::LocalRefresh); tracker.refreshAround({feet.x, feet.y, feet.z}, 4); }
 
     if (schematicDimension_ && *schematicDimension_ != tracker.dimension()) {
+        auto continued = portalJourney_;
+        const bool expected = continued.active() && continued.transition({worldName_, tracker.dimension()}, {feet.x, feet.y, feet.z});
         baritone_->survival().resetWorld();
         ++worldGeneration_;
         cancelAll();
+        if (expected) { portalJourney_ = std::move(continued); chat::info("Registered portal transition confirmed; continuing the route"); }
         schematics_.clear();
         placements_.clear();
         schematicPreview_.clear();
     }
     schematicDimension_ = tracker.dimension();
+    tickHistory();
     const auto protectionFile = worldDataPath("protection");
     if (protectionKey_ != protectionFile.string()) {
         protectionKey_ = protectionFile.string();
@@ -452,8 +472,10 @@ void Bot::onTick(void* level) {
     }
 
     if (!clickSelection_.active()) {
+        tickPortalJourney();
         tickTasks();
         tickQuarry();
+        tickMiningPlan();
         perf::Scope coreTiming(perf::Metric::CoreTick);
         baritone_->tick(tracker.snapshot());
     }
@@ -464,6 +486,9 @@ void Bot::onTick(void* level) {
             process ? process->displayName() : "Idle", tasks_.running() ? "Running" : "Paused", tasks_.currentIndex(), tasks_.tasks().size(),
             baritone::Settings::get().allowBreak ? "true" : "false", baritone::Settings::get().allowPlace ? "true" : "false");
         if (schematics_.loaded()) status += std::format("schematic={}\norigin={}\n", schematics_.name(), schematics_.origin());
+        if (!workflowFile_.empty()) { auto path = workflowFile_.u8string(); status += "workflow_file=" + std::string(path.begin(), path.end()) + "\n"; }
+        status += std::format("status_tick={}\nproduction={}\nloadout={}\nloadout_policy={}\n", ticks_,
+            baritone_->production().executing() ? "Running" : "Idle", baritone_->loadouts().active(), baritone_->loadouts().healthy() ? "Ready" : "Blocked");
         if (!baritone_->diagnostics().events().empty()) status += "latest=" + baritone_->diagnostics().events().back().message + "\n";
         devpipe::setStatus(std::move(status));
     }

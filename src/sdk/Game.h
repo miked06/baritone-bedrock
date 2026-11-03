@@ -78,8 +78,12 @@ public:
     // Durability used (ItemStackBase::getDamageValue) and the item's maximum (0 = no durability).
     int damage() const;
     int maxDamage() const;
+    int maxStackSize() const;
+    bool mergeCompatible(const ItemStack& other) const;
+    std::string plainStackKey() const;
     // Enchantments (Bedrock ids: 15 efficiency, 16 silk touch, 17 unbreaking...) -> level.
     std::vector<std::pair<int, int>> enchants() const;
+    std::string customName() const;
 };
 
 class Inventory {
@@ -247,6 +251,7 @@ public:
     void* containerManager() const { return mem::member<void*>(this, offsets::Player_containerManager); }
     // Tick only. 26.60 validates main-inventory slots against the open screen.
     void openInventory();
+    bool openCreativeInventoryScreen();
     void closeInventory();
 };
 

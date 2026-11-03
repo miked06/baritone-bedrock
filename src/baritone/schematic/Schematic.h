@@ -35,6 +35,8 @@ public:
     virtual BlockPos size() const = 0;
     virtual void reset() const {}
     virtual bool mayBreak(int, int, int) const { return true; }
+    virtual bool restrictOutside() const { return false; }
+    virtual bool mayPlace(int, int, int) const { return true; }
     virtual std::vector<std::string> warnings() const { return {}; }
     // `current` is the block in the world now (used by #sel replace).
     virtual DesiredBlock desired(int x, int y, int z, const BlockProps& current) const = 0;
@@ -200,6 +202,8 @@ private:
 // Java MaskSchematic: the inner schematic where the mask is set, "anything" elsewhere.
 class MaskSchematic : public Schematic {
 public:
+    bool restrictOutside() const override { return inner_->restrictOutside(); }
+    bool mayPlace(int x,int y,int z) const override { return inner_->mayPlace(x,y,z); }
     using Schematic::desired;
     bool mayBreak(int x,int y,int z) const override { return inner_->mayBreak(x,y,z); }
     void reset() const override { inner_->reset(); }

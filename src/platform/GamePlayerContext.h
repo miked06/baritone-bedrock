@@ -2,6 +2,7 @@
 #include <optional>
 #include <map>
 #include <vector>
+#include <functional>
 
 #include "baritone/api/PlayerContext.h"
 #include "sdk/Containers.h"
@@ -17,17 +18,21 @@ namespace platform {
 // PlayerContext over the real game objects. Bound to the local player each tick.
 class GamePlayerContext : public baritone::PlayerContext {
 public:
+    void setToolPolicy(std::function<bool(const baritone::HotbarStack&)> policy) { toolPolicy_ = std::move(policy); }
+    void setActionObserver(std::function<void(baritone::BlockPos)> observer) { actionObserver_ = std::move(observer); }
+    void pumpInventoryUi(); // frame thread: creates Creative UI outside the level tick
     // Called once per tick.
     void bind(sdk::LocalPlayer* player, sdk::BlockSource* region) {
         if (player != player_) {  // a new (or no) player: nothing is being broken or moved
             breaking_.reset();
             moves_.clear();
             openingMove_.reset();
+            creativeInventoryPending_ = false;
             ownedInventory_ = nullptr;
             inventoryClosedAt_ = 0;
             disconnectRequested_ = false;
             ownedContainer_ = nullptr; containerOpening_.reset(); transfer_.reset(); containerClosing_ = false;
-            craft_.reset();
+            craft_.reset(); repair_.reset(); repairState_ = baritone::TransferState::Idle;
         }
         player_ = player;
         region_ = region;
@@ -79,10 +84,15 @@ public:
     bool craftRecipe(const baritone::RecipeOption&) override;
     baritone::TransferState craftState() const override { return craftState_; }
     std::string craftError() const override { return craftError_; }
+    baritone::RepairPreview repairPreview() const override;
+    bool takeRepairOutput(const baritone::RepairPreview&) override;
+    baritone::TransferState repairState() const override { return repairState_; }
+    std::string repairError() const override { return repairError_; }
     int effectAmplifier(std::string_view effect) const override;
     bool swapSlots(int slotA, int slotB) override;
+    bool mergeInventorySlots(int slotA, int slotB, int count);
     bool inventoryMovePending() const override {
-        return !moves_.empty() || openingMove_.has_value() || transfer_.has_value() || craft_.has_value() || tick_ - inventoryClosedAt_ < 4;
+        return !moves_.empty() || openingMove_.has_value() || transfer_.has_value() || craft_.has_value() || repair_.has_value() || tick_ - inventoryClosedAt_ < 4;
     }
     bool inventoryScreenPending() const {
         return openingMove_.has_value() || ownedInventory_ || tick_ - inventoryClosedAt_ < 4;
@@ -107,6 +117,8 @@ public:
     void refreshWorld(const baritone::BlockPos& center, int radius) override;
 
 private:
+    std::function<bool(const baritone::HotbarStack&)> toolPolicy_;
+    std::function<void(baritone::BlockPos)> actionObserver_;
     sdk::LocalPlayer* player_ = nullptr;
     sdk::BlockSource* region_ = nullptr;
     int hitTicks_ = 0;  // ticks spent hitting breaking_
@@ -125,6 +137,11 @@ private:
     std::optional<Transfer> transfer_;
     struct Craft { std::map<int,int> responses; std::string item; int before=0; uint64_t sent=0; };
     std::optional<Craft> craft_;
+    struct Repair { std::map<int,int> responses; baritone::HotbarStack output; int before = 0; uint64_t sent = 0; };
+    std::optional<Repair> repair_;
+    baritone::TransferState repairState_ = baritone::TransferState::Idle;
+    std::string repairError_;
+    int matchingRepairOutputs(const baritone::HotbarStack&) const;
     baritone::TransferState craftState_=baritone::TransferState::Idle;
     std::string craftError_;
     baritone::TransferState transferState_ = baritone::TransferState::Idle;
@@ -141,14 +158,18 @@ private:
         int result = -1;  // -1: no answer yet
         sdk::TransferSnapshot snapshot;
         sdk::TransferReceipt receipt;
+        int count = 0, fromCount = 0, toCount = 0;
     };
     std::vector<Move> moves_;
     void applyAnsweredMoves();
+    bool inventoryMove(int slotA, int slotB, int count);
     struct OpeningMove {
         int slotA, slotB;
         uint64_t started;
+        int count = 0;
     };
     std::optional<OpeningMove> openingMove_;
+    bool creativeInventoryPending_ = false;
     void* ownedInventory_ = nullptr;  // close only the screen opened for our request
     uint64_t inventoryClosedAt_ = 0;
     bool disconnectRequested_ = false;

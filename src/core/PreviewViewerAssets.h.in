@@ -1,0 +1,3 @@
+#pragma once
+#include <string_view>
+inline constexpr std::string_view previewViewerHtml = R"BARITONE_VIEW(@PREVIEW_VIEWER_HTML@)BARITONE_VIEW";

@@ -1,6 +1,8 @@
 #include "sdk/Game.h"
 
 #include <cmath>
+#include <algorithm>
+#include <format>
 #include <cstring>
 #include <map>
 #include <memory>
@@ -51,6 +53,18 @@ void LocalPlayer::openInventory() {
     packet.vtable = sigs::InteractPacket_vtable.address;
     packet.targetId = runtimeId();
     mem::callVirtual<void, InventoryOpenPacket&>(this, offsets::Player_vt_sendNetworkPacket, packet);
+}
+
+bool LocalPlayer::openCreativeInventoryScreen() {
+    // Use the complete inventory-key handler, not LocalPlayer vt C3: the latter
+    // is a server-open callback and omits Creative's controller preparation.
+    // Checked in 1.26.6005.0 at +657D810, including the native request/scene branch.
+    const auto base=reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr));
+    auto* client=ClientInstance::get(); const auto address=base+0x657D810;
+    constexpr uint8_t prefix[]{0x55,0x41,0x56,0x56,0x57,0x53,0x48,0x81,0xEC,0x90,0,0,0};
+    if (!client || client->localPlayer()!=this || containerManager() || !mem::isReadable(reinterpret_cast<void*>(address),sizeof(prefix)) ||
+        std::memcmp(reinterpret_cast<void*>(address),prefix,sizeof(prefix))!=0) return false;
+    reinterpret_cast<void(__fastcall*)(ClientInstance*,int)>(address)(client,0); return true;
 }
 
 void LocalPlayer::closeInventory() {
@@ -253,6 +267,20 @@ int ItemStack::maxDamage() const {
     return it ? mem::member<uint16_t>(it, offsets::Item_maxDamage) : 0;
 }
 
+int ItemStack::maxStackSize() const {
+    const auto* it = item();
+    return it ? std::clamp(int(mem::member<uint8_t>(it, offsets::Item_maxStackSize)), 1, 64) : 1;
+}
+bool ItemStack::mergeCompatible(const ItemStack& other) const {
+    return !empty() && !other.empty() && item() == other.item() && block() == other.block() &&
+        !mem::member<const void*>(this, offsets::ItemStack_userData) && !mem::member<const void*>(&other, offsets::ItemStack_userData) &&
+        mem::member<uint16_t>(this, 0x20) == mem::member<uint16_t>(&other, 0x20);
+}
+std::string ItemStack::plainStackKey() const {
+    if (empty() || mem::member<const void*>(this, offsets::ItemStack_userData)) return {};
+    return std::format("{:x}:{:x}:{}", reinterpret_cast<uintptr_t>(item()), reinterpret_cast<uintptr_t>(block()), mem::member<uint16_t>(this, 0x20));
+}
+
 std::vector<std::pair<int, int>> ItemStack::enchants() const {
     std::vector<std::pair<int, int>> out;
     if (empty()) return out;
@@ -271,6 +299,16 @@ std::vector<std::pair<int, int>> ItemStack::enchants() const {
         out.emplace_back(id, lvl);
     }
     return out;
+}
+
+std::string ItemStack::customName() const {
+    if (empty()) return {};
+    const auto* display = compoundGet(mem::member<const void*>(this, offsets::ItemStack_userData), "display");
+    if (!display || TagView{display}.id() != 10) return {};
+    const auto* name = compoundGet(display, "Name");
+    if (!name || TagView{name}.id() != 8 || !mem::isReadable(name, 40)) return {};
+    const auto& value = mem::member<std::string>(name, 8);
+    return value.size() <= 4096 ? value : std::string{};
 }
 
 }  // namespace sdk

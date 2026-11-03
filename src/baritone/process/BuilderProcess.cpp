@@ -52,6 +52,8 @@ bool isLiquid(const BlockProps& p) { return p.type == BlockType::Water || p.type
 // buildSkipBlocks (Java: a mask on the desired block)
 class SkipBlocksSchematic : public Schematic {
 public:
+    bool restrictOutside() const override { return inner_->restrictOutside(); }
+    bool mayPlace(int x,int y,int z) const override { return inner_->mayPlace(x,y,z); }
     bool mayBreak(int x,int y,int z) const override { return inner_->mayBreak(x,y,z); }
     void reset() const override { inner_->reset(); }
     explicit SkipBlocksSchematic(SchematicPtr inner) : inner_(std::move(inner)) {}
@@ -175,6 +177,7 @@ constexpr Direction kAllFaces[] = {Direction::Down, Direction::North, Direction:
 // ---- setup ------------------------------------------------------------------------
 
 void BuilderProcess::build(std::string name, SchematicPtr schematic, BlockPos origin, bool fromFile, bool applyTransforms) {
+    ++session_; missingMaterials_.clear();
     const Settings& s = Settings::get();
     name_ = std::move(name);
     BlockPos rawSize = schematic->size();
@@ -227,6 +230,7 @@ void BuilderProcess::build(std::string name, SchematicPtr schematic, BlockPos or
 }
 
 void BuilderProcess::onLostControl() {
+    ++session_; missingMaterials_.clear();
     incorrectPositions_.reset();
     fullScanPending_ = false;
     failedCalcs_ = 0;
@@ -345,6 +349,7 @@ void BuilderProcess::customizeContext(CalculationContext& ctx) {
     bool allowBreak = ctx.allowBreak;
     auto allowBreakAnyway = ctx.allowBreakAnyway;
     ctx.placeCostOverride = [=](int x, int y, int z, const BlockProps& current) {
+        if (sch->restrictOutside() && (!sch->inBounds(x-origin.x,y-origin.y,z-origin.z) || !sch->mayPlace(x-origin.x,y-origin.y,z-origin.z))) return costs::COST_INF;
         auto d = getSchematic(x, y, z, current);
         if (d) {
             if (d->kind == DesiredBlock::Kind::Air) return placeBlockCost * placeMult;  // we'll have to break it eventually
@@ -356,6 +361,7 @@ void BuilderProcess::customizeContext(CalculationContext& ctx) {
     };
     ctx.breakMultiplierOverride = [=](int x, int y, int z, const BlockProps& current) {
         int rx=x-origin.x,ry=y-origin.y,rz=z-origin.z;
+        if (sch->restrictOutside() && !sch->inBounds(rx,ry,rz)) return costs::COST_INF;
         if (sch->inBounds(rx,ry,rz) && !sch->mayBreak(rx,ry,rz)) return costs::COST_INF;
         if (!allowBreak && !allowBreakAnyway.contains(current.name)) return costs::COST_INF;
         auto d = getSchematic(x, y, z, current);
@@ -398,8 +404,11 @@ void BuilderProcess::recalcNearby(CalculationContext& ctx) {
                 int x = center.x + dx, y = center.y + dy, z = center.z + dz;
                 const BlockProps& current = ctx.props(x, y, z);
                 auto desired = getSchematic(x, y, z, current);
-                if (!desired) continue;
                 BlockPos pos{x, y, z};
+                // Conditional cleanup masks become Any after their block is
+                // removed. Drop the cached mismatch instead of pausing on an
+                // empty goal after assemble() trims it later in this tick.
+                if (!desired) { incorrectPositions_->erase(pos); continue; }
                 if (valid(current, desired, false)) {
                     incorrectPositions_->erase(pos);
                     observedCompleted_.insert(pos);
@@ -664,6 +673,7 @@ GoalPtr BuilderProcess::assemble(CalculationContext& ctx, bool wholeInventory, b
                                                     std::make_shared<GoalComposite>(std::move(toBreak)));
     }
     if (toBreak.empty()) {
+        if (wholeInventory && logMissing) missingMaterials_ = missing;
         if (logMissing && !missing.empty()) {
             baritone_.logDirect("Missing materials, at least:", true);
             for (const auto& [block, count] : missing) baritone_.logDirect(std::format("{}x {}", count, block), true);

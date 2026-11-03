@@ -30,8 +30,10 @@ public:
     // applyTransforms=false is for an already transformed workspace placement.
     void build(std::string name, SchematicPtr schematic, BlockPos origin, bool fromFile = false, bool applyTransforms = true);
     void pause() { paused_ = true; }
-    void resume() { paused_ = false; }
+    void resume() { paused_ = false; missingMaterials_.clear(); }
     bool isPaused() const { return paused_; }
+    const std::map<std::string, int>& missingMaterials() const { return missingMaterials_; }
+    uint64_t session() const { return session_; }
 
     bool isActive() override { return schematic_ != nullptr; }
     std::optional<PathingCommand> onTick(bool calcFailed, bool isSafeToCancel) override;
@@ -68,6 +70,8 @@ private:
     std::pair<int, int> layerBounds() const;  // schematic y range of the current layers
 
     std::string name_;
+    std::map<std::string, int> missingMaterials_;
+    uint64_t session_ = 0;
     SchematicPtr schematic_;  // with skip / rotation / mirror applied
     BlockPos origin_;
     int ticks_ = 0;

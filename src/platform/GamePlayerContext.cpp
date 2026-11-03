@@ -4,8 +4,12 @@
 #include <cmath>
 #include <format>
 #include <string_view>
+#include <set>
+#include <tuple>
+#include <cstring>
 
 #include "baritone/Settings.h"
+#include "baritone/task/ActionHistory.h"
 #include "baritone/world/BlockStateInterface.h"
 #include "baritone/utils/RayTrace.h"
 #include "core/Log.h"
@@ -144,7 +148,7 @@ void GamePlayerContext::selectSlot(int slot) {
 }
 
 namespace {
-baritone::HotbarStack describe(const sdk::ItemStack* stack);
+baritone::HotbarStack describe(const sdk::ItemStack* stack, bool transferDetails = false);
 }
 
 baritone::HotbarStack GamePlayerContext::hotbar(int slot) const {
@@ -161,11 +165,15 @@ baritone::HotbarStack GamePlayerContext::armor(int slot) const {
 }
 
 namespace {
-baritone::HotbarStack describe(const sdk::ItemStack* stack) {
+baritone::HotbarStack describe(const sdk::ItemStack* stack, bool transferDetails) {
     baritone::HotbarStack out;
     if (!stack || stack->empty()) return out;
     out.name = stack->item()->name();
     out.count = stack->count();
+    if (transferDetails) {
+        out.maxStackSize = stack->maxStackSize();
+        out.stackKey = stack->plainStackKey();
+    }
     out.isBlock = stack->block() != nullptr;
     ToolInfo t = toolOf(out.name);
     out.tool = t.tool;
@@ -174,7 +182,10 @@ baritone::HotbarStack describe(const sdk::ItemStack* stack) {
     if (out.tool != baritone::Tool::None || stack->maxDamage() > 0) {
         out.maxDamage = stack->maxDamage();
         out.damage = out.maxDamage > 0 ? stack->damage() : 0;
-        for (auto [id, lvl] : stack->enchants()) {
+        out.enchantments = stack->enchants();
+        std::ranges::sort(out.enchantments);
+        out.customName = stack->customName();
+        for (auto [id, lvl] : out.enchantments) {
             if (id == 15) out.efficiency = lvl;  // Bedrock enchantment ids
             if (id == 16) out.silkTouch = lvl > 0;
             if (id == 25) out.frostWalker = lvl;
@@ -271,21 +282,34 @@ void GamePlayerContext::useHeldItemWhenTargeting() {
 }
 
 bool GamePlayerContext::swapSlots(int slotA, int slotB) {
+    return inventoryMove(slotA,slotB,0);
+}
+bool GamePlayerContext::mergeInventorySlots(int slotA, int slotB, int count) {
+    return count >= 1 && count <= 64 && inventoryMove(slotA,slotB,count);
+}
+bool GamePlayerContext::inventoryMove(int slotA, int slotB, int count) {
     if (!player_ || inventoryMovePending() || slotA < 0 || slotA >= 36 || slotB < 0 || slotB >= 36 || slotA == slotB)
         return false;
     if (hotbar(slotA).empty()) return false;
+    const auto a = sdk::inventorySlotRef(slotA), b = sdk::inventorySlotRef(slotB);
+    const auto* from = sdk::containerItem(*player_,a); const auto* to = sdk::containerItem(*player_,b);
+    if (count && (!from || !to || from->count() < count || (!to->empty() && !from->mergeCompatible(*to)) || (to->empty() ? 0 : to->count()) + count > from->maxStackSize())) return false;
     if ((slotA >= 9 || slotB >= 9) && !player_->containerManager()) {
         // 26.60: the server only exposes InventoryContainer while its screen is open.
         // Use the normal open/close flow; never pretend a refused move succeeded locally.
-        player_->openInventory();
-        openingMove_ = OpeningMove{slotA, slotB, tick_};
+        openingMove_ = OpeningMove{slotA, slotB, tick_, count};
+        if (isCreative()) creativeInventoryPending_ = true;
+        else player_->openInventory();
         return true;
     }
     auto snapshot=sdk::snapshotContainerTransfer(*player_,sdk::inventorySlotRef(slotA),sdk::inventorySlotRef(slotB));
-    int id = sdk::sendInventoryMove(*player_, slotA, slotB);
+    const int fromCount=from ? from->count() : 0, toCount=to && !to->empty() ? to->count() : 0;
+    int id = count ? sdk::sendContainerTransfer(*player_,a,b,count) : sdk::sendInventoryMove(*player_, slotA, slotB);
     logger::debug("Inventory move {} -> {}: {}", slotA, slotB, id ? std::format("request {}", id) : "not sent");
     if (!id) return false;
-    Move move{id,slotA,slotB,tick_}; move.snapshot=std::move(snapshot); moves_.push_back(std::move(move));
+    Move move{id,slotA,slotB,tick_}; move.snapshot=std::move(snapshot); move.count=count;
+    if (count) { move.fromCount=fromCount; move.toCount=toCount; }
+    moves_.push_back(std::move(move));
     return true;
 }
 
@@ -295,14 +319,25 @@ void GamePlayerContext::advanceInventoryOpen() {
         ownedInventory_ = manager;
         openingMove_.reset();
         auto snapshot=sdk::snapshotContainerTransfer(*player_,sdk::inventorySlotRef(move.slotA),sdk::inventorySlotRef(move.slotB));
-        int id = sdk::sendInventoryMove(*player_, move.slotA, move.slotB);
+        const auto a=sdk::inventorySlotRef(move.slotA),b=sdk::inventorySlotRef(move.slotB);
+        const auto* from=sdk::containerItem(*player_,a); const auto* to=sdk::containerItem(*player_,b);
+        const int fromCount=from ? from->count() : 0, toCount=to && !to->empty() ? to->count() : 0;
+        int id = move.count ? sdk::sendContainerTransfer(*player_,a,b,move.count) : sdk::sendInventoryMove(*player_, move.slotA, move.slotB);
         logger::debug("Inventory move {} -> {} after opening inventory: request {}", move.slotA, move.slotB, id);
-        if (id) { Move pending{id,move.slotA,move.slotB,tick_}; pending.snapshot=std::move(snapshot); moves_.push_back(std::move(pending)); }
+        if (id) { Move pending{id,move.slotA,move.slotB,tick_}; pending.snapshot=std::move(snapshot); pending.count=move.count; pending.fromCount=fromCount; pending.toCount=toCount; moves_.push_back(std::move(pending)); }
         else closeOwnedInventory();
     } else if (tick_ - move.started > 100) {
         openingMove_.reset();
         logger::warn("Inventory screen did not open; move cancelled");
     }
+}
+
+void GamePlayerContext::pumpInventoryUi() {
+    if (!creativeInventoryPending_) return;
+    creativeInventoryPending_ = false;
+    const auto* client=sdk::ClientInstance::get();
+    if (!openingMove_ || !player_ || !client || client->localPlayer()!=player_ || containerOpen()) return;
+    if (!player_->openCreativeInventoryScreen()) logger::warn("Creative inventory scene profile mismatch; no UI call was made");
 }
 
 void GamePlayerContext::closeOwnedInventory() {
@@ -316,6 +351,7 @@ void GamePlayerContext::closeOwnedInventory() {
 
 void GamePlayerContext::onItemStackResponse(int requestId, int result, const void* response) {
     if (craft_ && craft_->responses.contains(requestId)) craft_->responses[requestId]=result;
+    if (repair_ && repair_->responses.contains(requestId)) repair_->responses[requestId]=result;
     if (transfer_ && transfer_->id == requestId) {
         transfer_->result = result;
         if (result == 0) transfer_->receipt = sdk::containerTransferReceipt(response, transfer_->source, transfer_->target);
@@ -331,8 +367,8 @@ void GamePlayerContext::onItemStackResponse(int requestId, int result, const voi
 void GamePlayerContext::applyAnsweredMoves() {
     std::erase_if(moves_, [&](const Move& m) {
         if (m.result == 0) {
-            if (!sdk::applyInventorySwap(*player_,m.slotA,m.slotB,m.receipt,m.snapshot))
-                logger::warn("Inventory swap receipt could not be reconciled; close and reopen the inventory before retrying");
+            const bool applied = m.count ? sdk::applyContainerTransfer(*player_,sdk::inventorySlotRef(m.slotA),sdk::inventorySlotRef(m.slotB),m.count,m.fromCount,m.toCount,m.receipt,m.snapshot) : sdk::applyInventorySwap(*player_,m.slotA,m.slotB,m.receipt,m.snapshot);
+            if (!applied) logger::warn("Inventory move receipt could not be reconciled; close and reopen the inventory before retrying");
             slotChangedAt_ = tick_;  // like a slot change: let the server settle before clicking
             return true;
         }
@@ -374,7 +410,8 @@ bool GamePlayerContext::openContainerAt(BlockPos pos) {
     const auto* block = region_->getBlock(toSdk(pos)); if (!block) return false;
     const auto name = block->serializationId().string("name").value_or("");
     if (name != "minecraft:chest" && name != "minecraft:trapped_chest" && name != "minecraft:barrel" && name.find("shulker_box") == std::string::npos &&
-        name != "minecraft:furnace" && name != "minecraft:lit_furnace" && name != "minecraft:crafting_table") {
+        name != "minecraft:furnace" && name != "minecraft:lit_furnace" && name != "minecraft:crafting_table" &&
+        name != "minecraft:anvil" && name != "minecraft:chipped_anvil" && name != "minecraft:damaged_anvil" && name != "minecraft:grindstone") {
         transferError_ = "The registered block is not a supported container or workstation"; return false;
     }
     baritone::BlockStateInterface blocks(world);
@@ -389,13 +426,19 @@ void GamePlayerContext::closeOwnedContainer() { containerClosing_ = true; }
 std::vector<baritone::ContainerSlot> GamePlayerContext::containerSlots() const {
     std::vector<baritone::ContainerSlot> result;
     if (!player_ || !containerOpen()) return result;
-    for (int i = 0; i < 36; ++i) result.push_back({"player", i, true, hotbar(i)});
+    auto* inventory = player_->supplies()->inventory();
+    if (!inventory) return result;
+    for (int i = 0; i < 36; ++i) result.push_back({"player", i, true, describe(inventory->getItem(i), true)});
+    std::set<std::tuple<uint8_t, int, bool, uint32_t>> seen;
     for (const auto& view : sdk::openContainerViews(*player_)) {
         if (view.networkName != 7 && view.networkName != 30 && view.networkName != 58 &&
-            view.networkName != 24 && view.networkName != 25 && view.networkName != 26 && view.networkName != 45 && view.networkName != 46) continue;
+            view.networkName != 24 && view.networkName != 25 && view.networkName != 26 && view.networkName != 45 && view.networkName != 46 &&
+            view.networkName != 0 && view.networkName != 1 && view.networkName != 2 && view.networkName != 50 && view.networkName != 51 && view.networkName != 52) continue;
         for (int i = 0; i < view.size; ++i) {
             auto ref = sdk::containerSlotRef(*player_, view.name, i);
-            result.push_back({view.name, i, false, describe(sdk::containerItem(*player_, ref)), view.networkName});
+            uint32_t dynamic = 0; std::memcpy(&dynamic, ref.name.data() + 4, sizeof(dynamic));
+            if (!seen.emplace(ref.name[0], ref.slot, bool(ref.name[8]), ref.name[8] ? dynamic : 0).second) continue;
+            result.push_back({view.name, i, false, describe(sdk::containerItem(*player_, ref), true), view.networkName});
         }
     }
     return result;
@@ -405,7 +448,7 @@ bool GamePlayerContext::transferContainerItem(const baritone::ContainerSlot& sou
     auto a = source.playerInventory ? sdk::inventorySlotRef(source.slot) : sdk::containerSlotRef(*player_, source.collection, source.slot);
     auto b = target.playerInventory ? sdk::inventorySlotRef(target.slot) : sdk::containerSlotRef(*player_, target.collection, target.slot);
     auto* from = sdk::containerItem(*player_, a); auto* to = sdk::containerItem(*player_, b);
-    if (!from || !to || from->empty() || !to->empty()) return false;
+    if (!from || !to || from->empty() || (!to->empty() && !from->mergeCompatible(*to))) return false;
     int before = from->count(), after = to->count();
     auto snapshot = sdk::snapshotContainerTransfer(*player_, a, b);
     if (!snapshot.source || !snapshot.target) return false;
@@ -427,7 +470,46 @@ bool GamePlayerContext::craftRecipe(const baritone::RecipeOption& recipe) {
     for (auto id:ids) pending.responses.emplace(id,-1);
     craft_=std::move(pending); craftState_=baritone::TransferState::Pending; craftError_.clear(); return true;
 }
+int GamePlayerContext::matchingRepairOutputs(const baritone::HotbarStack& expected) const {
+    int count = 0;
+    for (int i = 0; i < 36; ++i) {
+        const auto stack = hotbar(i);
+        if (stack.name == expected.name && stack.damage == expected.damage && stack.maxDamage == expected.maxDamage &&
+            stack.enchantments == expected.enchantments && stack.customName == expected.customName) count += stack.count;
+    }
+    return count;
+}
+baritone::RepairPreview GamePlayerContext::repairPreview() const {
+    if (!player_ || !containerOpen()) return {};
+    const auto native = sdk::workstationPreview(*player_);
+    if (native.method.empty()) return {};
+    return {native.method, describe(native.output, false), native.levels, native.materialCost, true};
+}
+bool GamePlayerContext::takeRepairOutput(const baritone::RepairPreview& expected) {
+    if (!ownedContainerReady() || inventoryMovePending() || !expected.supported || expected.output.empty()) return false;
+    const auto current = repairPreview();
+    if (!current.supported || current.method != expected.method || current.levels != expected.levels || current.materialCost != expected.materialCost ||
+        current.output.name != expected.output.name || current.output.count != 1 || current.output.damage != expected.output.damage ||
+        current.output.maxDamage != expected.output.maxDamage || current.output.enchantments != expected.output.enchantments ||
+        current.output.customName != expected.output.customName) return false;
+    Repair pending; pending.output = expected.output; pending.before = matchingRepairOutputs(expected.output); pending.sent = tick_;
+    const auto ids = sdk::takeWorkstationOutput(*player_, sdk::workstationPreview(*player_));
+    if (ids.empty()) { repairError_ = "The workstation produced no normal repair request; inspect its inputs and XP cost"; return false; }
+    for (int id : ids) pending.responses.emplace(id, -1);
+    repair_ = std::move(pending); repairState_ = baritone::TransferState::Pending; repairError_.clear(); return true;
+}
 void GamePlayerContext::advanceContainer() {
+    if (repair_) {
+        const bool rejected = std::ranges::any_of(repair_->responses, [](const auto& r) { return r.second > 0; });
+        const bool accepted = std::ranges::all_of(repair_->responses, [](const auto& r) { return r.second == 0; });
+        if (rejected || tick_ - repair_->sent > 140) {
+            repairState_ = baritone::TransferState::Rejected;
+            repairError_ = rejected ? "Repair refused by the server; inspect XP, inputs and inventory before retrying" : "Repair output/response timed out; no automatic retry was sent";
+            repair_.reset();
+        } else if (accepted && matchingRepairOutputs(repair_->output) > repair_->before) {
+            repairState_ = baritone::TransferState::Accepted; repair_.reset(); slotChangedAt_ = tick_;
+        }
+    }
     if (craft_) {
         const bool refused=std::ranges::any_of(craft_->responses,[](const auto& r) { return r.second>0; });
         const bool answered=std::ranges::all_of(craft_->responses,[](const auto& r) { return r.second==0; });
@@ -452,7 +534,7 @@ void GamePlayerContext::advanceContainer() {
             transfer_.reset();
         }
     }
-    if (containerClosing_ && !transfer_ && !craft_) {
+    if (containerClosing_ && !transfer_ && !craft_ && !repair_) {
         if (ownedContainer_ && player_->containerManager() == ownedContainer_) { player_->closeInventory(); inventoryClosedAt_ = tick_; }
         ownedContainer_ = nullptr; containerOpening_.reset(); containerClosing_ = false;
     }
@@ -487,6 +569,7 @@ std::vector<baritone::EntityInfo> GamePlayerContext::entities() const {
 }
 
 bool GamePlayerContext::startOrContinueBreaking(const BlockPos& pos, baritone::Direction face) {
+    if (toolPolicy_ && !toolPolicy_(hotbar(selectedSlot()))) { stopBreaking(); return false; }
     if (auto world = WorldTracker::get().snapshot(); world) {
         if (auto policy = world->protection(); policy && !policy->permitsModify(pos)) { stopBreaking(); return false; }
     }
@@ -506,6 +589,7 @@ bool GamePlayerContext::startOrContinueBreaking(const BlockPos& pos, baritone::D
         return true;
     }
     if (!breaking_ || *breaking_ != pos) {
+        if (actionObserver_) actionObserver_(pos);
         if (breaking_) gm->stopDestroyBlock(toSdk(*breaking_));
         gm->startDestroyBlock(toSdk(pos), f, destroyed);
         breaking_ = pos;
@@ -542,6 +626,13 @@ void GamePlayerContext::useItemOn(const BlockPos& pos, baritone::Direction face,
         if (auto policy = world->protection(); policy && (!policy->permitsModify(pos) || !policy->permitsModify(pos.offset(face)))) return;
     }
     baritone::HotbarStack held = hotbar(selectedSlot());
+    if (held.isBlock && actionObserver_) {
+        auto& tracker = WorldTracker::get(); tracker.refreshAround(pos,0);
+        if (auto world = tracker.snapshot()) {
+            baritone::BlockStateInterface blocks(world);
+            actionObserver_(baritone::ActionHistory::placementTarget(pos,face,blocks.props(pos.x,pos.y,pos.z)));
+        }
+    }
     if (held.count > 0 && !held.isBlock) {
         // items (bone meal, seeds, buckets...): GameMode::buildBlock only places blocks, so a real
         // right click on the block the player looks at (the caller checked it is `pos`)
