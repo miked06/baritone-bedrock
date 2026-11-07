@@ -6,7 +6,7 @@
 </p>
 
 <p align="center">
-  <a href="https://miked06.github.io/bartione-bedrock-website/"><b>Website</b></a> ·
+  <a href="https://miked06.github.io/baritone-bedrock-website/"><b>Website</b></a> ·
   <a href="https://github.com/miked06/baritone-bedrock/releases/latest"><b>Download</b></a> ·
   <a href="docs/COMMANDS.md"><b>Commands</b></a> ·
   <a href="docs/SETTINGS.md"><b>Settings</b></a>
