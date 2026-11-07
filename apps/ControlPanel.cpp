@@ -13,6 +13,8 @@
 #include <sstream>
 #include <string>
 #include "baritone/task/Workflow.h"
+#include "baritone/world/MapFrame.h"
+#include <optional>
 #include "baritone/utils/CommandLine.h"
 
 namespace {
@@ -23,7 +25,7 @@ std::future<std::string> statusJob, commandJob;
 std::deque<std::string> commands;
 std::map<std::string, std::string> latestFields;
 enum Id { Send = 100, Stop, Pause, Resume, Go, Mine, Browse, Preview, Verify, Requirements, Repair, Clear,
-    Rotate0, Rotate90, Rotate180, Rotate270, MirrorX, MirrorNone, AddGoal, AddMine, AddBuild, AddWait, TaskRun, TaskPause, TaskList, Why, Doctor, WorkflowEditor, TexturedPreview };
+    Rotate0, Rotate90, Rotate180, Rotate270, MirrorX, MirrorNone, AddGoal, AddMine, AddBuild, AddWait, TaskRun, TaskPause, TaskList, Why, Doctor, WorkflowEditor, TexturedPreview, ExportReport, ManualBuild, TechnicalAudit, WorldMap };
 std::wstring wide(const std::string& text) {
     int n = MultiByteToWideChar(CP_UTF8, 0, text.data(), static_cast<int>(text.size()), nullptr, 0);
     std::wstring out(n, 0); if (n) MultiByteToWideChar(CP_UTF8, 0, text.data(), static_cast<int>(text.size()), out.data(), n); return out;
@@ -82,21 +84,25 @@ HWND control(const wchar_t* type, const wchar_t* label, DWORD style, int x, int 
 }
 void button(const wchar_t* label, int x, int y, int width, int id) { control(L"BUTTON", label, WS_TABSTOP | BS_PUSHBUTTON, x, y, width, 28, id); }
 #include "WorkflowEditor.inl"
+#include "MapPanel.inl"
 void createControls() {
     font = CreateFontW(-16, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
     statusBox = control(L"EDIT", L"Connecting to Minecraft...", ES_READONLY | ES_MULTILINE | WS_VSCROLL, 16, 16, 868, 140);
     progress = control(PROGRESS_CLASSW, L"", 0, 16, 164, 868, 16);
     button(L"Stop all", 16, 190, 110, Stop); button(L"Pause", 134, 190, 90, Pause); button(L"Resume", 232, 190, 90, Resume); button(L"Explain failure", 330, 190, 150, Why);
     button(L"Compatibility", 490, 190, 155, Doctor);
+    button(L"Export report", 655, 190, 215, ExportReport);
     control(L"STATIC", L"Destination X / Y / Z", 0, 16, 232, 190, 24);
     xBox = control(L"EDIT", L"~", ES_AUTOHSCROLL | WS_TABSTOP, 210, 228, 90, 27); yBox = control(L"EDIT", L"~", ES_AUTOHSCROLL | WS_TABSTOP, 310, 228, 90, 27); zBox = control(L"EDIT", L"~", ES_AUTOHSCROLL | WS_TABSTOP, 410, 228, 90, 27);
     button(L"Go", 510, 228, 80, Go); button(L"Queue goal", 600, 228, 120, AddGoal);
+    button(L"Map",730,228,140,WorldMap);
     control(L"STATIC", L"Item / quantity or wait seconds", 0, 16, 270, 220, 24);
     itemBox = control(L"EDIT", L"diamond", ES_AUTOHSCROLL | WS_TABSTOP, 242, 266, 175, 27); countBox = control(L"EDIT", L"64", ES_AUTOHSCROLL | WS_TABSTOP, 427, 266, 73, 27);
     button(L"Mine", 510, 266, 80, Mine); button(L"Queue mine", 600, 266, 120, AddMine); button(L"Queue wait", 730, 266, 140, AddWait);
     control(L"STATIC", L"Schematic file", 0, 16, 311, 150, 24); fileBox = control(L"EDIT", L"", ES_AUTOHSCROLL | WS_TABSTOP, 160, 306, 600, 27); button(L"Browse...", 770, 306, 100, Browse);
     button(L"Load preview", 16, 345, 140, Preview); button(L"Verify", 166, 345, 100, Verify); button(L"Materials needed", 276, 345, 170, Requirements); button(L"Repair / build", 456, 345, 140, Repair); button(L"Queue build", 606, 345, 140, AddBuild); button(L"Clear", 756, 345, 114, Clear);
     button(L"Rotate 0", 16, 383, 100, Rotate0); button(L"90", 126, 383, 70, Rotate90); button(L"180", 206, 383, 70, Rotate180); button(L"270", 286, 383, 70, Rotate270); button(L"Mirror X", 376, 383, 110, MirrorX); button(L"No mirror", 496, 383, 120, MirrorNone);
+    button(L"Build guide",626,383,115,ManualBuild);button(L"Technical audit",751,383,119,TechnicalAudit);
     button(L"Run queue", 16, 425, 140, TaskRun); button(L"Pause queue", 166, 425, 140, TaskPause); button(L"List tasks", 316, 425, 140, TaskList);
     button(L"Workflow editor", 466, 425, 160, WorkflowEditor);
     button(L"Export textured 3D", 636, 425, 234, TexturedPreview);
@@ -109,6 +115,13 @@ void action(int id) {
     switch (id) {
         case Stop: send("#stop"); break; case Pause: send("#pause"); break; case Resume: send("#resume"); break;
         case Doctor: send("#doctor"); break;
+        case WorldMap:openMap();break;
+        case ManualBuild:send("#assist on");break;
+        case TechnicalAudit:send("#technical");break;
+        case ExportReport: {
+            wchar_t path[32768]{}; OPENFILENAMEW ofn{}; ofn.lStructSize=sizeof(ofn);ofn.hwndOwner=window;ofn.lpstrFile=path;ofn.nMaxFile=32768;ofn.lpstrDefExt=L"zip";ofn.lpstrFilter=L"Diagnostic archive\0*.zip\0";ofn.Flags=OFN_NOCHANGEDIR;
+            if(GetSaveFileNameW(&ofn)){std::ostringstream request;request<<"#report "<<std::quoted(utf8(path));send(request.str());}break;
+        }
         case WorkflowEditor: openWorkflowEditor(); break;
         case TexturedPreview: {
             wchar_t path[32768]{}; OPENFILENAMEW ofn{}; ofn.lStructSize = sizeof(ofn); ofn.hwndOwner = window; ofn.lpstrFile = path; ofn.nMaxFile = 32768; ofn.lpstrDefExt = L"html"; ofn.lpstrFilter = L"Local 3D viewer\0*.html\0"; ofn.Flags = OFN_NOCHANGEDIR;
@@ -143,7 +156,7 @@ void refresh() {
         latestFields = fields;
         display = wide("Connection: " + fields["connection"] + " | Version: " + fields["version"] + "\r\nWorld: " + fields["world"] + " | Dimension: " + fields["dimension"]
             + "\r\nPosition: " + fields["position"] + "\r\nActivity: " + fields["activity"] + "\r\nTasks: " + fields["queue_progress"] + " | " + fields["queue"]
-            + "\r\nSchematic: " + fields["schematic"] + "\r\nLatest: " + fields["latest"]);
+            + "\r\nSchematic: " + fields["schematic"] + "\r\nLatest: " + (fields["build_assistance"].empty()?fields["latest"]:fields["build_assistance"]));
         SetWindowTextW(statusBox, display.c_str());
     }
     if (!statusJob.valid() && tick % 10 == 0) { minecraftPid = findMinecraft(); statusJob = std::async(std::launch::async, [pid = minecraftPid] { return transact(pid, "@status", true); }); }

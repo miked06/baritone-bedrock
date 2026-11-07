@@ -28,9 +28,9 @@ int totalMissing(const ProductionPlan& plan) {
 }
 void RecipeBook::set(ProductionRecipe recipe) {
     recipe.output = itemId(std::move(recipe.output));
-    if ((!recipes_.contains(recipe.output) && recipes_.size() >= 256) || recipe.count < 1 || recipe.count > 64 ||
+    if ((!recipes_.contains(recipe.output) && recipes_.size() >= 2048) || recipe.count < 1 || recipe.count > 64 ||
         recipe.ingredients.empty() || recipe.ingredients.size() > 9)
-        throw std::invalid_argument("Recipes: at most 256 outputs, 1..64 output items and 1..9 ingredient groups");
+        throw std::invalid_argument("Recipes: at most 2048 outputs, 1..64 output items and 1..9 ingredient groups");
     for (auto& group : recipe.ingredients) {
         if (group.count < 1 || group.count > 64 || group.alternatives.empty() || group.alternatives.size() > 16)
             throw std::invalid_argument("Ingredient groups need 1..16 alternatives and quantity 1..64");
@@ -107,10 +107,11 @@ void RecipeBook::save(const std::filesystem::path& file) const {
         out << '\n';
     }
     out.close(); if (!out) throw std::runtime_error("Cannot write recipe descriptions");
+    if(std::filesystem::file_size(temporary)>4*1024*1024){std::filesystem::remove(temporary);throw std::invalid_argument("Recipe file exceeds four MiB");}
     std::filesystem::rename(temporary, file);
 }
 void RecipeBook::load(const std::filesystem::path& file) {
-    if (std::filesystem::file_size(file) > 1024 * 1024) throw std::invalid_argument("Recipe file exceeds one MiB");
+    if (std::filesystem::file_size(file) > 4 * 1024 * 1024) throw std::invalid_argument("Recipe file exceeds four MiB");
     std::ifstream input(file); std::string magic; int version = 0;
     if (!(input >> magic >> version) || magic != "BARITONE_RECIPES" || version != 1) throw std::invalid_argument("Invalid recipe file header");
     RecipeBook parsed;

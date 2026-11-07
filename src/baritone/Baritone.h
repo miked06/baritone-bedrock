@@ -23,6 +23,8 @@
 #include "baritone/process/SmeltProcess.h"
 #include "baritone/process/CraftProcess.h"
 #include "baritone/process/ProductionProcess.h"
+#include "baritone/process/SupplyProductionProcess.h"
+#include "baritone/process/FurnacePoolProcess.h"
 #include "baritone/process/LoadoutProcess.h"
 #include "baritone/process/LogisticsProcess.h"
 #include "baritone/process/ConstructionProcess.h"
@@ -72,6 +74,8 @@ public:
     SmeltProcess& smelt() { return smelt_; }
     CraftProcess& craft() { return craft_; }
     ProductionProcess& production() { return production_; }
+    SupplyProductionProcess& produce() { return produce_; }
+    FurnacePoolProcess& workshop() { return workshop_; }
     LoadoutProcess& loadout() { return loadout_; }
     LoadoutStore& loadouts() { return loadouts_; }
     LogisticsProcess& logistics() { return logistics_; }
@@ -120,6 +124,8 @@ private:
     SmeltProcess smelt_;
     CraftProcess craft_;
     ProductionProcess production_;
+    SupplyProductionProcess produce_;
+    FurnacePoolProcess workshop_;
     LoadoutProcess loadout_;
     LogisticsProcess logistics_;
     ConstructionProcess construction_;

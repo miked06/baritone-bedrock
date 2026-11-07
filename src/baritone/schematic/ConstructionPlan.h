@@ -1,7 +1,9 @@
 #pragma once
 #include "baritone/schematic/Schematic.h"
 #include "baritone/world/WorldSnapshot.h"
+#include "baritone/task/TaskQueue.h"
 namespace baritone {
+struct ConstructionRecovery;
 class ConstructionPlan {
 public:
     void start(SchematicPtr source, BlockPos origin, std::string support, int maxDepth, bool permanent);
@@ -13,6 +15,9 @@ public:
     BlockPos phaseOrigin() const { return phaseOrigin_; }
     SchematicPtr phase(int phase) const;
     bool permanent() const { return permanent_; }
+    const auto& targets() const { return final_; }
+    std::string checkpoint(const WorldIdentity& identity,int phase) const;
+    static ConstructionRecovery recover(const std::string& text);
 private:
     SchematicPtr source_;
     BlockPos origin_, phaseOrigin_, size_;
@@ -24,4 +29,5 @@ private:
     int depth_ = 0;
     bool collected_ = false, ready_ = false, permanent_ = false;
 };
+struct ConstructionRecovery { ConstructionPlan plan; WorldIdentity identity; int phase=0; };
 }

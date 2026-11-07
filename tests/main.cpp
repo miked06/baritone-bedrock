@@ -42,6 +42,11 @@
 #include "baritone/schematic/SchematicExport.h"
 #include "baritone/task/TaskQueue.h"
 #include "baritone/task/Workflow.h"
+#include "baritone/task/WorkflowTemplates.h"
+#include "baritone/task/DiagnosticBundle.h"
+#include "baritone/schematic/BuildAssistance.h"
+#include "baritone/schematic/RoadPlan.h"
+#include "baritone/world/MapFrame.h"
 #include "baritone/task/CheckpointWriter.h"
 #include "baritone/schematic/NbtReader.h"
 #include "baritone/utils/CommandLine.h"
@@ -2382,6 +2387,253 @@ TEST(grindstone_repair_combines_only_the_explicit_unenchanted_donor) {
     for(int tick=0;tick<100&&bot.repair().isActive();++tick)bot.repair().onTick(false,true);
     CHECK_MSG(bot.repair().succeeded(),bot.repair().failure());
     CHECK(player.repairRequests==1&&player.countItem(tool.name)==1&&player.inventory[0].damage==72&&!player.containerOpen());
+}
+
+TEST(production_objective_gathers_replans_crafts_and_preserves_existing_output) {
+    SettingsGuard guard; Settings::get().exploreForBlocks=true;
+    TestWorld world(1); world.floor(0,Blocks::get().stone);
+    test::TestPlayer player; player.inventory[0]={"minecraft:torch",8}; player.inventory[1]={"minecraft:oak_log",1};
+    player.recipeOptions={{"recipes","minecraft:oak_planks",0,4},{"recipes","minecraft:stick",1,4},{"recipes","minecraft:torch",2,4}};
+    Baritone bot(player,[](const std::string&,bool){});bot.tick(world.snapshot());
+    bot.produce().start(RecipeBook::vanillaBasics(),{1,1,0},"torch",4);
+    for(int i=0;i<500 && !bot.mine().isActive() && bot.produce().isActive();++i){bot.produce().onTick(false,true);std::this_thread::sleep_for(std::chrono::milliseconds(1));}
+    CHECK(bot.mine().isActive());
+    player.inventory[2]={"minecraft:coal",1};
+    int handled=0;
+    for(int tick=0;tick<500 && bot.produce().isActive();++tick) {
+        bot.tick(world.snapshot());
+        if(player.craftRequests>handled) {
+            ++handled; const auto item=player.lastCraft.item;
+            if(item=="minecraft:oak_planks") {player.inventory[1].count=0;player.inventory[10]={item,4};}
+            else if(item=="minecraft:stick") {player.inventory[10].count-=2;player.inventory[11]={item,4};}
+            else if(item=="minecraft:torch") {--player.inventory[2].count;--player.inventory[11].count;player.inventory[0].count+=4;}
+            player.crafting=TransferState::Accepted;
+        }
+        if(!handled)std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    CHECK_MSG(bot.produce().succeeded(),bot.produce().failure());
+    CHECK(player.countItem("minecraft:torch")==12 && handled==3 && !bot.mine().isActive());
+}
+
+TEST(production_objective_refuses_unsupported_inputs_and_cancels_owned_children) {
+    SettingsGuard guard; Settings::get().exploreForBlocks=true;
+    TestWorld world(1);world.floor(0,Blocks::get().stone);test::TestPlayer player;
+    Baritone bot(player,[](const std::string&,bool){});bot.tick(world.snapshot());
+    bot.produce().start(RecipeBook::vanillaBasics(),{1,1,0},"iron_pickaxe",1);
+    for(int i=0;i<500 && bot.produce().isActive();++i){bot.produce().onTick(false,true);std::this_thread::sleep_for(std::chrono::milliseconds(1));}
+    CHECK(!bot.produce().isActive() && !bot.mine().isActive());
+    CHECK(bot.produce().failure().find("iron_ingot")!=std::string::npos && player.craftRequests==0);
+    bot.produce().start(RecipeBook::vanillaBasics(),{1,1,0},"torch",4);
+    for(int i=0;i<500 && !bot.mine().isActive() && bot.produce().isActive();++i){bot.produce().onTick(false,true);std::this_thread::sleep_for(std::chrono::milliseconds(1));}
+    CHECK(bot.mine().isActive());
+    bot.cancelEverything();CHECK(!bot.produce().isActive() && !bot.mine().isActive());
+    player.inventory[0]={"minecraft:diamond_pickaxe",1};player.inventory[0].tool=Tool::Pickaxe;player.inventory[0].silkTouch=true;
+    bot.produce().start(RecipeBook::vanillaBasics(),{1,1,0},"torch",4);
+    for(int i=0;i<500 && bot.produce().isActive();++i){bot.produce().onTick(false,true);std::this_thread::sleep_for(std::chrono::milliseconds(1));}
+    CHECK(!bot.produce().isActive() && !bot.mine().isActive() && player.craftRequests==0);
+}
+
+TEST(production_objective_restocks_then_delivers_and_respects_deposit_reserves) {
+    SettingsGuard guard;TestWorld world(1);world.floor(0,Blocks::get().stone);test::TestPlayer player;
+    const BlockPos supply{1,1,0},delivery{2,1,0},table{0,1,1};
+    player.inventory[0]={"minecraft:torch",8};
+    const auto refill=[&]{player.workstationInventories[supply]={{"container_items",0,false,{"minecraft:coal",1},7},{"container_items",1,false,{"minecraft:oak_log",1},7}};};
+    refill();player.workstationInventories[delivery]={{"container_items",0,false,{},7},{"container_items",1,false,{},7}};player.workstationInventories[table]={};
+    player.recipeOptions={{"recipes","minecraft:oak_planks",0,4},{"recipes","minecraft:stick",1,4},{"recipes","minecraft:torch",2,4}};
+    Baritone bot(player,[](const std::string&,bool){});bot.tick(world.snapshot());bot.storage().addLocation("supply",supply);bot.storage().addLocation("delivery",delivery);
+    int handled=0;
+    const auto run=[&] {
+        for(int tick=0;tick<1500 && bot.produce().isActive();++tick) {
+            bot.tick(world.snapshot());
+            if(player.craftRequests>handled) {
+                ++handled;const auto item=player.lastCraft.item;
+                if(item=="minecraft:oak_planks") {for(auto& slot:player.inventory)if(slot.name=="minecraft:oak_log" && slot.count){--slot.count;break;}player.inventory[20]={item,4};}
+                else if(item=="minecraft:stick") {player.inventory[20].count-=2;player.inventory[21]={item,4};}
+                else if(item=="minecraft:torch") {for(auto& slot:player.inventory)if(slot.name=="minecraft:coal" && slot.count){--slot.count;break;}--player.inventory[21].count;player.inventory[0].count+=4;}
+                player.crafting=TransferState::Accepted;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+    };
+    bot.produce().start(RecipeBook::vanillaBasics(),table,"torch",4,"supply","delivery");run();
+    CHECK_MSG(bot.produce().succeeded(),bot.produce().failure());CHECK(player.countItem("minecraft:torch")==8 && !bot.mine().isActive());
+    CHECK(player.workstationInventories[delivery][0].stack.name=="minecraft:torch" && player.workstationInventories[delivery][0].stack.count==4);
+    refill();player.inventory[20]={};player.inventory[21]={};
+    bot.loadouts().set("reserve",{"torch",13,13,-1,0});bot.loadouts().activate("reserve");
+    bot.produce().start(RecipeBook::vanillaBasics(),table,"torch",4,"supply","delivery");run();
+    CHECK(!bot.produce().succeeded() && !bot.produce().isActive() && !bot.produce().failure().empty());
+    CHECK(player.countItem("minecraft:torch")==12 && player.workstationInventories[delivery][0].stack.count==4 && !player.containerOpen());
+}
+
+TEST(workflow_templates_capture_absolute_targets_and_load_paused) {
+    auto flow=instantiateWorkflow("produce-store",{"table","torch","16","supply","output"},{"test",0},{{"minecraft:torch",8}});
+    CHECK(!flow.running() && flow.nodes().size()==2);
+    CHECK(flow.nodes()[0].task.kind=="produce" && flow.nodes()[0].task.arguments[2]=="24");
+    CHECK(flow.nodes()[1].task.kind=="deposit" && flow.nodes()[1].task.arguments[3]=="8");
+    auto restored=Workflow::decode(flow.encode());restored.bind({"test",0});restored.resume({"test",0});
+    int dispatch=0;
+    for(int i=0;i<4 && restored.running();++i)restored.tick({"test",0},[&](const Task&){++dispatch;return TaskOutcome{TaskStatus::Succeeded,{}};},[](const Task&){return TaskOutcome{};});
+    CHECK(restored.complete() && dispatch==2);
+    bool refused=false;try{(void)instantiateWorkflow("produce-store",{"table","torch","2304","supply","output"},{"test",0},{{"minecraft:torch",1}});}catch(const std::invalid_argument&){refused=true;}CHECK(refused);
+    refused=false;try{(void)instantiateWorkflow("mine-store",{"iron_ore","iron_ingot","8","output"},{"test",0},{});}catch(const std::invalid_argument&){refused=true;}CHECK(refused);
+    auto mining=instantiateWorkflow("mine-store",{"coal_ore","coal","8","output"},{"test",0},{});CHECK(mining.nodes()[0].task.kind=="gather");
+    auto build=instantiateWorkflow("prepare-build",{"house.mcstructure","0","64","0","supply","stone","64"},{"test",0},{});
+    CHECK(build.nodes().size()==3 && build.nodes()[1].task.kind=="placementbuild" && build.nodes()[2].task.kind=="verify");
+}
+
+TEST(diagnostic_archive_preserves_existing_files_and_bounds_entries_and_log_tail) {
+    TempDir tmp;const auto file=tmp.path/"report.zip";
+    writeDiagnosticBundle(file,{{"events.txt","123456789"},{"status.txt","version=test\n"}});
+    std::ifstream input(file,std::ios::binary);std::string bytes(std::istreambuf_iterator<char>(input),{});input.close();
+    CHECK(bytes.substr(0,4)==std::string("PK\x03\x04",4));
+    CHECK(bytes.substr(bytes.size()-22,4)==std::string("PK\x05\x06",4));
+    // Standard CRC-32 check vector 123456789 => CBF43926 (little endian).
+    CHECK(bytes.substr(14,4)==std::string("\x26\x39\xf4\xcb",4));
+    CHECK(bytes.find("123456789")!=std::string::npos);
+    bool refused=false;try{writeDiagnosticBundle(file,{{"status.txt","overwrite"}});}catch(const std::invalid_argument&){refused=true;}CHECK(refused);
+    refused=false;try{writeDiagnosticBundle(tmp.path/"bad.zip",{{"../outside.txt","data"}});}catch(const std::invalid_argument&){refused=true;}CHECK(refused && !std::filesystem::exists(tmp.path/"bad.zip"));
+    {std::ofstream log(tmp.path/"log.txt",std::ios::binary);log<<"before\nrecent\n";}
+    CHECK(diagnosticFileTail(tmp.path/"log.txt",7)=="recent\n");
+    CHECK(diagnosticFileTail(tmp.path/"missing.txt",7)=="File is not present.\n");
+}
+
+TEST(imported_recipe_catalog_supports_more_than_starter_size_and_refuses_truncation) {
+    TempDir tmp;RecipeBook book;
+    for(int i=0;i<512;++i)book.set({"item_"+std::to_string(i),1,{{{"dirt"},1}}});
+    const auto file=tmp.path/"imported.txt";book.save(file);RecipeBook restored;restored.load(file);
+    CHECK(restored.recipes().size()==512 && restored.plan("item_511",1,{{"dirt",1}}).ready());
+    {std::ofstream bad(file);bad<<"BARITONE_RECIPES 1\n\"torch\" 4 1 1 1";}
+    bool refused=false;try{restored.load(file);}catch(const std::invalid_argument&){refused=true;}CHECK(refused && restored.recipes().size()==512);
+}
+
+TEST(manual_build_hints_skip_matching_protected_unloaded_and_unsupported_blocks) {
+    TestWorld world(1);world.floor(0,Blocks::get().stone);SchematicWorkspace work;
+    work.load("guide",std::make_shared<FillSchematic>(BlockPos{2,1,1},DesiredBlock::block("minecraft:stone")),{2,1,0});
+    auto hint=nextBuildHint(work,*world.snapshot(),{0,1,0});CHECK((hint && hint->position==BlockPos{2,1,0} && hint->item=="minecraft:stone"));
+    world.set(2,1,0,Blocks::get().stone);hint=nextBuildHint(work,*world.snapshot(),{0,1,0});CHECK((hint && hint->position==BlockPos{3,1,0}));
+    auto policy=std::make_shared<ProtectionPolicy>();policy->add({"protected",{{3,1,0},{3,1,0}},ProtectionPolicy::Both});world.snapshot()->setProtection(policy);
+    CHECK(!nextBuildHint(work,*world.snapshot(),{0,1,0}));
+    world.snapshot()->setProtection({});work.move({30,1,0});CHECK(!nextBuildHint(work,*world.snapshot(),{30,1,0}));
+    auto block=DesiredBlock::block("minecraft:observer");block.states={{"facing_direction","2"}};
+    work.load("technical",std::make_shared<FillSchematic>(BlockPos{1,1,1},block),{2,1,0});world.set(2,1,0,Blocks::get().air);
+    CHECK(!nextBuildHint(work,*world.snapshot(),{0,1,0}));
+}
+
+TEST(technical_audit_reports_unplaceable_states_and_block_entities_with_bounded_output) {
+    auto observer=DesiredBlock::block("minecraft:observer");observer.states={{"facing_direction","2"}};
+    auto sign=DesiredBlock::block("minecraft:oak_wall_sign");
+    StaticSchematic source({3,1,1},{observer,DesiredBlock::block("minecraft:stone"),sign},{0,1,2});
+    const auto result=auditTechnicalPlacement(source,{10,64,20});
+    CHECK(result.cells==3 && result.technical==1 && result.stateChecks==1 && result.issues.size()==3);
+    CHECK((result.issues[0].position==BlockPos{10,64,20} && result.issues[1].reason.find("facing_direction")!=std::string::npos));
+    FillSchematic many({1024,1,1},observer);const auto capped=auditTechnicalPlacement(many,{});CHECK(capped.truncated && capped.issues.size()==512 && capped.cells==1024);
+}
+
+TEST(road_preview_connects_endpoints_clears_headroom_and_bounds_grade_and_materials) {
+    const auto road=planRoad({-8,1,-4},{8,3,4},3,"cobblestone",8);
+    CHECK(road.paving>0 && road.lights>0 && road.schematic->restrictOutside());
+    auto at=[&](BlockPos world){auto p=world-road.origin;return road.schematic->desired(p.x,p.y,p.z,BlockProps{});};
+    CHECK(at({-8,1,-4}).name=="minecraft:cobblestone" && at({8,3,4}).name=="minecraft:cobblestone");
+    CHECK(at({8,4,4}).kind==DesiredBlock::Kind::Air && at({8,5,4}).kind==DesiredBlock::Kind::Air);
+    bool refused=false;try{(void)planRoad({0,1,0},{4,4,0},3,"stone");}catch(const std::invalid_argument&){refused=true;}CHECK(refused);
+    refused=false;try{(void)planRoad({0,1,0},{8,1,0},2,"stone");}catch(const std::invalid_argument&){refused=true;}CHECK(refused);
+    refused=false;try{(void)planRoad({0,1,0},{8,1,0},3,"sand");}catch(const std::invalid_argument&){refused=true;}CHECK(refused);
+    TestWorld world(2);world.floor(0,Blocks::get().stone);const auto bridge=planRoad({0,3,0},{8,3,0},3,"stone");
+    ConstructionPlan foundations;foundations.start(bridge.schematic,bridge.origin,"minecraft:cobblestone",8,true);
+    while(!foundations.step(*world.snapshot())){}
+    CHECK_MSG(foundations.ready() && foundations.failure().empty(),foundations.failure());CHECK(!foundations.supports().empty());
+}
+
+TEST(construction_checkpoint_preserves_support_cleanup_and_recovery_checks_current_protection) {
+    SettingsGuard guard;TestWorld world(1);world.floor(0,Blocks::get().stone);ConstructionPlan plan;
+    plan.start(std::make_shared<FillSchematic>(BlockPos{1,1,1},DesiredBlock::block("minecraft:stone")),{2,3,0},"minecraft:cobblestone",8,false);
+    while(!plan.step(*world.snapshot())){}
+    CHECK(plan.ready() && plan.supports().size()==2);
+    auto restored=ConstructionPlan::recover(plan.checkpoint({"world",0},1));
+    CHECK((restored.identity==WorldIdentity{"world",0} && restored.phase==1 && restored.plan.supports().size()==2));
+    BlockProps support;support.name="minecraft:cobblestone";
+    auto cleanup=restored.plan.phase(2);CHECK(cleanup->desired(0,0,0,support).kind==DesiredBlock::Kind::Air);
+    BlockProps changed;changed.name="minecraft:glass";CHECK(cleanup->desired(0,0,0,changed).kind==DesiredBlock::Kind::Any);
+    bool refused=false;try{(void)ConstructionPlan::recover(plan.checkpoint({"world",0},0)+"junk");}catch(const std::invalid_argument&){refused=true;}CHECK(refused);
+    auto policy=std::make_shared<ProtectionPolicy>();policy->add({"new protection",{{2,1,0},{2,3,0}},ProtectionPolicy::Both});world.snapshot()->setProtection(policy);
+    test::TestPlayer player;Baritone bot(player,[](const std::string&,bool){});bot.tick(world.snapshot());bot.construction().resume(std::move(restored));
+    bot.construction().onTick(false,true);CHECK(!bot.construction().isActive() && !bot.builder().isActive());
+    auto wrongDimension=ConstructionPlan::recover(plan.checkpoint({"world",1},0));
+    refused=false;try{bot.construction().resume(std::move(wrongDimension));}catch(const std::invalid_argument&){refused=true;}CHECK(refused && !bot.construction().isActive());
+    refused=false;try{bot.construction().resume({});}catch(const std::invalid_argument&){refused=true;}CHECK(refused && !bot.construction().isActive());
+}
+
+TEST(map_frames_distinguish_unknown_loaded_and_visited_without_loading_cache_regions) {
+    TestWorld world(1);auto frame=surveyMap(*world.snapshot(),{"test",0},{0,1,0});
+    CHECK(frame.chunks.size()==625 && std::ranges::count(frame.chunks,'2')==4 && std::ranges::count(frame.chunks,'1')==0);
+    auto mutableWorld=std::const_pointer_cast<WorldSnapshot>(world.snapshot());mutableWorld->remove(0,0);
+    frame=surveyMap(*world.snapshot(),{"test",0},{0,1,0});CHECK(frame.chunks[12*25+12]=='1');
+    frame.markers.push_back({'S',"supplies",{4,1,0}});frame.path={{0,1,0},{1,1,0}};frame.zones.push_back({{5,0,0},{6,3,2}});
+    auto decoded=MapFrame::decode(frame.encode());CHECK(decoded.identity==frame.identity && decoded.markers[0].label=="supplies" && decoded.zones.size()==1);
+    bool refused=false;try{(void)MapFrame::decode(frame.encode()+"junk");}catch(const std::invalid_argument&){refused=true;}CHECK(refused);
+    frame.markers[0].label=std::string(49,'x');refused=false;try{(void)frame.encode();}catch(const std::invalid_argument&){refused=true;}CHECK(refused);
+}
+
+TEST(furnace_pool_loads_multiple_stations_before_collecting_and_returns_unused_fuel) {
+    TestWorld world(1);world.floor(0,Blocks::get().stone);test::TestPlayer player;
+    player.inventory[0]={"minecraft:raw_iron",32};player.inventory[0].stackKey="raw iron";
+    player.inventory[1]={"minecraft:coal",4};player.inventory[1].stackKey="coal";
+    const std::vector<ContainerSlot> empty={{"input",0,false,{},25},{"fuel",0,false,{},24},{"output",0,false,{},26}};
+    player.workstationInventories[{1,1,0}]=empty;player.workstationInventories[{2,1,0}]=empty;
+    Baritone bot(player,[](const std::string&,bool){});bot.tick(world.snapshot());
+    bot.workshop().start({{1,1,0},{2,1,0}},"raw_iron","iron_ingot",32,"coal",4);
+    bool cooked=false;
+    for(int tick=0;tick<1000 && bot.workshop().isActive();++tick) {
+        bot.workshop().onTick(false,true);
+        const bool loaded=std::ranges::all_of(player.workstationInventories,[](const auto& entry){return entry.second[0].stack.count==16 && entry.second[1].stack.count==2;});
+        if(!cooked && loaded) {
+            cooked=true;
+            for(auto& [pos,slots]:player.workstationInventories){slots[0].stack={};slots[1].stack.count=1;slots[2].stack={"minecraft:iron_ingot",16};}
+        }
+    }
+    CHECK_MSG(bot.workshop().succeeded(),bot.workshop().failure());CHECK(cooked && player.countItem("minecraft:iron_ingot")==32 && player.countItem("minecraft:raw_iron")==0 && player.countItem("minecraft:coal")==2);
+    CHECK(!player.containerOpen());
+}
+
+TEST(furnace_pool_refuses_occupied_stations_and_never_retries_a_rejected_transfer) {
+    TestWorld world(1);world.floor(0,Blocks::get().stone);test::TestPlayer player;
+    player.inventory[0]={"minecraft:raw_iron",8};player.inventory[1]={"minecraft:coal",1};
+    player.externalSlots={{"input",0,false,{"minecraft:sand",1},25},{"fuel",0,false,{},24},{"output",0,false,{},26}};
+    Baritone bot(player,[](const std::string&,bool){});bot.tick(world.snapshot());
+    bot.workshop().start({{1,1,0}},"raw_iron","iron_ingot",8,"coal",1);
+    for(int i=0;i<10 && bot.workshop().isActive();++i)bot.workshop().onTick(false,true);
+    CHECK(!bot.workshop().succeeded() && player.transferRequests==0 && player.countItem("minecraft:raw_iron")==8);
+    player.externalSlots[0].stack={};player.rejectTransfer=true;
+    bot.workshop().start({{1,1,0}},"raw_iron","iron_ingot",8,"coal",1);
+    for(int i=0;i<20 && bot.workshop().isActive();++i)bot.workshop().onTick(false,true);
+    CHECK(!bot.workshop().succeeded() && player.transferRequests==1 && player.countItem("minecraft:raw_iron")==8 && player.countItem("minecraft:coal")==1);
+}
+
+TEST(furnace_pool_does_not_resend_an_unconfirmed_inventory_request) {
+    struct UnconfirmedPlayer: test::TestPlayer {
+        bool transferContainerItem(const ContainerSlot&,const ContainerSlot&,int) override {++transferRequests;transfer=TransferState::Pending;return true;}
+    } player;
+    TestWorld world(1);world.floor(0,Blocks::get().stone);player.inventory[0]={"minecraft:raw_iron",8};player.inventory[1]={"minecraft:coal",1};
+    player.externalSlots={{"input",0,false,{},25},{"fuel",0,false,{},24},{"output",0,false,{},26}};
+    Baritone bot(player,[](const std::string&,bool){});bot.tick(world.snapshot());bot.workshop().start({{1,1,0}},"raw_iron","iron_ingot",8,"coal",1);
+    for(int tick=0;tick<200 && bot.workshop().isActive();++tick)bot.workshop().onTick(false,true);
+    CHECK(!bot.workshop().isActive() && !bot.workshop().succeeded() && player.transferRequests==1 && player.countItem("minecraft:raw_iron")==8 && player.countItem("minecraft:coal")==1);
+}
+
+TEST(specialized_harvest_keeps_base_stems_even_when_generic_replanting_is_disabled) {
+    SettingsGuard guard;Settings::get().replantCrops=false;Settings::get().farmUsingSelection=false;
+    TestWorld world(1);world.floor(0,Blocks::get().stone);BlockProps reeds;reeds.name="minecraft:reeds";reeds.collides=false;reeds.hardness=0;
+    const auto state=BlockRegistry::get().add(reeds);world.set(2,1,0,state);world.set(2,2,0,state);world.set(3,1,0,state);world.set(3,2,0,state);
+    test::TestPlayer player;player.feet={10.5,1,0.5};player.inventory[0]={"minecraft:sugar_cane",8};
+    Baritone bot(player,[](const std::string&,bool){});bot.tick(world.snapshot());bot.selections().add({{2,1,0},{2,2,0}});
+    bot.farm().harvest("sugar_cane",4,16,{2,1,0});
+    std::shared_ptr<const GoalComposite> goals;
+    for(int i=0;i<500 && !goals && bot.farm().isActive();++i){const auto command=bot.farm().onTick(false,true);if(command && command->goal)goals=std::dynamic_pointer_cast<const GoalComposite>(command->goal);std::this_thread::sleep_for(std::chrono::milliseconds(1));}
+    CHECK(goals && goals->goals().size()==1);const auto target=std::dynamic_pointer_cast<const GoalBreak>(goals->goals().front());CHECK((target && target->pos()==BlockPos{2,2,0}));
+    player.inventory[0].count=12;bot.farm().onTick(false,true);CHECK(bot.farm().succeeded() && !bot.farm().isActive());
+    CHECK(FarmProcess::cropDrop("melon")=="minecraft:melon_slice");
+    const auto flow=instantiateWorkflow("harvest-store",{"melon","16","output","16"},{"test",0},{{"minecraft:melon_slice",3}});
+    CHECK(flow.nodes()[0].task.kind=="harvest" && flow.nodes()[0].task.arguments[1]=="19" && flow.nodes()[1].task.arguments[3]=="3");
 }
 
 TEST(performance_random_terrain) {

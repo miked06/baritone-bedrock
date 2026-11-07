@@ -2,6 +2,66 @@
 
 All notable changes to Baritone Bedrock. Versions follow [semantic versioning](https://semver.org/).
 
+## 1.7.0
+
+Compatibility fix and Windows automation additions for **Minecraft Bedrock 26.63**,
+Windows x64 package **`1.26.6301.0`**. Earlier packages require their matching older
+release. Download `BaritoneBedrock.dll` and optionally `BaritoneControlPanel.exe`;
+`BaritoneBedrock.pdb` provides crash symbols.
+See the [1.7.0 feature and validation matrix](https://github.com/miked06/baritone-bedrock/blob/v1.7.0/docs/WINDOWS_NEXT.md)
+and [native port notes](https://github.com/miked06/baritone-bedrock/blob/v1.7.0/docs/DEVELOPMENT.md#reverse-engineering-notes-2663).
+
+### Added
+
+- Production objectives with fresh resource planning, supported gathering, stock
+  acquisition, confirmed recursive crafting and optional delivery.
+- Local Bedrock shaped/shapeless recipe importer with skip/variant reports,
+  explicit tag mappings and a 2048-output planning catalog limit.
+- Multi-station furnace workshop with empty-station checks, distributed loading,
+  later collection, explicit fuel budgets and no blind request retries.
+- Manual schematic build hints, hotbar material selection and a static technical
+  audit for unsupported states, components and block-entity contents.
+- World/dimension-bound construction checkpoints retaining target descriptions,
+  support columns and phase, with explicit recovery against current world policy.
+- Native panel map of loaded/session-visited chunks, local markers, path and
+  protection footprints, with world-bound destination submission.
+- Road/bridge previews with bounded width/grade, headroom, optional lights and
+  existing foundation-planner integration.
+- Quantity-bounded crop-specific harvest jobs preserving base stems, including a
+  harvest/store workflow template.
+- Local diagnostic ZIP export and paused, inventory-aware workflow templates for
+  building, gathering, production, loadouts and harvesting.
+
+### Fixed
+
+- Port the exact package profile to `1.26.6301.0`, relocate fixed workstation,
+  inventory and empty-stack references, and validate them before hooks are installed.
+  This fixes immediate unloading after the game updated from 26.60.
+- Gathering objectives do not count ore blocks already in inventory as the
+  requested ordinary resource output.
+- Build templates load their own placement, and workflow verification blocks on
+  missing, wrong or extra supported blocks instead of accepting any loaded survey.
+
+### Validation and remaining work
+
+- **139 C++ core tests and 5 Python importer tests passed**, including the
+  AddressSanitizer core build. The DLL and panel compiled, and an independent ZIP
+  reader validated exported archive fixtures.
+- Native checks passed in the existing world: loading/reinjection, `#help` typed
+  in Minecraft's chat, player/inventory inspection, short navigation and return,
+  and server-confirmed full-source inventory transfers in both directions.
+- Core tests, native UI checks and gameplay observations are tracked separately
+  in the validation matrix. Multi-furnace execution, targeted harvests, complete
+  production/delivery workflows, construction recovery and other new module
+  combinations still need gameplay validation; this release does not certify
+  every feature or guarantee zero bugs or lag.
+- The installed package `1.26.6301.0` retains all 27 signature patterns, but the
+  old fixed crafting/repair references differed. They are now updated; the exact
+  package guard remains. Loading, navigation and reversible inventory moves pass
+  in the existing world; broader gameplay validation remains pending.
+- In-game textured ghosts, portable shulker logistics, villager trading and rail
+  travel remain unimplemented. No adaptive performance controller was added.
+
 ## 1.6.0
 
 Windows automation expansion for **Minecraft Bedrock 26.60**, Windows x64 package

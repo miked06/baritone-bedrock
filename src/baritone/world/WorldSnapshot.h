@@ -79,6 +79,8 @@ public:
     // Chunks that have been loaded at least once in this dimension (#explore), also in
     // previous sessions when the long-distance cache is on.
     bool wasExplored(int cx, int cz) const;
+    // In-memory session knowledge only; never reads cache regions from disk.
+    bool wasLoaded(int cx,int cz) const;
 
     // Long-distance cache of this dimension (nullptr when chunkCaching is off).
     std::shared_ptr<CachedWorld> cache() const;

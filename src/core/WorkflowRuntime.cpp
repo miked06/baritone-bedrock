@@ -3,12 +3,14 @@
 void Bot::saveWorkflow() { if (workflowHealthy_ && !workflowFile_.empty()) taskWriter_.submit(workflowFile_, workflow_.encode()); }
 void Bot::resumeWorkflow() { if (!workflowHealthy_) throw std::invalid_argument("Repair the workflow file or explicitly clear/load it first"); cancelAll(); workflow_.resume(identity()); saveWorkflow(); }
 void Bot::tickWorkflow() {
-    if (baritone_->pauser().paused() || baritone_->production().executing() || baritone_->construction().isActive() || baritone_->undo().isActive() || baritone_->repair().isActive() || baritone_->mending().isActive() || miningActive_ || portalJourney_.active()) return;
+    if(baritone_->workshop().isActive())return;
+    if (baritone_->pauser().paused() || baritone_->construction().isActive() || baritone_->undo().isActive() || baritone_->repair().isActive() || baritone_->mending().isActive() || miningActive_ || portalJourney_.active()) return;
     // Children continue below; polling a running storage/restock node observes
     // its completion. A newly started independent manual job suspends dispatch.
     const auto& task = workflow_.nodes().at(workflow_.current()).task;
-    if ((baritone_->storage().isActive() && task.kind != "withdraw" && task.kind != "deposit" && task.kind != "restock") ||
-        (baritone_->logistics().isActive() && task.kind != "restock")) return;
+    if ((baritone_->produce().isActive() || baritone_->production().executing() || baritone_->craft().isActive()) && task.kind!="produce")return;
+    if ((baritone_->storage().isActive() && task.kind != "withdraw" && task.kind != "deposit" && task.kind != "restock" && task.kind!="produce" && task.kind!="loadout") ||
+        (baritone_->logistics().isActive() && task.kind != "restock" && task.kind!="produce" && task.kind!="loadout")) return;
     const auto index = workflow_.current(); const auto status = task.status; const auto visits = workflow_.nodes().at(index).visits;
     workflow_.tick(identity(), [this](const baritone::Task& node) {
         dispatchingTask_ = true;

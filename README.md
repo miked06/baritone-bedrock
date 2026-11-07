@@ -15,7 +15,7 @@
 <p align="center">
   <a href="https://github.com/miked06/baritone-bedrock/actions/workflows/build.yml"><img alt="Build" src="https://github.com/miked06/baritone-bedrock/actions/workflows/build.yml/badge.svg"></a>
   <a href="COPYING.LESSER"><img alt="License: LGPL-3.0" src="https://img.shields.io/badge/license-LGPL--3.0-blue.svg"></a>
-  <img alt="Minecraft Bedrock 26.60" src="https://img.shields.io/badge/Minecraft%20Bedrock-26.60-green.svg">
+  <img alt="Minecraft Bedrock 26.63" src="https://img.shields.io/badge/Minecraft%20Bedrock-26.63-green.svg">
   <img alt="Platform: Windows x64" src="https://img.shields.io/badge/platform-Windows%20x64-lightgrey.svg">
   <img alt="C++23" src="https://img.shields.io/badge/C%2B%2B-23-orange.svg">
 </p>
@@ -43,8 +43,16 @@ supported cases and the native scenarios that still need testing.
 The [tool repair guide](docs/TOOL_REPAIR.md) covers bounded anvil/grindstone jobs
 and Mending at an existing XP source, including remaining gameplay validation.
 
+Version 1.7.0 adds production objectives, local recipe imports,
+a multi-furnace workshop, manual building guidance, construction recovery, a panel
+map, road previews, targeted harvest jobs, technical audits, diagnostic ZIP exports
+and workflow templates. The [1.7.0 validation matrix](docs/WINDOWS_NEXT.md) records the
+implemented portions, four native modules still unimplemented and the remaining native
+gameplay validation. It also fixes loading after Minecraft updated to package
+`1.26.6301.0`; see the [native port notes](docs/DEVELOPMENT.md#reverse-engineering-notes-2663).
+
 > [!IMPORTANT]
-> **Supported game version: Minecraft Bedrock 26.60 for Windows** (package `1.26.6005.0`).
+> **Supported game version: Minecraft Bedrock 26.63 for Windows** (package `1.26.6301.0`). For package `1.26.6005.0` / Bedrock 26.60, use release 1.6.0.
 > The DLL checks the package version before installing hooks and refuses unsupported builds. Other versions need updated signatures, offsets and calling conventions (see [Updating to a new game version](docs/DEVELOPMENT.md#updating-to-a-new-game-version)).
 
 > [!WARNING]
@@ -70,7 +78,7 @@ and Mending at an existing XP source, including remaining gameplay validation.
 ### Requirements
 
 - Windows 10 or 11, x64.
-- Minecraft Bedrock **26.60** (the Microsoft Store / Xbox app version).
+- Minecraft Bedrock **26.63** (the Microsoft Store / Xbox app version).
 - A DLL injector (any `LoadLibrary` injector works, for example FateInjector).
 
 ### Install
@@ -139,7 +147,7 @@ The pathfinding core (`src/baritone/`) does not depend on the game at all and is
 
 ## Status
 
-The current build targets 26.60. The earlier 26.52 build was tested on long trips, mining in the overworld and the nether, building schematics, farming, elytra flights and water bucket falls. See [the update notes](docs/DEVELOPMENT.md#reverse-engineering-notes-2660) for the checks performed on 26.60. Some things cannot be done the same way on Bedrock (for example the elytra terrain prediction from the world seed); they are listed in [docs/PARITY.md](docs/PARITY.md).
+The current build targets 26.63. The earlier 26.52 build was tested on long trips, mining in the overworld and the nether, building schematics, farming, elytra flights and water bucket falls. See [the update notes](docs/DEVELOPMENT.md#reverse-engineering-notes-2663) for the checks performed on 26.63. Some things cannot be done the same way on Bedrock (for example the elytra terrain prediction from the world seed); they are listed in [docs/PARITY.md](docs/PARITY.md).
 
 Found a bug? Please [open an issue](https://github.com/miked06/baritone-bedrock/issues/new/choose) with your `log.txt`.
 

@@ -9,6 +9,7 @@ namespace devpipe {
 void start();
 void stop();
 void setStatus(std::string status);
+void setMap(std::string map);
 
 // Next pending command, consumed on the game thread.
 std::optional<std::string> poll();

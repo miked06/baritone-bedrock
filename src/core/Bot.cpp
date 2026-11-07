@@ -70,6 +70,9 @@ void Bot::stop() {
     devpipe::stop();
     notify::shutdown();
     cancelAll();
+    if(constructionJournal_.valid()) {
+        try{constructionJournal_.get();}catch(const std::exception& error){logger::error("Construction checkpoint failed during shutdown: {}",error.what());}
+    }
     taskWriter_.wait();
     schematicLoad_.wait();
     updateFocusOverride(false);
@@ -86,6 +89,7 @@ void Bot::saveSettings() {
 }
 
 void Bot::cancelAll() {
+    setBuildAssistance(false);
     portalJourney_.cancel();
     miningActive_ = miningStarted_ = miningChecking_ = false;
     if (!dispatchingTask_) { tasks_.pause(); saveTasks(); workflow_.pause(); saveWorkflow(); }
@@ -315,6 +319,7 @@ void Bot::onFrame() {
         if (player) logger::info("Entered a world (LocalPlayer {})", static_cast<void*>(player));
         else logger::info("Left the world");
         devpipe::setStatus(player ? "connection=Loading world\n" : "connection=Connected; enter a world\n");
+        devpipe::setMap({});
         lastPlayer_ = player;
         {
             player_.bind(nullptr, nullptr);  // first: the old LocalPlayer is gone
@@ -478,6 +483,16 @@ void Bot::onTick(void* level) {
         tickMiningPlan();
         perf::Scope coreTiming(perf::Metric::CoreTick);
         baritone_->tick(tracker.snapshot());
+        tickConstructionJournal();
+    }
+    if(assistEnabled_ && ticks_%10==0) {
+        if(schematicLoading() || !schematics_.loaded() || player_.containerOpen() || player_.inventoryMovePending() || baritone_->control().mostRecentInControl())assistHint_.reset();
+        else {
+            auto next=baritone::nextBuildHint(schematics_,*tracker.snapshot(),baritone_->playerFeet());
+            const bool changed=next && (!assistHint_ || next->position!=assistHint_->position || next->item!=assistHint_->item);
+            assistHint_=std::move(next);
+            if(changed)for(int slot=0;slot<9;++slot)if(player_.hotbar(slot).name==assistHint_->item && !player_.hotbar(slot).empty()){player_.selectSlot(slot);break;}
+        }
     }
     if (ticks_ % 20 == 0) {
         auto* process = baritone_->control().mostRecentInControl();
@@ -486,17 +501,20 @@ void Bot::onTick(void* level) {
             process ? process->displayName() : "Idle", tasks_.running() ? "Running" : "Paused", tasks_.currentIndex(), tasks_.tasks().size(),
             baritone::Settings::get().allowBreak ? "true" : "false", baritone::Settings::get().allowPlace ? "true" : "false");
         if (schematics_.loaded()) status += std::format("schematic={}\norigin={}\n", schematics_.name(), schematics_.origin());
+        if(assistEnabled_)status+="build_assistance="+(assistHint_?std::format("{} at {}: {}",assistHint_->item,assistHint_->position,assistHint_->guidance):std::string("No supported missing block nearby"))+"\n";
         if (!workflowFile_.empty()) { auto path = workflowFile_.u8string(); status += "workflow_file=" + std::string(path.begin(), path.end()) + "\n"; }
         status += std::format("status_tick={}\nproduction={}\nloadout={}\nloadout_policy={}\n", ticks_,
             baritone_->production().executing() ? "Running" : "Idle", baritone_->loadouts().active(), baritone_->loadouts().healthy() ? "Ready" : "Blocked");
         if (!baritone_->diagnostics().events().empty()) status += "latest=" + baritone_->diagnostics().events().back().message + "\n";
         devpipe::setStatus(std::move(status));
+        if(ticks_%40==0)updateMap();
     }
     const baritone::MovementState& out = baritone_->controls();
     applyOutput(out, !clickSelection_.active() && (out.inputs.any() || out.target.rotation.has_value()));
 
     auto& pathing = baritone_->pathing();
     platform::PathRenderer::Frame frame;
+    if(assistHint_)frame.assistedBlock=assistHint_->position;
     frame.path = pathing.currentPathPositions();
     frame.pathPosition = pathing.currentPathPosition();
     frame.next = pathing.nextPathPositions();

@@ -16,6 +16,7 @@ namespace {
 std::mutex g_mutex;
 std::deque<std::string> g_queue;
 std::string g_status = "connection=Initializing\n";
+std::string g_map;
 std::atomic<bool> g_running{false};
 // Raw handle, not a static std::thread: when the game exits without unloading us, a still
 // joinable std::thread destroyed at process exit calls std::terminate.
@@ -40,9 +41,9 @@ void serve() {
             char buffer[4096];
             DWORD read = 0;
             while (ReadFile(pipe, buffer, sizeof(buffer), &read, nullptr) && read > 0) {
-                if (std::string_view(buffer, read) == "@status") {
+                if (std::string_view(buffer, read) == "@status" || std::string_view(buffer,read)=="@map") {
                     std::string status;
-                    { std::lock_guard lock(g_mutex); status = g_status; }
+                    { std::lock_guard lock(g_mutex); status = std::string_view(buffer,read)=="@map"?g_map:g_status; }
                     DWORD written = 0;
                     WriteFile(pipe, status.data(), static_cast<DWORD>(status.size()), &written, nullptr);
                 } else {
@@ -92,5 +93,6 @@ std::optional<std::string> poll() {
 void setStatus(std::string status) {
     std::lock_guard lock(g_mutex); g_status = status.substr(0, 16000);
 }
+void setMap(std::string map) {std::lock_guard lock(g_mutex);g_map=map.size()<=15000?std::move(map):std::string{};}
 
 }  // namespace devpipe

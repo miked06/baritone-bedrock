@@ -411,6 +411,7 @@ bool GamePlayerContext::openContainerAt(BlockPos pos) {
     const auto name = block->serializationId().string("name").value_or("");
     if (name != "minecraft:chest" && name != "minecraft:trapped_chest" && name != "minecraft:barrel" && name.find("shulker_box") == std::string::npos &&
         name != "minecraft:furnace" && name != "minecraft:lit_furnace" && name != "minecraft:crafting_table" &&
+        name != "minecraft:blast_furnace" && name != "minecraft:lit_blast_furnace" && name != "minecraft:smoker" && name != "minecraft:lit_smoker" &&
         name != "minecraft:anvil" && name != "minecraft:chipped_anvil" && name != "minecraft:damaged_anvil" && name != "minecraft:grindstone") {
         transferError_ = "The registered block is not a supported container or workstation"; return false;
     }

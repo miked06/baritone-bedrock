@@ -18,8 +18,8 @@ void* controller(LocalPlayer& player) {
     if (callbacks->size()>32) return nullptr;
     const auto base=reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr));
     for (const auto& [pointer,callback]:*callbacks) {
-        if (mem::isReadable(pointer,0x200) && reinterpret_cast<uintptr_t>(*reinterpret_cast<void* const*>(pointer))==base+0xF1B4690 &&
-            reinterpret_cast<uintptr_t>(mem::vtable(pointer)[16])==base+0x3A4C510) return const_cast<void*>(pointer);
+        if (mem::isReadable(pointer,0x200) && reinterpret_cast<uintptr_t>(*reinterpret_cast<void* const*>(pointer))==base+offsets::CraftingController_vtable &&
+            reinterpret_cast<uintptr_t>(mem::vtable(pointer)[16])==base+offsets::CraftingController_autoPlace) return const_cast<void*>(pointer);
     }
     return nullptr;
 }
@@ -49,10 +49,10 @@ void* repairController(LocalPlayer& player, bool& anvil) {
     for (const auto& [pointer, callback] : *callbacks) {
         if (!mem::isReadable(pointer, 0x208)) continue;
         const auto vt = reinterpret_cast<uintptr_t>(*reinterpret_cast<void* const*>(pointer));
-        anvil = vt == base + 0xF499460;
-        if (!anvil && vt != base + 0xF497C50) continue;
-        if (reinterpret_cast<uintptr_t>(mem::vtable(pointer)[8]) != base + (anvil ? 0xCC9C7B0 : 0xCC57970) ||
-            reinterpret_cast<uintptr_t>(mem::vtable(pointer)[15]) != base + (anvil ? 0xCC9A9D0 : 0xCC57F10)) return nullptr;
+        anvil = vt == base + offsets::AnvilController_vtable;
+        if (!anvil && vt != base + offsets::GrindstoneController_vtable) continue;
+        if (reinterpret_cast<uintptr_t>(mem::vtable(pointer)[8]) != base + (anvil ? offsets::AnvilController_preview : offsets::GrindstoneController_preview) ||
+            reinterpret_cast<uintptr_t>(mem::vtable(pointer)[15]) != base + (anvil ? offsets::AnvilController_take : offsets::GrindstoneController_take)) return nullptr;
         return const_cast<void*>(pointer);
     }
     return nullptr;
@@ -120,7 +120,7 @@ std::vector<int> craftRecipeOnce(LocalPlayer& player,const RecipeChoice& recipe)
 bool discardInventoryStack(LocalPlayer& player,int index,int count) {
     auto* control=controller(player);
     const auto base=reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr));
-    if (!control || index<0 || index>=36 || count<1 || count>64 || reinterpret_cast<uintptr_t>(mem::vtable(control)[23])!=base+0x3A285A0) return false;
+    if (!control || index<0 || index>=36 || count<1 || count>64 || reinterpret_cast<uintptr_t>(mem::vtable(control)[23])!=base+offsets::CraftingController_discard) return false;
     // The SlotData overload is vt23 in this binary (MSVC reverses these
     // overloaded virtual declarations); vt24 takes SelectedSlotInfo instead.
     Slot slot{index<9 ? "hotbar_items" : "inventory_items",index<9 ? index : index-9};

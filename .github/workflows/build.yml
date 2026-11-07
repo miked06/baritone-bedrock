@@ -16,8 +16,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
       - name: Configure
-        run: cmake -S . -B build -A x64
+        run: |
+          $pythonExe = (Get-Command python).Source
+          cmake -S . -B build -A x64 "-DPython3_EXECUTABLE=$pythonExe"
 
       - name: Build
         run: cmake --build build --config RelWithDebInfo --parallel

@@ -1,6 +1,7 @@
 #pragma once
 #include <array>
 #include <optional>
+#include <map>
 #include "baritone/api/PlayerContext.h"
 #include "baritone/inventory/StorageTransfers.h"
 
@@ -26,6 +27,9 @@ public:
     bool inventoryMovePending() const override { return pendingInventory; }
     baritone::TransferState transfer = baritone::TransferState::Idle;
     std::vector<baritone::ContainerSlot> externalSlots;
+    std::map<baritone::BlockPos,std::vector<baritone::ContainerSlot>> workstationInventories;
+    std::optional<baritone::BlockPos> openedWorkstation;
+    int transferRequests=0;
     std::vector<baritone::RecipeOption> recipeOptions;
     baritone::TransferState crafting=baritone::TransferState::Idle;
     int craftRequests=0;
@@ -65,7 +69,13 @@ public:
     }
     bool containerOpen() const override { return containerOpened; }
     bool ownedContainerReady() const override { return containerOpened && ownedContainer; }
-    bool openContainerAt(baritone::BlockPos) override { containerOpened = ownedContainer = true; return true; }
+    bool openContainerAt(baritone::BlockPos pos) override {
+        if(!workstationInventories.empty()) {
+            const auto at=workstationInventories.find(pos);if(at==workstationInventories.end())return false;
+            externalSlots=at->second;openedWorkstation=pos;
+        }
+        containerOpened = ownedContainer = true; return true;
+    }
     void closeOwnedContainer() override {
         if (!ownedContainer) return;
         if (returnRepairInputs) for (auto& source : externalSlots) {
@@ -80,6 +90,7 @@ public:
             if (dest->empty()) *dest = source.stack; else dest->count += source.stack.count;
             source.stack = {};
         }
+        if(openedWorkstation){workstationInventories[*openedWorkstation]=externalSlots;openedWorkstation.reset();}
         containerOpened = ownedContainer = false;
     }
     std::vector<baritone::ContainerSlot> containerSlots() const override {
@@ -88,6 +99,7 @@ public:
         return slots;
     }
     bool transferContainerItem(const baritone::ContainerSlot& a, const baritone::ContainerSlot& b, int count) override {
+        ++transferRequests;
         transfer = rejectTransfer ? baritone::TransferState::Rejected : baritone::TransferState::Accepted;
         if (rejectTransfer) return true;
         auto stack = [&](const baritone::ContainerSlot& slot) -> baritone::HotbarStack& {

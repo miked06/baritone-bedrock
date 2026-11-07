@@ -364,6 +364,7 @@ void PathRenderer::render(sdk::LevelRenderer* renderer, sdk::ScreenContext* scre
         depthMode(lines, selectionLines, s.renderSelectionIgnoreDepth);
         const std::size_t clickLines = lines.size();
         if (f.clickTarget) addBlockBox(lines, *f.clickTarget, {0, 1, 1, 0.7f});
+        if (f.assistedBlock) addBlockBox(lines,*f.assistedBlock,{1,0.9f,0.1f,0.9f},0.008);
         if (f.clickTarget && f.clickStart && *f.clickTarget != *f.clickStart)
             addRegion(lines, *f.clickStart, *f.clickTarget, {1, 0.2f, 0.2f, 0.6f});
         widen(lines, clickLines, s.selectionLineWidth);

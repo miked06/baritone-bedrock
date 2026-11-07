@@ -26,6 +26,7 @@ public:
 
     struct Frame {
         std::optional<baritone::BlockPos> clickTarget, clickStart;
+        std::optional<baritone::BlockPos> assistedBlock;
         std::optional<std::pair<baritone::BlockPos, baritone::BlockPos>> schematicBounds;
         std::vector<baritone::SchematicWorkspace::PreviewCell> schematicPreview;
         std::vector<baritone::BlockPos> path, next, calculating;

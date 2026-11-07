@@ -15,6 +15,10 @@ public:
     using Process::Process;
 
     void farm(int range, BlockPos center);
+    void harvest(std::string crop,int additional,int range,BlockPos center);
+    static std::string cropDrop(const std::string& crop);
+    bool succeeded() const{return succeeded_;}
+    const auto& failure() const{return failure_;}
     bool isActive() override { return active_; }
     std::optional<PathingCommand> onTick(bool calcFailed, bool isSafeToCancel) override;
     void onLostControl() override {
@@ -31,6 +35,9 @@ private:
     bool readyForHarvest(CalculationContext& ctx, const BlockPos& pos, const BlockProps& p);
 
     bool active_ = false;
+    bool succeeded_ = false;
+    std::string harvestBlock_,harvestDrop_,failure_;
+    int harvestTarget_ = 0;
     int range_ = 0;
     BlockPos center_;
     int tickCount_ = 0;

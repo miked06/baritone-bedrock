@@ -49,6 +49,52 @@ Each Minecraft update moves functions and may change class layouts.
 4. **EnTT**: if components are no longer found, the game may use another EnTT revision; update the pinned commit in `cmake/Dependencies.cmake`.
 5. Run the tests and a few in-game checks (`#goto`, `#mine`, `#build`, `#elytra`), then update the version in the README.
 
+## Reverse engineering notes (26.63)
+
+Current profile: Windows x64 package **1.26.6301.0**. On 2026-11-07 the previous
+DLL unloaded at startup because its exact package guard required 1.26.6005.0.
+Keep that guard: accepting the new number alone would leave stale fixed RVAs.
+
+All 27 byte signatures remain unique in the new image. The following fixed
+references were recovered by masking instruction relocation operands, matching
+functions, and finding their vtable references. Complete instruction sequences,
+including field accesses, match the baseline after relocation for these functions,
+the local-player/region getters and GameMode break/place/interact/attack methods.
+
+| Reference | 26.63 RVA |
+|---|---|
+| Crafting controller / auto-place / discard | `F1B5660` / `3A4C1D0` / `3A28260` |
+| Anvil controller / preview / take output | `F49A490` / `CC9E280` / `CC9C4A0` |
+| Grindstone controller / preview / take output | `F498C80` / `CC59440` / `CC599E0` |
+| Complete inventory-key handler / scene-stack pop | `657E170` / `56C380` |
+| Canonical empty ItemStack / its vtable | `1293CE90` / `EFFAE80` |
+
+Constants now live in `sdk/Offsets.h`. Startup checks the package, unique
+signatures, six controller vtable entries, both inventory/scene handler prefixes
+and the canonical empty stack before installing hooks. Run both binary checks:
+
+```powershell
+python tools/sigcheck.py re/Minecraft.Windows_1.26.6301.0.exe --json re/signatures.json
+python tools/profilecheck.py re/Minecraft.Windows_1.26.6301.0.exe --json re/profile.json
+```
+
+`profilecheck.py` uses the matching `.base.txt` dump sidecar for relocated pointers.
+An address/signature check remains a prerequisite, not a gameplay certification.
+
+Native checks in the existing world passed: loading/reinjection, `#help` typed
+through the game's actual chat UI and its visible local response, `#doctor`, player
+and inventory inspection, walking two blocks onto a one-block rise, returning to
+the starting block, and a full-source main-inventory transfer plus its inverse.
+Both inventory requests received server result 0 and were reconciled against the
+observed quantities. Original slot contents/counts, selection and tool damage
+were restored; temporary movement-test break/place settings were restored. No
+test world was created and no terrain was edited. Full crafting, workstation
+repair, mining/building/farming/elytra campaigns have not been rerun on 26.63.
+
+Local ignored evidence: `re/port-2663-functions.json`, `re/fix-2663-profile.json`,
+`re/fix-2663-final-doctor.json`, `re/fix-2663-tests.log`,
+`re/fix-2663-native-navigation-inventory.log` and `re/fix-2663-final-native.log`.
+
 ## Reverse engineering notes (26.60)
 
 Target: Microsoft Store package `1.26.6005.0`, compared with the previous `1.26.5203.0` memory dump. Dumps and exploratory scripts stay in the ignored `re/` directory.

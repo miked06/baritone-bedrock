@@ -2,10 +2,26 @@
 #include <cstddef>
 #include <cstdint>
 
-// Member offsets and vtable indices of the game classes, for Minecraft Bedrock 26.60
-// (package 1.26.6005.0). They move with updates: keep them all here and re-verify them
+// Member offsets and vtable indices of the game classes, for Minecraft Bedrock 26.63
+// (package 1.26.6301.0). They move with updates: keep them all here and re-verify them
 // with `#debug` after every update.
 namespace offsets {
+
+// Native profile 1.26.6301.0. Recovered from the running image; controller
+// function bodies retain the 26.60 instruction/field-access shape after relocation.
+inline constexpr uintptr_t CraftingController_vtable = 0xF1B5660;
+inline constexpr uintptr_t CraftingController_autoPlace = 0x3A4C1D0;
+inline constexpr uintptr_t CraftingController_discard = 0x3A28260;
+inline constexpr uintptr_t AnvilController_vtable = 0xF49A490;
+inline constexpr uintptr_t AnvilController_preview = 0xCC9E280;
+inline constexpr uintptr_t AnvilController_take = 0xCC9C4A0;
+inline constexpr uintptr_t GrindstoneController_vtable = 0xF498C80;
+inline constexpr uintptr_t GrindstoneController_preview = 0xCC59440;
+inline constexpr uintptr_t GrindstoneController_take = 0xCC599E0;
+inline constexpr uintptr_t ClientInstance_inventoryKey = 0x657E170;
+inline constexpr uintptr_t SceneStack_pop = 0x56C380;
+inline constexpr uintptr_t ItemStack_empty = 0x1293CE90;
+inline constexpr uintptr_t ItemStack_vtable = 0xEFFAE80;
 
 // Platform_GameCore global -> object with Platform_GameCore* at +0x8
 inline constexpr std::ptrdiff_t WinMain_platform = 0x8;

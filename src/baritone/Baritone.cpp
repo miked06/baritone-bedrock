@@ -30,6 +30,8 @@ Baritone::Baritone(PlayerContext& player, Notify notify)
       smelt_(*this),
       craft_(*this),
       production_(*this),
+      produce_(*this),
+      workshop_(*this),
       loadout_(*this),
       logistics_(*this),
       construction_(*this),
@@ -57,6 +59,8 @@ Baritone::Baritone(PlayerContext& player, Notify notify)
     control_.registerProcess(&smelt_);
     control_.registerProcess(&craft_);
     control_.registerProcess(&production_);
+    control_.registerProcess(&produce_);
+    control_.registerProcess(&workshop_);
     control_.registerProcess(&loadout_);
     control_.registerProcess(&logistics_);
     control_.registerProcess(&construction_);
@@ -109,6 +113,7 @@ void Baritone::shutdown() {
     elytra_.shutdown();
     vehicle_.shutdown();
     production_.shutdown();
+    produce_.shutdown();
 }
 
 void Baritone::cancelEverything() {

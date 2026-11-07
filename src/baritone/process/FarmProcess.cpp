@@ -60,6 +60,19 @@ void FarmProcess::farm(int range, BlockPos center) {
     center_ = center;
     tickCount_ = 0;
     locations_.reset();
+    harvestBlock_.clear();harvestDrop_.clear();harvestTarget_=0;succeeded_=false;failure_.clear();
+}
+std::string FarmProcess::cropDrop(const std::string& crop) {
+    const auto name=BlockFilter::normalize(crop);
+    if(name=="minecraft:sugar_cane" || name=="minecraft:bamboo" || name=="minecraft:cactus" || name=="minecraft:pumpkin")return name;
+    if(name=="minecraft:melon" || name=="minecraft:melon_slice")return "minecraft:melon_slice";
+    throw std::invalid_argument("Specialized harvest supports sugar_cane, bamboo, cactus, pumpkin or melon");
+}
+void FarmProcess::harvest(std::string crop,int additional,int range,BlockPos center) {
+    const auto item=cropDrop(crop);
+    if(additional<1 || additional>2304 || range<1 || range>64 || baritone_.player().countItem(item)>2304-additional)throw std::invalid_argument("Harvest: additional quantity 1..2304, radius 1..64 and output within inventory capacity");
+    farm(range,center);harvestDrop_=item;harvestTarget_=baritone_.player().countItem(item)+additional;
+    harvestBlock_=item=="minecraft:sugar_cane"?"minecraft:reeds":item=="minecraft:melon_slice"?"minecraft:melon_block":item;
 }
 
 bool FarmProcess::readyForHarvest(CalculationContext& ctx, const BlockPos& pos, const BlockProps& p) {
@@ -68,7 +81,7 @@ bool FarmProcess::readyForHarvest(CalculationContext& ctx, const BlockPos& pos, 
     if (n == "minecraft:pumpkin" || n == "minecraft:melon_block") return true;
     if (n == "minecraft:reeds" || n == "minecraft:cactus" || n == "minecraft:bamboo") {
         // replantCrops: keep the bottom block so it regrows, else take it all
-        if (Settings::get().replantCrops) return ctx.props(pos.x, pos.y - 1, pos.z).name == n;
+        if (!harvestBlock_.empty() || Settings::get().replantCrops) return ctx.props(pos.x, pos.y - 1, pos.z).name == n;
         return true;
     }
     return false;
@@ -76,18 +89,26 @@ bool FarmProcess::readyForHarvest(CalculationContext& ctx, const BlockPos& pos, 
 
 std::optional<PathingCommand> FarmProcess::onTick(bool calcFailed, bool isSafeToCancel) {
     if (!active_ || !baritone_.liveContext()) return std::nullopt;
+    if(!harvestBlock_.empty()) {
+        if(baritone_.player().countItem(harvestDrop_)>=harvestTarget_) {
+            succeeded_=true;onLostControl();baritone_.logDirect("Harvest output quantity confirmed; base stems preserved");return PathingCommand{nullptr,PathingCommandType::CancelAndSetGoal};
+        }
+        if(tickCount_>=20*60*60) {
+            failure_="Harvest deadline reached before the output quantity was observed";baritone_.logDirect(failure_,true);onLostControl();return PathingCommand{nullptr,PathingCommandType::CancelAndSetGoal};
+        }
+    }
     CalculationContext& ctx = *baritone_.liveContext();
     const Settings& st = Settings::get();
     const bool initialScan = !locations_ && !scan_.running();
     const int interval = st.mineGoalUpdateInterval;
     if (initialScan || (interval > 0 && tickCount_ % interval == 0)) {
         // Java scanChunkRadius(ctx, scan, farmMaxScanSize, 10, 10)
-        scan_.start(baritone_.world(), BlockFilter(scannedBlocks()), baritone_.playerFeet(), st.farmMaxScanSize, 10);
+        scan_.start(baritone_.world(), BlockFilter(harvestBlock_.empty()?scannedBlocks():std::vector<std::string>{harvestBlock_}), baritone_.playerFeet(), st.farmMaxScanSize, 10);
     }
     ++tickCount_;
     if (auto result = scan_.poll()) locations_ = std::move(*result);
     if (!locations_) return PathingCommand{nullptr, PathingCommandType::RequestPause};
-    const Selection* selection = st.farmUsingSelection && !baritone_.selections().all().empty()
+    const Selection* selection = (!harvestBlock_.empty() || st.farmUsingSelection) && !baritone_.selections().all().empty()
         ? &baritone_.selections().all().back() : nullptr;
 
     std::vector<BlockPos> toBreak, openFarmland, bonemealable, openSoulSand, openLog;
@@ -96,6 +117,7 @@ std::optional<PathingCommand> FarmProcess::onTick(bool calcFailed, bool isSafeTo
         if (selection && !selection->contains(pos)) continue;
         if (range_ != 0 && pos.distSq(center_) > static_cast<int64_t>(range_) * range_) continue;
         const BlockProps& p = ctx.props(pos.x, pos.y, pos.z);
+        if(!harvestBlock_.empty() && p.name!=harvestBlock_)continue;
         bool airAbove = ctx.props(pos.x, pos.y + 1, pos.z).type == BlockType::Air;
         if (p.name == "minecraft:farmland") {
             if (airAbove && st.replantCrops && st.allowPlace) openFarmland.push_back(pos);
@@ -118,7 +140,7 @@ std::optional<PathingCommand> FarmProcess::onTick(bool calcFailed, bool isSafeTo
             if (ctx.allowBreak || ctx.allowBreakAnyway.contains(p.name)) toBreak.push_back(pos);
             continue;
         }
-        if (st.allowPlace && isBonemealable(p)) bonemealable.push_back(pos);
+        if (harvestBlock_.empty() && st.allowPlace && isBonemealable(p)) bonemealable.push_back(pos);
     }
 
     ExecContext ec{baritone_.player(), ctx, baritone_.inventory(), baritone_.playerFeet()};
@@ -190,6 +212,7 @@ std::optional<PathingCommand> FarmProcess::onTick(bool calcFailed, bool isSafeTo
     }
 
     auto failed = [&] {
+        failure_="Farming failed";
         baritone_.logDirect("Farming failed", true);
         if (st.notificationOnFarmFail) baritone_.logNotification("Farming failed", true);
         onLostControl();
@@ -217,6 +240,7 @@ std::optional<PathingCommand> FarmProcess::onTick(bool calcFailed, bool isSafeTo
     }
     for (const EntityInfo& e : baritone_.player().entities()) {
         if (!e.isItem || !isCropDrop(e.itemName)) continue;
+        if(!harvestDrop_.empty() && e.itemName!=harvestDrop_)continue;
         if (selection && !selection->contains({static_cast<int>(std::floor(e.position.x)), static_cast<int>(std::floor(e.position.y)),
                                              static_cast<int>(std::floor(e.position.z))})) continue;
         if (range_ != 0 && (e.position - Vec3d::center(center_)).lengthSq() > static_cast<double>(range_) * range_) continue;
@@ -224,7 +248,7 @@ std::optional<PathingCommand> FarmProcess::onTick(bool calcFailed, bool isSafeTo
                                                     static_cast<int>(std::floor(e.position.y + 0.1)),
                                                     static_cast<int>(std::floor(e.position.z))));
     }
-    if (goals.empty()) return failed();
+    if (goals.empty()) return harvestBlock_.empty()?failed():PathingCommand{nullptr,PathingCommandType::RequestPause};
     return PathingCommand{std::make_shared<GoalComposite>(std::move(goals)), PathingCommandType::SetGoalAndPath};
 }
 

@@ -17,6 +17,7 @@
 #include "baritone/schematic/MiningPlan.h"
 #include "baritone/schematic/SchematicLoadJob.h"
 #include "baritone/schematic/SchematicSurvey.h"
+#include "baritone/schematic/BuildAssistance.h"
 #include "baritone/task/TaskQueue.h"
 #include "baritone/task/Workflow.h"
 #include "baritone/task/CheckpointWriter.h"
@@ -73,6 +74,9 @@ public:
     void runDiagnosticAsync(std::function<void()> task);
     void startSchematicSurvey(bool materials);
     const baritone::SchematicSurvey& schematicSurvey() const { return survey_; }
+    void setBuildAssistance(bool enabled) { assistEnabled_=enabled; assistHint_.reset(); }
+    bool buildAssistanceEnabled() const { return assistEnabled_; }
+    const auto& buildHint() const { return assistHint_; }
     const std::string& worldName() const { return worldName_; }
     std::filesystem::path worldDataPath(const std::string& category, bool perDimension = true) const;
     baritone::PortalGraph& portals() { return portals_; }
@@ -166,6 +170,14 @@ private:
     void tickQuarry();
     void tickMiningPlan();
     void tickHistory();
+    void tickConstructionJournal();
+    void updateMap();
+    std::future<void> constructionJournal_;
+    uint64_t constructionSavedSession_ = 0;
+    int constructionSavedPhase_ = -1;
+    uint64_t constructionObservedSession_ = 0;
+    baritone::WorldIdentity constructionIdentity_;
+    bool constructionJournalFailed_ = false;
     void recordIntent(baritone::BlockPos position);
     std::shared_ptr<baritone::MiningPlan> miningPlan_;
     bool miningActive_ = false, miningExecute_ = false, miningStarted_ = false, miningChecking_ = false;
@@ -175,6 +187,8 @@ private:
     std::string loadingSchematicFile_;
     baritone::SchematicLoadJob schematicLoad_;
     baritone::SchematicSurvey survey_;
+    bool assistEnabled_ = false;
+    std::optional<baritone::BuildHint> assistHint_;
     bool surveyMaterials_ = false, surveyReport_ = false;
     std::string protectionKey_;
     baritone::TaskQueue tasks_;
@@ -187,6 +201,8 @@ private:
     std::filesystem::path taskCheckpoint_;
     bool dispatchingTask_ = false;
     uint64_t taskDiagnosticStart_ = 0;
+    bool taskBuildStarted_ = false;
+    uint64_t taskPlacementRevision_ = 0;
     baritone::GoalPtr taskGoal_;
     std::string lastLoadFailure_;
     void tickTasks();

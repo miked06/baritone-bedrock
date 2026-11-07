@@ -9,7 +9,7 @@
 
 namespace sdk {
 namespace {
-// Verified in 1.26.6005.0, not inferred from the newer generated headers:
+// Verified in 1.26.6301.0, not inferred from the newer generated headers:
 // manager map +C8 (list head at +D0); model name +10, FullContainerName +30; model vt4 size,
 // vt8 getItemStack, vt13 setItem. See docs/NATIVE_MODULE_NOTES.md.
 using Models = std::unordered_map<std::string, std::shared_ptr<void>>;
@@ -56,11 +56,11 @@ struct Copy {
 };
 const ItemStack* emptyStack() {
     // Unique initialized ItemStack with null item/data and count zero in the
-    // 1.26.6005.0 image. Native code uses it as its empty-stack fallback.
+    // 1.26.6301.0 image. Native code uses it as its empty-stack fallback.
     const auto base = reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr));
-    const auto* empty = reinterpret_cast<const ItemStack*>(base + 0x1293AE90);
+    const auto* empty = reinterpret_cast<const ItemStack*>(base + offsets::ItemStack_empty);
     if (!mem::isReadable(empty, offsets::ItemStack_size) ||
-        *reinterpret_cast<const uintptr_t*>(empty) != base + 0xEFF9E80 ||
+        *reinterpret_cast<const uintptr_t*>(empty) != base + offsets::ItemStack_vtable ||
         mem::member<uintptr_t>(empty, 8) || mem::member<uintptr_t>(empty, 0x10) || empty->count()) return nullptr;
     return empty;
 }

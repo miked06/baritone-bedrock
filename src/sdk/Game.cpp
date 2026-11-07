@@ -25,7 +25,7 @@ static_assert(sizeof(ClientInterface) == 0x20);
 }  // namespace
 
 void LocalPlayer::openInventory() {
-    // Mirror the native inventory-key handler at 26.60 RVA 0x657DA52. Calling the
+    // Mirror the native inventory-key handler at 26.63 RVA 0x657E3B2. Calling the
     // client-only openInventory virtual skips server authorization of the container.
     // The server answers this request by opening the game's normal inventory UI.
     struct InventoryOpenPacket {
@@ -58,9 +58,9 @@ void LocalPlayer::openInventory() {
 bool LocalPlayer::openCreativeInventoryScreen() {
     // Use the complete inventory-key handler, not LocalPlayer vt C3: the latter
     // is a server-open callback and omits Creative's controller preparation.
-    // Checked in 1.26.6005.0 at +657D810, including the native request/scene branch.
+    // Checked in 1.26.6301.0 at +657E170, including the native request/scene branch.
     const auto base=reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr));
-    auto* client=ClientInstance::get(); const auto address=base+0x657D810;
+    auto* client=ClientInstance::get(); const auto address=base+offsets::ClientInstance_inventoryKey;
     constexpr uint8_t prefix[]{0x55,0x41,0x56,0x56,0x57,0x53,0x48,0x81,0xEC,0x90,0,0,0};
     if (!client || client->localPlayer()!=this || containerManager() || !mem::isReadable(reinterpret_cast<void*>(address),sizeof(prefix)) ||
         std::memcmp(reinterpret_cast<void*>(address),prefix,sizeof(prefix))!=0) return false;
@@ -70,12 +70,12 @@ bool LocalPlayer::openCreativeInventoryScreen() {
 void LocalPlayer::closeInventory() {
     if (!containerManager()) return;
     auto* client=ClientInstance::get();
-    // 1.26.6005.0 ClientInstance::getClientSceneStack returns a checked weak
+    // 1.26.6301.0 ClientInstance::getClientSceneStack returns a checked weak
     // wrapper around this pointer. Queue the normal pop: the UI's onExit owns
     // container cleanup, after all its bound callbacks have finished.
     auto* scene=client ? mem::member<void*>(client,0x5E8) : nullptr;
     const auto base=reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr));
-    if (!mem::isReadable(scene,0x40) || reinterpret_cast<uintptr_t>(mem::vtable(scene)[26])!=base+0x56C490) {
+    if (!mem::isReadable(scene,0x40) || reinterpret_cast<uintptr_t>(mem::vtable(scene)[26])!=base+offsets::SceneStack_pop) {
         logger::warn("Cannot close container: native scene-stack interface does not match this game profile"); return;
     }
     mem::callVirtual<void,int>(scene,26,1);

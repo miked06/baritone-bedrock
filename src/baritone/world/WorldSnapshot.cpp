@@ -59,6 +59,9 @@ bool WorldSnapshot::wasExplored(int cx, int cz) const {
     }
     return cache && cache->isCached(cx, cz);
 }
+bool WorldSnapshot::wasLoaded(int cx,int cz) const {
+    std::shared_lock lock(mutex_);return explored_.contains(key(cx,cz));
+}
 
 std::shared_ptr<CachedWorld> WorldSnapshot::cache() const {
     std::shared_lock lock(mutex_);

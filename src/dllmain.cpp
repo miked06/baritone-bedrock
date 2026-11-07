@@ -27,7 +27,7 @@ DWORD WINAPI mainThread(LPVOID) {
 
     OpenSecurity security;
     HANDLE unloadEvent = CreateEventW(security.get(), TRUE, FALSE, unloadEventName().c_str());
-    bool compatible = gameversion::check() && sigs::resolveAll();
+    bool compatible = gameversion::check() && sigs::resolveAll() && gameversion::validateNativeProfile();
     bool started = compatible && hooks::initialize() && Bot::get().start();
     if (!started) {
         logger::error("Initialization failed, unloading. Is the game version supported?");
