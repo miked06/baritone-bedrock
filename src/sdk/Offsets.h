@@ -105,6 +105,7 @@ inline constexpr std::ptrdiff_t Dimension_name = 0x20;
 
 inline constexpr std::ptrdiff_t Level_levelData = 0x90;      // std::shared_ptr<LevelData>
 inline constexpr std::ptrdiff_t LevelData_levelName = 0x2B0;  // std::string
+inline constexpr std::ptrdiff_t Level_levelId = 0x260;  // std::string, verified on 26.63
 
 // std::vector<Actor*> Level::getRuntimeActorList() const (returned by hidden pointer)
 inline constexpr std::size_t Level_vt_getRuntimeActorList = 0x145;

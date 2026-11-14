@@ -19,7 +19,7 @@ public:
     void load(const std::filesystem::path& file);
     void save(const std::filesystem::path& file) const;
     void start(const std::string& location, std::string item, int count, bool withdraw, bool returnToStart = true);
-    void scan(const std::string& location, bool returnToStart = true);
+    void scan(const std::string& location, bool returnToStart = true, bool skipWorkstations = false);
     void sort(const std::string& location, bool returnToStart = true);
     const std::map<std::string, StorageObservation>& observations() const { return observations_; }
     bool isActive() override;
@@ -43,6 +43,7 @@ private:
     ContainerSlot sentSource_, sentTarget_;
     int sourceAfter_ = 0, targetAfter_ = 0, operations_ = 0, warmup_ = 0;
     bool refreshAttempted_ = false, refreshClosing_ = false;
+    bool skipWorkstations_ = false;
     std::map<std::string, BlockPos> locations_;
     bool active_ = false, withdraw_ = false, return_ = true, waiting_ = false, closing_ = false, succeeded_ = false;
     std::string item_, location_, failure_;

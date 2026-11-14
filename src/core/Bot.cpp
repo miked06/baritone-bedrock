@@ -259,11 +259,9 @@ void Bot::startSchematicSurvey(bool materials) {
 }
 
 std::filesystem::path Bot::worldDataPath(const std::string& category, bool perDimension) const {
-    if (worldName_.empty() || !player_.valid()) throw std::invalid_argument("Enter a world first");
-    uint64_t hash = 14695981039346656037ull;
-    for (unsigned char c : worldName_) { hash ^= c; hash *= 1099511628211ull; }
+    if (worldKey_.empty() || !player_.valid()) throw std::invalid_argument("Enter a world first");
     const auto dimension = platform::WorldTracker::get().dimension();
-    return paths::dataDir() / category / (perDimension ? std::format("{:016x}_dim{}.txt", hash, dimension) : std::format("{:016x}.txt", hash));
+    return paths::dataDir() / category / (perDimension ? std::format("{}_dim{}.txt", worldKey_, dimension) : worldKey_ + ".txt");
 }
 void Bot::applyProtection(std::shared_ptr<const baritone::ProtectionPolicy> policy) {
     auto world = platform::WorldTracker::get().snapshot();
@@ -308,36 +306,50 @@ void Bot::pollSchematicLoad() {
     }
 }
 
+void Bot::bindWorldPlayer(sdk::LocalPlayer* player) {
+    if (player == lastPlayer_) return;
+    ++worldGeneration_;
+    if (player) logger::info("Entered a world (LocalPlayer {})", static_cast<void*>(player));
+    else logger::info("Left the world");
+    devpipe::setStatus(player ? "connection=Loading world\n" : "connection=Connected; enter a world\n");
+    devpipe::setMap({});
+    lastPlayer_ = player;
+    player_.bind(nullptr, nullptr);  // The old LocalPlayer is gone.
+    player_.setLevel(nullptr);
+    level_ = nullptr;
+    worldName_.clear();
+    worldKey_.clear();
+    protectionKey_.clear();
+    tickTasks_.clear();
+    waypoints_.open({});
+    selectionPos1_.reset();
+    baritone_->selections().clear();
+    quarryStorage_.clear();
+    baritone_->survival().resetWorld();
+    baritone_->history().clear();
+    schematics_.clear();
+    placements_.clear();
+    placementsFile_.clear();
+    schematicPreview_.clear();
+    schematicDimension_.reset();
+    platform::PathRenderer::get().clear();
+    cancelAll();
+    tasks_ = {};
+    taskCheckpoint_.clear();
+    workflow_ = {};
+    workflowFile_.clear();
+    portals_ = {};
+    portalsFile_.clear();
+    baritone_->storage().load({});
+    platform::WorldTracker::get().reset();
+}
+
 void Bot::onFrame() {
     perf::Scope timing(perf::Metric::BotFrame);
     watchdog::heartbeat();
     auto* client = sdk::ClientInstance::get();
     auto* player = client ? client->localPlayer() : nullptr;
-    if (player != lastPlayer_) {
-        ++worldGeneration_;
-        cancelSchematicLoad();
-        if (player) logger::info("Entered a world (LocalPlayer {})", static_cast<void*>(player));
-        else logger::info("Left the world");
-        devpipe::setStatus(player ? "connection=Loading world\n" : "connection=Connected; enter a world\n");
-        devpipe::setMap({});
-        lastPlayer_ = player;
-        {
-            player_.bind(nullptr, nullptr);  // first: the old LocalPlayer is gone
-            player_.setLevel(nullptr);
-            worldName_.clear();
-            protectionKey_.clear();
-            baritone_->survival().resetWorld();
-            baritone_->history().clear();
-            schematics_.clear();
-            placements_.clear();
-            placementsFile_.clear();
-            schematicPreview_.clear();
-            schematicDimension_.reset();
-            platform::PathRenderer::get().clear();
-            cancelAll();
-            platform::WorldTracker::get().reset();
-        }
-    }
+    bindWorldPlayer(player);
     while (auto line = devpipe::poll()) commands_.execute(*line);
     if (auto error = taskWriter_.poll()) chat::error("Task checkpoint error: " + *error);
     pollSchematicLoad();
@@ -359,10 +371,11 @@ void Bot::onFrame() {
 void Bot::onTick(void* level) {
     perf::Scope timing(perf::Metric::BotTick);
     ++ticks_;
-    level_ = level;
     auto* client = sdk::ClientInstance::get();
     auto* player = client ? client->localPlayer() : nullptr;
     auto* region = client ? client->region() : nullptr;
+    bindWorldPlayer(player);
+    level_ = level;
     if (!player || !region) {
         player_.bind(nullptr, nullptr);
         return;
@@ -375,19 +388,19 @@ void Bot::onTick(void* level) {
     }
     look_.tick();  // new random look offsets (Java LookBehavior.onTick IN)
     player_.setLevel(static_cast<sdk::Level*>(level));
-    if (worldName_.empty() && level) {
-        // waypoints are stored per world
-        std::string name = static_cast<sdk::Level*>(level)->name();
-        worldName_ = name.empty() ? "world" : name;
-        std::string file;
-        for (char c : worldName_) file += (std::isalnum(static_cast<unsigned char>(c)) || c == '-' || c == '_') ? c : '_';
-        if (name.empty()) file = "monde";  // Preserve the existing cache/waypoint key for unnamed worlds.
+    if (worldKey_.empty() && level) {
+        auto* nativeLevel = static_cast<sdk::Level*>(level);
+        worldName_ = nativeLevel->name();
+        if (worldName_.empty()) worldName_ = "world";
+        worldKey_ = paths::worldKey(nativeLevel->id());
+        if (worldKey_.starts_with("session-"))
+            chat::info("This world has no verified local save ID. Its Baritone data is isolated for this visit.");
         auto dir = paths::dataDir() / "waypoints";
         std::error_code ec;
         std::filesystem::create_directories(dir, ec);
-        waypoints_.open((dir / (file + ".txt")).string());
+        waypoints_.open((dir / (worldKey_ + ".txt")).string());
         logger::info("World '{}': waypoints in {}", worldName_, waypoints_.path());
-        platform::WorldTracker::get().setWorld(file);
+        platform::WorldTracker::get().setWorld(worldKey_);
     }
 
     if (!tickTasks_.empty()) {
@@ -411,7 +424,7 @@ void Bot::onTick(void* level) {
 
     if (schematicDimension_ && *schematicDimension_ != tracker.dimension()) {
         auto continued = portalJourney_;
-        const bool expected = continued.active() && continued.transition({worldName_, tracker.dimension()}, {feet.x, feet.y, feet.z});
+        const bool expected = continued.active() && continued.transition({worldKey_, tracker.dimension()}, {feet.x, feet.y, feet.z});
         baritone_->survival().resetWorld();
         ++worldGeneration_;
         cancelAll();
@@ -425,6 +438,18 @@ void Bot::onTick(void* level) {
     const auto protectionFile = worldDataPath("protection");
     if (protectionKey_ != protectionFile.string()) {
         protectionKey_ = protectionFile.string();
+        uint64_t legacyHash = 14695981039346656037ull;
+        for (unsigned char c : worldName_) { legacyHash ^= c; legacyHash *= 1099511628211ull; }
+        const auto legacyProtection = protectionFile.parent_path() / std::format("{:016x}_dim{}.txt", legacyHash, tracker.dimension());
+        std::error_code ec;
+        if (!std::filesystem::exists(protectionFile, ec) && std::filesystem::exists(legacyProtection, ec)) {
+            try {
+                if (!baritone::ProtectionPolicy::load(legacyProtection).zones().empty())
+                    chat::error("Legacy protections could belong to another save and were left in their original file. Recreate the relevant zones before running automation.");
+            } catch (const std::exception&) {
+                chat::error("Legacy protections could not be read. Review the original file before running automation.");
+            }
+        }
         try { tracker.snapshot()->setProtection(std::make_shared<baritone::ProtectionPolicy>(baritone::ProtectionPolicy::load(protectionFile))); }
         catch (const std::exception& error) {
             cancelAll();
@@ -500,6 +525,7 @@ void Bot::onTick(void* level) {
             BARITONE_BEDROCK_VERSION, worldName_, tracker.dimension(), baritone_->playerFeet(),
             process ? process->displayName() : "Idle", tasks_.running() ? "Running" : "Paused", tasks_.currentIndex(), tasks_.tasks().size(),
             baritone::Settings::get().allowBreak ? "true" : "false", baritone::Settings::get().allowPlace ? "true" : "false");
+        status += "world_key=" + worldKey_ + "\n";
         if (schematics_.loaded()) status += std::format("schematic={}\norigin={}\n", schematics_.name(), schematics_.origin());
         if(assistEnabled_)status+="build_assistance="+(assistHint_?std::format("{} at {}: {}",assistHint_->item,assistHint_->position,assistHint_->guidance):std::string("No supported missing block nearby"))+"\n";
         if (!workflowFile_.empty()) { auto path = workflowFile_.u8string(); status += "workflow_file=" + std::string(path.begin(), path.end()) + "\n"; }

@@ -1166,6 +1166,32 @@ TEST(disconnect_only_once_on_arrival_when_enabled) {
     }
 }
 
+TEST(navigation_waits_for_the_player_to_settle_inside_the_goal) {
+    SettingsGuard guard;
+    Settings::get().disconnectOnArrival = true;
+    TestWorld world(1);
+    world.floor(0, Blocks::get().stone);
+    test::TestPlayer player;
+    Baritone bot(player, [](const std::string&, bool) {});
+    auto& process = bot.customGoal();
+    bot.tick(world.snapshot());
+    process.setGoalAndPath(std::make_shared<GoalBlock>(0, 1, 0));
+    process.onTick(false, true);
+    player.motion = {-0.15, -0.12, 0};
+    process.onTick(false, true);
+    CHECK(process.isActive() && player.disconnectRequests == 0);
+    player.feet.x = -0.1;
+    CHECK(process.onTick(false, true)->type == PathingCommandType::SetGoalAndPath);
+    player.feet.x = 0.5;
+    player.motion = {};
+    for (int i = 0; i < 2; ++i) {
+        process.onTick(false, true);
+        CHECK(process.isActive() && player.disconnectRequests == 0);
+    }
+    process.onTick(false, true);
+    CHECK(!process.isActive() && player.disconnectRequests == 1);
+}
+
 TEST(elytra_allocator_modes_keep_the_same_obstacle_avoiding_path) {
     TestWorld world(1);
     world.fill(0, 0, -5, 0, 12, 5, Blocks::get().stone);
@@ -1396,6 +1422,41 @@ TEST(builder_direct_placement_respects_disabled_fluid_replacement) {
         if (bot.controls().target.rotation) player.facing = *bot.controls().target.rotation;
         CHECK(!bot.controls().input(Input::ClickRight));
     }
+}
+
+TEST(builder_keeps_the_source_until_the_replacement_is_available) {
+    SettingsGuard guard;
+    auto& settings = Settings::get();
+    settings.allowBreak = true;
+    settings.allowPlace = true;
+    TestWorld world(1);
+    world.floor(0, Blocks::get().stone);
+    const BlockPos target{2, 1, 0};
+    world.set(target.x, target.y, target.z, Blocks::get().stone);
+    test::TestPlayer player;
+    Baritone bot(player, [](const std::string&, bool) {});
+    bot.tick(world.snapshot());
+    bot.builder().build("replacement", std::make_shared<ReplaceSchematic>(BlockPos{1, 1, 1},
+        std::unordered_set<std::string>{"minecraft:stone"}, DesiredBlock::block("minecraft:dirt")), target);
+    auto command = bot.builder().onTick(false, true);
+    CHECK(command && !command->goal && bot.builder().isPaused());
+    CHECK(!bot.controls().input(Input::ClickLeft));
+    CHECK(bot.builder().missingMaterials().contains("minecraft:dirt"));
+    bot.builder().customizeContext(*bot.liveContext());
+    CHECK(bot.liveContext()->breakCostMultiplierAt(target.x, target.y, target.z, BlockRegistry::get().props(Blocks::get().stone)) >= costs::COST_INF);
+
+    player.inventory[0].name = "minecraft:dirt";
+    player.inventory[0].count = 1;
+    player.inventory[0].isBlock = true;
+    bot.builder().resume();
+    bool breaking = false;
+    for (int i = 0; i < 5; ++i) {
+        bot.controls() = {};
+        bot.builder().onTick(false, true);
+        if (bot.controls().target.rotation) player.facing = *bot.controls().target.rotation;
+        breaking |= bot.controls().input(Input::ClickLeft);
+    }
+    CHECK(breaking);
 }
 
 TEST(builder_incremental_layers_and_repeats_complete_with_a_shared_tick_budget) {
@@ -2107,6 +2168,25 @@ TEST(logistics_scans_supply_then_confirms_absolute_inventory_targets) {
     }
     CHECK(!bot.logistics().succeeded() && !bot.logistics().failure().empty());
     CHECK(player.countItem("minecraft:stone") == 15); // Partial supply is retained, not invented.
+}
+
+TEST(storage_survey_skips_a_workstation_before_opening_it) {
+    TestWorld world(1);
+    BlockProps furnace = BlockRegistry::get().props(Blocks::get().stone);
+    furnace.name = "minecraft:furnace";
+    world.set(1, 1, 0, BlockRegistry::get().add(furnace));
+    test::TestPlayer player;
+    Baritone bot(player, [](const std::string&, bool) {});
+    bot.tick(world.snapshot());
+    bot.storage().addLocation("furnace", {1, 1, 0});
+    bot.logistics().survey();
+    bot.logistics().onTick(false, true);
+    CHECK(bot.storage().isActive());
+    bot.storage().onTick(false, true);
+    CHECK(bot.storage().succeeded() && !player.containerOpen());
+    CHECK(bot.storage().observations().empty());
+    bot.logistics().onTick(false, true);
+    CHECK(bot.logistics().succeeded());
 }
 
 TEST(portal_journey_continues_only_after_confirmed_world_link_and_arrival) {

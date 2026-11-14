@@ -56,8 +56,13 @@ void StorageProcess::begin(const std::string& location, bool returnToStart) {
     location_ = location; return_ = returnToStart; remaining_ = requested_ = 0;
     succeeded_ = false; failure_.clear(); active_ = true; timeout_ = operations_ = warmup_ = 0;
     refreshAttempted_ = refreshClosing_ = false; sortMoves_.clear();
+    skipWorkstations_ = false;
 }
-void StorageProcess::scan(const std::string& location, bool returnToStart) { begin(location, returnToStart); mode_ = Mode::Scan; }
+void StorageProcess::scan(const std::string& location, bool returnToStart, bool skipWorkstations) {
+    begin(location, returnToStart);
+    mode_ = Mode::Scan;
+    skipWorkstations_ = skipWorkstations;
+}
 void StorageProcess::sort(const std::string& location, bool returnToStart) { begin(location, returnToStart); mode_ = Mode::Sort; }
 void StorageProcess::onLostControl() {
     baritone_.player().closeOwnedContainer(); active_ = waiting_ = closing_ = false;
@@ -167,6 +172,18 @@ std::optional<PathingCommand> StorageProcess::onTick(bool failed, bool safe) {
         refreshClosing_ = false; warmup_ = 0;
     }
     if (!player.ownedContainerReady()) {
+        if (skipWorkstations_ && baritone_.liveContext() &&
+            baritone_.liveContext()->isLoadedLive(target_.x, target_.z)) {
+            const auto& name = baritone_.liveContext()->props(target_.x, target_.y, target_.z).name;
+            if (name == "minecraft:crafting_table" || name.ends_with("furnace") ||
+                name == "minecraft:smoker" || name == "minecraft:lit_smoker" ||
+                name.ends_with("anvil") || name == "minecraft:grindstone") {
+                observations_.erase(location_);
+                succeeded_ = true;
+                active_ = false;
+                return PathingCommand{nullptr, PathingCommandType::CancelAndSetGoal};
+            }
+        }
         if (target_.distSq(baritone_.playerFeet()) > 9)
             return PathingCommand{std::make_shared<GoalGetToBlock>(target_), PathingCommandType::RevalidateGoalAndPath};
         if (!safe) return PathingCommand{nullptr, PathingCommandType::Defer};

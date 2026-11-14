@@ -14,7 +14,9 @@ LRESULT CALLBACK mapProc(HWND hwnd,UINT message,WPARAM wp,LPARAM lp) {
             try {
                 auto next=baritone::MapFrame::decode(mapJob.get());
                 if(!mapFrame || !(next.identity==mapFrame->identity)){mapDestination.reset();EnableWindow(GetDlgItem(hwnd,MapGo),FALSE);}
-                mapFrame=std::move(next);SetWindowTextW(mapMessage,wide(mapFrame->identity.name+" | Dimension "+std::to_string(mapFrame->identity.dimension)+" | Click to select a destination").c_str());
+                mapFrame=std::move(next);
+                const auto& label = latestFields["world_key"] == mapFrame->identity.name ? latestFields["world"] : mapFrame->identity.name;
+                SetWindowTextW(mapMessage,wide(label+" | Dimension "+std::to_string(mapFrame->identity.dimension)+" | Click to select a destination").c_str());
             } catch(const std::exception&) {mapFrame.reset();mapDestination.reset();EnableWindow(GetDlgItem(hwnd,MapGo),FALSE);SetWindowTextW(mapMessage,L"Map unavailable. Connect to a supported Minecraft world.");}
             InvalidateRect(hwnd,nullptr,FALSE);
         }

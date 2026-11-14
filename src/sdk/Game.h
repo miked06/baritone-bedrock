@@ -286,6 +286,7 @@ public:
     const HitResult* hitResult() const { return mem::member<const HitResult*>(this, offsets::Level_hitResult); }
     // Name of the world (empty if unreadable).
     std::string name() const;
+    std::string id() const;
 };
 
 struct Vec4 {

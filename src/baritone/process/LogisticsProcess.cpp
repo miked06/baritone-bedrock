@@ -4,13 +4,13 @@
 #include <algorithm>
 #include <format>
 namespace baritone {
-void LogisticsProcess::begin(std::string source) {
+void LogisticsProcess::begin(std::string source, bool needsSupply) {
     if (active_ || baritone_.storage().isActive() || baritone_.production().executing() ||
         baritone_.player().containerOpen() || baritone_.player().inventoryMovePending())
         throw std::invalid_argument("Finish current container/production actions before starting logistics");
     std::vector<std::string> sources;
     for (const auto& [name, pos] : baritone_.storage().locations()) if (source.empty() || source == name) sources.push_back(name);
-    if (sources.empty()) throw std::invalid_argument("Register a supply container with #storage add first");
+    if (sources.empty() && needsSupply) throw std::invalid_argument("Register a supply container with #storage add first");
     origin_ = baritone_.playerFeet();
     std::ranges::stable_sort(sources, [&](const auto& a, const auto& b) {
         return baritone_.storage().locations().at(a).distSq(origin_) < baritone_.storage().locations().at(b).distSq(origin_);
@@ -26,9 +26,17 @@ void LogisticsProcess::start(std::map<std::string, int> targets, std::string sou
         normalized[BlockFilter::normalize(item)] = count;
     }
     if (!equip.empty()) (void)baritone_.loadouts().profile(equip);
-    begin(std::move(source)); targets_ = std::move(normalized); equip_ = std::move(equip);
+    const bool needsSupply = equip.empty() || std::ranges::any_of(normalized, [&](const auto& target) {
+        return baritone_.player().countItem(target.first) < target.second;
+    });
+    begin(std::move(source), needsSupply); targets_ = std::move(normalized); equip_ = std::move(equip);
 }
-void LogisticsProcess::survey(std::string source) { begin(std::move(source)); survey_ = true; }
+void LogisticsProcess::survey(std::string source) {
+    const bool all = source.empty();
+    begin(std::move(source));
+    survey_ = true;
+    surveyAll_ = all;
+}
 bool LogisticsProcess::isActive() { return active_ && !baritone_.pauser().paused(); }
 void LogisticsProcess::onLostControl() {
     if (active_ && failure_.empty()) failure_ = "Logistics cancelled";
@@ -74,7 +82,8 @@ std::optional<PathingCommand> LogisticsProcess::onTick(bool failed, bool safe) {
             if (skipped_.contains(source) || !storage.locations().contains(source)) continue;
             try {
                 if (!scanned_.contains(source)) {
-                    storage.scan(source, false); scanned_.insert(source); childSource_ = source; child_ = true; ++actions_;
+                    storage.scan(source, false, survey_ && surveyAll_);
+                    scanned_.insert(source); childSource_ = source; child_ = true; ++actions_;
                     return PathingCommand{nullptr, PathingCommandType::Defer};
                 }
                 if (!survey_) {

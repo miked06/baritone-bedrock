@@ -1,5 +1,6 @@
 #include "baritone/process/CustomGoalProcess.h"
 
+#include <cmath>
 #include <format>
 
 #include "baritone/Baritone.h"
@@ -10,6 +11,7 @@ namespace baritone {
 void CustomGoalProcess::setGoal(GoalPtr goal) {
     goal_ = goal;
     mostRecentGoal_ = goal;
+    settledTicks_ = 0;
     // Java: a new goal during an elytra flight changes the flight's destination
     if (goal && baritone_.elytra().isActive()) {
         if (auto error = baritone_.elytra().pathTo(goal)) baritone_.logDirect("Cannot change the elytra goal: " + *error, true);
@@ -21,10 +23,11 @@ void CustomGoalProcess::setGoal(GoalPtr goal) {
 void CustomGoalProcess::path() {
     state_ = State::PathRequested;
     retries_ = 0;
+    settledTicks_ = 0;
     baritone_.pathing().setTimeoutMultiplier(1);
 }
 
-std::optional<PathingCommand> CustomGoalProcess::onTick(bool calcFailed, bool) {
+std::optional<PathingCommand> CustomGoalProcess::onTick(bool calcFailed, bool isSafeToCancel) {
     switch (state_) {
         case State::GoalSet: return PathingCommand{goal_, PathingCommandType::CancelAndSetGoal};
         case State::PathRequested: {
@@ -33,6 +36,29 @@ std::optional<PathingCommand> CustomGoalProcess::onTick(bool calcFailed, bool) {
             return PathingCommand{goal_, PathingCommandType::ForceRevalidateGoalAndPath};
         }
         case State::Executing: {
+            PathingBehavior& p = baritone_.pathing();
+            const BlockPos feet = baritone_.playerFeet();
+            if (goal_ && goal_->isInGoal(feet) && goal_->isInGoal(p.pathStart())) {
+                // Release path input and let residual movement settle. If the
+                // player crosses the boundary, resume pathing to the same goal.
+                const auto velocity = baritone_.player().velocity();
+                if (!isSafeToCancel || velocity.x * velocity.x + velocity.z * velocity.z > 0.02 * 0.02 ||
+                    (!baritone_.player().onGround() && std::abs(velocity.y) > 0.04))
+                    settledTicks_ = 0;
+                else
+                    ++settledTicks_;
+                if (settledTicks_ < 3)
+                    return PathingCommand{goal_, PathingCommandType::CancelAndSetGoal};
+
+                baritone_.logDirect("Arrived! " + goal_->toString(), false);
+                if (Settings::get().disconnectOnArrival && !baritone_.player().requestDisconnect())
+                    baritone_.logDirect("Could not queue disconnect on arrival", true);
+                if (Settings::get().notificationOnPathComplete) baritone_.logNotification("Journey complete", false);
+                GoalPtr arrived = goal_;
+                onLostControl();
+                return PathingCommand{std::move(arrived), PathingCommandType::CancelAndSetGoal};
+            }
+            settledTicks_ = 0;
             if (calcFailed) {
                 // retry with more time before giving up: long trips through complex terrain
                 // can need more than failureTimeoutMS
@@ -51,16 +77,9 @@ std::optional<PathingCommand> CustomGoalProcess::onTick(bool calcFailed, bool) {
                 retries_ = 0;
                 baritone_.pathing().setTimeoutMultiplier(1);
             }
-            PathingBehavior& p = baritone_.pathing();
-            BlockPos feet = baritone_.playerFeet();
-            if (!goal_ || (goal_->isInGoal(feet) && goal_->isInGoal(p.pathStart()))) {
-                baritone_.logDirect("Arrived! " + (goal_ ? goal_->toString() : std::string()), false);
-                if (Settings::get().disconnectOnArrival && !baritone_.player().requestDisconnect())
-                    baritone_.logDirect("Could not queue disconnect on arrival", true);
-                if (Settings::get().notificationOnPathComplete) baritone_.logNotification("Journey complete", false);
-                GoalPtr g = goal_;
+            if (!goal_) {
                 onLostControl();
-                return PathingCommand{g, PathingCommandType::CancelAndSetGoal};
+                return PathingCommand{nullptr, PathingCommandType::CancelAndSetGoal};
             }
             return PathingCommand{goal_, PathingCommandType::SetGoalAndPath};
         }

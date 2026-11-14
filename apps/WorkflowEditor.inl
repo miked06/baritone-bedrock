@@ -51,12 +51,12 @@ LRESULT CALLBACK flowProc(HWND hwnd, UINT message, WPARAM wp, LPARAM lp) {
                 node.task.kind = utf8(value(flowKind)); node.task.arguments = baritone::commandArguments(utf8(value(flowArgs)));
                 flowDraft.set(std::size_t(index), std::move(node)); flowRefresh(); SetWindowTextW(flowMessage, L"Node saved in the local draft. Apply sends the whole graph atomically."); break;
             }
-            case FlowNew: flowDraft = {}; flowDraft.bind({latestFields["world"], std::stoi(latestFields["dimension"])}); flowRefresh(); break;
+            case FlowNew: flowDraft = {}; flowDraft.bind({latestFields["world_key"], std::stoi(latestFields["dimension"])}); flowRefresh(); break;
             case FlowImport: flowRead(flowPickFile()); break;
             case FlowLoadCurrent: flowRead(std::filesystem::u8path(latestFields["workflow_file"])); break;
             case FlowApply: {
-                if (latestFields["world"].empty()) throw std::runtime_error("Connect to an existing Minecraft world first");
-                flowDraft.bind({latestFields["world"], std::stoi(latestFields["dimension"])});
+                if (latestFields["world_key"].empty()) throw std::runtime_error("Connect to an existing Minecraft world first");
+                flowDraft.bind({latestFields["world_key"], std::stoi(latestFields["dimension"])});
                 wchar_t local[32768]{}; if (!GetEnvironmentVariableW(L"LOCALAPPDATA", local, 32768)) throw std::runtime_error("LOCALAPPDATA unavailable");
                 auto directory = std::filesystem::path(local) / "BaritoneBedrock" / "workflow-drafts"; std::filesystem::create_directories(directory);
                 auto file = directory / (L"panel-" + std::to_wstring(GetCurrentProcessId()) + L".txt"); auto text = flowDraft.encode();
@@ -72,8 +72,8 @@ LRESULT CALLBACK flowProc(HWND hwnd, UINT message, WPARAM wp, LPARAM lp) {
 }
 void openWorkflowEditor() {
     if (flowWindow) { ShowWindow(flowWindow, SW_SHOW); SetForegroundWindow(flowWindow); return; }
-    if (flowDraft.nodes().empty() && !latestFields["world"].empty()) {
-        try { flowDraft.bind({latestFields["world"], std::stoi(latestFields["dimension"])}); } catch (...) {}
+    if (flowDraft.nodes().empty() && !latestFields["world_key"].empty()) {
+        try { flowDraft.bind({latestFields["world_key"], std::stoi(latestFields["dimension"])}); } catch (...) {}
     }
     WNDCLASSW cls{}; cls.hInstance = GetModuleHandleW(nullptr); cls.lpszClassName = L"BaritoneWorkflowEditor"; cls.lpfnWndProc = flowProc; cls.hCursor = LoadCursorW(nullptr, IDC_ARROW); cls.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_WINDOW + 1); RegisterClassW(&cls);
     flowWindow = CreateWindowExW(WS_EX_CONTROLPARENT, cls.lpszClassName, L"Baritone Bedrock - Workflow Editor", WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT, 830, 580, window, nullptr, cls.hInstance, nullptr);

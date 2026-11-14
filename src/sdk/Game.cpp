@@ -213,6 +213,14 @@ std::string Level::name() const {
     return name;
 }
 
+std::string Level::id() const {
+    if (!mem::isReadable(this, offsets::Level_levelId + sizeof(std::string))) return {};
+    const auto& value = mem::member<std::string>(this, offsets::Level_levelId);
+    if (value.empty() || value.size() > 128 || value.capacity() < value.size() ||
+        !mem::isReadable(value.data(), value.size() + 1)) return {};
+    return value;
+}
+
 Vec4 rotationToQuaternion(float pitch, float yaw) {
     // Euler (pitch, yaw, roll = 0) to quaternion, in the component order the game uses.
     constexpr float kDegToRad = 3.14159265358979f / 180.f;

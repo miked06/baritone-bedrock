@@ -2,6 +2,28 @@
 
 All notable changes to Baritone Bedrock. Versions follow [semantic versioning](https://semver.org/).
 
+## 1.7.1
+
+Windows x64 patch release for **Minecraft Bedrock 26.63** (package
+`1.26.6301.0`). Update both the DLL and the control panel.
+
+- Local saves with the same display name now have separate tasks, workflows,
+  protections, waypoints, map destinations, storage and construction data.
+  Older files remain in their original locations. Recreate applicable protected
+  zones in the correct save before resuming automation.
+- Replacement jobs preserve the original block until the replacement is available.
+- Navigation waits for the player to settle within the destination before
+  reporting arrival or disconnecting.
+- Farming reports completion after the last eligible crop. Global storage scans
+  skip registered workstations, and equip workflows can use items already held.
+- History indicates when recent actions are still being verified.
+
+The 142 C++ tests and 5 Python recipe importer tests passed. Live Windows
+checks covered two same-name saves, six navigation runs, replacement and
+clearing, wheat replanting, the equipment workflow and storage surveys.
+See the [PC audit](https://github.com/miked06/baritone-bedrock/blob/v1.7.1/docs/PC_AUDIT_2026-11-14.md)
+for the test scenarios and remaining coverage.
+
 ## 1.7.0
 
 Compatibility fix and Windows automation additions for **Minecraft Bedrock 26.63**,

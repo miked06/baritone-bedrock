@@ -296,7 +296,7 @@ bool BuilderProcess::valid(const BlockProps& current, const std::optional<Desire
 }
 
 bool BuilderProcess::haveItemFor(const std::string& block, bool wholeInventory) {
-    auto pred = [&](const HotbarStack& s) { return s.isBlock && s.name == block; };
+    auto pred = [&](const HotbarStack& s) { return !s.empty() && s.isBlock && s.name == block; };
     if (!wholeInventory) {
         for (int i = 0; i < 9; ++i)
             if (pred(baritone_.player().hotbar(i))) return true;
@@ -333,7 +333,7 @@ void BuilderProcess::customizeContext(CalculationContext& ctx) {
     std::unordered_set<std::string> hotbar;
     for (int i = 0; i < 9; ++i) {
         HotbarStack s = baritone_.player().hotbar(i);
-        if (s.isBlock) hotbar.insert(s.name);
+        if (!s.empty() && s.isBlock) hotbar.insert(s.name);
     }
     auto getSchematic = [sch, origin, minY, maxY](int x, int y, int z, const BlockProps& current) -> std::optional<DesiredBlock> {
         int rx = x - origin.x, ry = y - origin.y, rz = z - origin.z;
@@ -347,6 +347,8 @@ void BuilderProcess::customizeContext(CalculationContext& ctx) {
     double placeMult = Settings::get().placeIncorrectBlockPenaltyMultiplier;
     double breakCorrectMult = Settings::get().breakCorrectBlockPenaltyMultiplier;
     bool allowBreak = ctx.allowBreak;
+    const bool allowPlace = Settings::get().allowPlace;
+    const auto buildSubstitutes = Settings::get().buildSubstitutes;
     auto allowBreakAnyway = ctx.allowBreakAnyway;
     ctx.placeCostOverride = [=](int x, int y, int z, const BlockProps& current) {
         if (sch->restrictOutside() && (!sch->inBounds(x-origin.x,y-origin.y,z-origin.z) || !sch->mayPlace(x-origin.x,y-origin.y,z-origin.z))) return costs::COST_INF;
@@ -367,7 +369,12 @@ void BuilderProcess::customizeContext(CalculationContext& ctx) {
         auto d = getSchematic(x, y, z, current);
         if (d) {
             if (d->kind == DesiredBlock::Kind::Air) return 1.0;
-            return valid(current, d, false) ? breakCorrectMult : 1.0;
+            if (valid(current, d, false)) return breakCorrectMult;
+            const auto alternatives = substitutesFor(buildSubstitutes, d->name);
+            if (!allowPlace || (!hotbar.contains(d->name) &&
+                std::ranges::none_of(alternatives, [&](const auto& item) { return hotbar.contains(item); })))
+                return costs::COST_INF;
+            return 1.0;
         }
         return 1.0;
     };
@@ -478,6 +485,8 @@ std::optional<std::pair<BlockPos, Rotation>> BuilderProcess::toBreakNearPlayer(E
                 if (!desired) continue;
                 if (!isAir(current) && !isLiquid(current) && !valid(current, desired, false) && !current.unbreakable &&
                     (ec.calc.allowBreak || ec.calc.allowBreakAnyway.contains(current.name)) && !ec.calc.isDisallowedBreaking(current)) {
+                    if (desired->kind == DesiredBlock::Kind::Block &&
+                        (!Settings::get().allowPlace || !placeable(*desired, false))) continue;
                     BlockPos pos{x, y, z};
                     if (auto rot = movement_helper::reachable(ec, pos)) return std::pair{pos, *rot};
                 }
@@ -530,6 +539,7 @@ bool BuilderProcess::tryPlace(const BlockPos& pos, const DesiredBlock& block, Ex
 bool BuilderProcess::searchForPlacables(ExecContext& ec, bool isSafeToCancel, std::vector<DesiredBlock>& desirableOnHotbar) {
     BlockPos center = baritone_.playerFeet();
     CalculationContext& ctx = ec.calc;
+    const auto& settings = Settings::get();
     bool canAct = isSafeToCancel && baritone_.player().onGround() && ticks_ <= 0;
     bool blockedByPlayer = false;
     for (int dx = -5; dx <= 5; dx++)
@@ -539,7 +549,13 @@ bool BuilderProcess::searchForPlacables(ExecContext& ec, bool isSafeToCancel, st
                 const BlockProps& current = ctx.props(x, y, z);
                 auto desired = getSchematic(x, y, z, current);
                 if (!desired || desired->kind != DesiredBlock::Kind::Block) continue;
-                if (!helper::isReplaceable(ctx, x, y, z, current) || valid(current, desired, false)) continue;
+                if (valid(current, desired, false)) continue;
+                if (!helper::isReplaceable(ctx, x, y, z, current)) {
+                    if (settings.allowPlace && settings.allowInventory && !placeable(*desired, false)) {
+                        if (auto available = placeable(*desired, true)) desirableOnHotbar.push_back(*available);
+                    }
+                    continue;
+                }
                 if (dy == 1 && isAir(ctx.props(x, y + 1, z))) continue;
                 desirableOnHotbar.push_back(*desired);
                 BlockPos pos{x, y, z};
@@ -636,6 +652,8 @@ GoalPtr BuilderProcess::assemble(CalculationContext& ctx, bool wholeInventory, b
     std::vector<std::pair<BlockPos, DesiredBlock>> placeableList;
     std::vector<BlockPos> breakable, sourceLiquids, flowingLiquids, outOfBounds;
     std::map<std::string, int> missing;
+    const bool allowPlace = Settings::get().allowPlace;
+    wholeInventory = wholeInventory && Settings::get().allowInventory;
     for (const BlockPos& pos : *incorrectPositions_) {
         const BlockProps& state = ctx.props(pos.x, pos.y, pos.z);
         if (isAir(state)) {
@@ -649,6 +667,15 @@ GoalPtr BuilderProcess::assemble(CalculationContext& ctx, bool wholeInventory, b
         } else if (isLiquid(state)) {
             (helper::possiblyFlowing(state) ? flowingLiquids : sourceLiquids).push_back(pos);
         } else {
+            const auto wanted = getSchematic(pos.x, pos.y, pos.z, state);
+            if (!wanted) continue;
+            if (wanted->kind == DesiredBlock::Kind::Block) {
+                if (!allowPlace) continue;
+                if (!placeable(*wanted, wholeInventory)) {
+                    ++missing[wanted->name];
+                    continue;
+                }
+            }
             breakable.push_back(pos);
         }
     }
@@ -673,7 +700,7 @@ GoalPtr BuilderProcess::assemble(CalculationContext& ctx, bool wholeInventory, b
                                                     std::make_shared<GoalComposite>(std::move(toBreak)));
     }
     if (toBreak.empty()) {
-        if (wholeInventory && logMissing) missingMaterials_ = missing;
+        if (logMissing) missingMaterials_ = missing;
         if (logMissing && !missing.empty()) {
             baritone_.logDirect("Missing materials, at least:", true);
             for (const auto& [block, count] : missing) baritone_.logDirect(std::format("{}x {}", count, block), true);

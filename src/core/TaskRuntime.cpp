@@ -9,8 +9,8 @@
 
 baritone::WorldIdentity Bot::identity() const {
     auto world = platform::WorldTracker::get().snapshot();
-    if (worldName_.empty() || !world || !player_.valid()) throw std::invalid_argument("Enter a world first");
-    return {worldName_, world->dimension()};
+    if (worldKey_.empty() || !world || !player_.valid()) throw std::invalid_argument("Enter a world first");
+    return {worldKey_, world->dimension()};
 }
 void Bot::saveTasks() {
     if (!taskCheckpoint_.empty()) taskWriter_.submit(taskCheckpoint_, tasks_.encode());

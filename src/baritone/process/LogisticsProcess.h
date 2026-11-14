@@ -20,8 +20,9 @@ public:
     bool succeeded() const { return succeeded_; }
     const std::string& failure() const { return failure_; }
 private:
-    void begin(std::string source);
+    void begin(std::string source, bool needsSupply = true);
     bool active_ = false, survey_ = false, child_ = false, equipping_ = false, succeeded_ = false;
+    bool surveyAll_ = false;
     std::map<std::string, int> targets_;
     std::vector<std::string> sources_;
     std::set<std::string> scanned_, skipped_;

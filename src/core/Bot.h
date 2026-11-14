@@ -138,6 +138,7 @@ public:
     void runInTick(std::function<void()> fn) { tickTasks_.push_back(std::move(fn)); }
 
 private:
+    void bindWorldPlayer(sdk::LocalPlayer* player);
     void applyOutput(const baritone::MovementState& out, bool active);
     void onDeath(sdk::LocalPlayer& player);
     std::vector<std::pair<baritone::BlockPos, baritone::BlockPos>> selectionBoxes() const;
@@ -233,6 +234,7 @@ private:
     std::unique_ptr<baritone::Baritone> baritone_;
     baritone::WaypointStore waypoints_;
     std::string worldName_;
+    std::string worldKey_;
     std::optional<baritone::BlockPos> selectionPos1_;
     bool controlling_ = false;
     int rightClickTimer_ = 0;

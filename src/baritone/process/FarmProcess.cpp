@@ -248,7 +248,12 @@ std::optional<PathingCommand> FarmProcess::onTick(bool calcFailed, bool isSafeTo
                                                     static_cast<int>(std::floor(e.position.y + 0.1)),
                                                     static_cast<int>(std::floor(e.position.z))));
     }
-    if (goals.empty()) return harvestBlock_.empty()?failed():PathingCommand{nullptr,PathingCommandType::RequestPause};
+    if (goals.empty()) {
+        if (!harvestBlock_.empty()) return PathingCommand{nullptr, PathingCommandType::RequestPause};
+        onLostControl();
+        baritone_.logDirect("Farming complete: no eligible crops or planting spots remain");
+        return PathingCommand{nullptr, PathingCommandType::CancelAndSetGoal};
+    }
     return PathingCommand{std::make_shared<GoalComposite>(std::move(goals)), PathingCommandType::SetGoalAndPath};
 }
 

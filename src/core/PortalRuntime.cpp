@@ -19,7 +19,7 @@ void Bot::tickPortalJourney() {
         const auto& name = blocks.props(feet.x, feet.y + y, feet.z).name;
         portal |= name == "minecraft:portal" || name == "minecraft:end_portal" || name == "minecraft:end_gateway";
     }
-    const auto goal = portalJourney_.step({worldName_, world->dimension()}, feet, portal);
+    const auto goal = portalJourney_.step(identity(), feet, portal);
     if (goal) {
         auto next = std::make_shared<baritone::GoalBlock>(*goal);
         auto current = baritone_->pathing().goal();

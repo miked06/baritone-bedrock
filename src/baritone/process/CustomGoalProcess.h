@@ -23,6 +23,7 @@ public:
         state_ = State::None;
         goal_.reset();
         retries_ = 0;
+        settledTicks_ = 0;
     }
     std::string displayName() const override;
 
@@ -31,6 +32,7 @@ private:
     State state_ = State::None;
     GoalPtr goal_, mostRecentGoal_;
     int retries_ = 0;  // calculations failed in a row (retried with more time)
+    int settledTicks_ = 0;
 };
 
 }  // namespace baritone

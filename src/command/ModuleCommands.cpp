@@ -37,7 +37,7 @@ void registerModuleCommands(CommandManager& manager, Bot& bot) {
         bot.cancelAll();job.start(std::move(positions),args[1],args[2],count,args[4],fuel);
         chat::info("Furnace pool started. Input and the explicit total fuel budget are split across stations; Minecraft decides recipe/fuel validity. Inspect workstations after cancellation or failure");
     }});
-    manager.add({{"mapgoto"}, "mapgoto world dimension x z", "Navigate from a map selection after checking the world and dimension", [&bot](const Args& args) {
+    manager.add({{"mapgoto"}, "mapgoto world_key dimension x z", "Navigate from a map selection after checking the world and dimension", [&bot](const Args& args) {
         if(args.size()!=4 || !(bot.identity()==baritone::WorldIdentity{args[0],parseInt(args[1],"dimension")}))throw CommandError("The map selection belongs to another world/dimension; refresh the map");
         const int x=parseInt(args[2],"x"),z=parseInt(args[3],"z");
         if(x<-30000000 || x>30000000 || z<-30000000 || z>30000000)throw CommandError("Map destination is outside supported world bounds");
@@ -198,6 +198,7 @@ void registerModuleCommands(CommandManager& manager, Bot& bot) {
         if (args.empty() || (args.size() == 1 && args[0] == "list")) {
             const auto& entries = history.entries(); const auto first = entries.size() > 16 ? entries.size() - 16 : 0;
             for (std::size_t i = first; i < entries.size(); ++i) { const auto& e = entries[i]; chat::info(std::format("{} at {}: {} -> {}{}", e.id,e.position,baritone::BlockRegistry::get().props(e.before).name,baritone::BlockRegistry::get().props(e.after).name,e.undone ? " (restored)" : "")); }
+            if (!history.pending().empty()) chat::info("Recent actions are still being checked against the world");
             chat::info("Session history: observations following bot actions; unrelated changes can coincide. Undo supports plain block placements/removals and skips changed, unloaded or protected cells"); return;
         }
         if (args.size() == 1 && args[0] == "clear") { bot.cancelAll(); history.clear(); return; }

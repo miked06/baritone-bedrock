@@ -213,6 +213,14 @@ status, navigation/mining controls, schematic file selection, preview/build/repa
 actions, task controls and a command field for every module. Stop is prioritized;
 status requests and command submissions use separate workers.
 
+Local saves use the game's save ID for tasks, workflows, protections,
+waypoints, placements, storage, construction journals, portals and chunk
+cache. Worlds without a verified local save use a separate ID per visit.
+Files from older releases remain in their original locations under
+`%LOCALAPPDATA%\BaritoneBedrock`. A name shared by multiple saves cannot
+reliably identify the owner of those files. Review affected protections
+and recreate them in the correct world before resuming automation.
+
 ```
 python tools/validate_gameplay.py --report re/gameplay-report.json
 python tools/validate_gameplay.py --scenario scenario.json --allow-actions --report re/scenario-report.json

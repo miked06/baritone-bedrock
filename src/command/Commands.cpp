@@ -410,6 +410,13 @@ void registerAll(CommandManager& manager, Bot& bot) {
                  "Manage this world's waypoints", [&bot](const Args& args) {
                      auto& player = requirePlayer();
                      static std::vector<baritone::Waypoint> deleted;  // this session (Java deletedWaypoints)
+                     static std::string deletedWorld;
+                     const auto& world = bot.waypoints().path();
+                     if (world.empty()) throw CommandError("Wait for the world to load");
+                     if (deletedWorld != world) {
+                         deleted.clear();
+                         deletedWorld = world;
+                     }
                      std::string action = args.empty() ? "list" : lowerCase(args[0]);
                      auto describe = [](const baritone::Waypoint& w) {
                          std::time_t t = static_cast<std::time_t>(w.createdAt);
