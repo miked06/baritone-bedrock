@@ -1,11 +1,11 @@
 // Included within the panel's anonymous namespace after the control helpers.
 HWND flowWindow = nullptr, flowList, flowIndex, flowSuccess, flowFailure, flowVisits, flowTimeout, flowKind, flowArgs, flowMessage;
 baritone::Workflow flowDraft;
-enum { FlowApply = 600, FlowImport, FlowLoadCurrent, FlowSaveNode, FlowNew, FlowRun, FlowPause };
+enum { FlowImport = FlowApply + 1, FlowLoadCurrent, FlowSaveNode, FlowNew, FlowRun, FlowPause };
 HWND flowControl(const wchar_t* type, const wchar_t* label, DWORD style, int x, int y, int width, int height, int id = 0) {
     auto previous = window; window = flowWindow; auto out = control(type, label, style, x, y, width, height, id); window = previous; return out;
 }
-void flowButton(const wchar_t* label, int x, int y, int width, int id) { flowControl(L"BUTTON", label, WS_TABSTOP | BS_PUSHBUTTON, x, y, width, 28, id); }
+void flowButton(const wchar_t* label, int x, int y, int width, int id) { flowControl(L"BUTTON", label, WS_TABSTOP, x, y, width, 34, id); }
 void flowRefresh() {
     SendMessageW(flowList, LB_RESETCONTENT, 0, 0);
     for (std::size_t i = 0; i < flowDraft.nodes().size(); ++i) {
@@ -29,6 +29,7 @@ void flowRead(const std::filesystem::path& file) {
 LRESULT CALLBACK flowProc(HWND hwnd, UINT message, WPARAM wp, LPARAM lp) {
     if (message == WM_CLOSE) { DestroyWindow(hwnd); return 0; }
     if (message == WM_DESTROY) { flowWindow = nullptr; return 0; }
+    if (auto result = themeMessage(message, wp, lp)) return *result;
     if (message != WM_COMMAND) return DefWindowProcW(hwnd, message, wp, lp);
     try {
         if (reinterpret_cast<HWND>(lp) == flowList && HIWORD(wp) == LBN_SELCHANGE) {
@@ -75,8 +76,9 @@ void openWorkflowEditor() {
     if (flowDraft.nodes().empty() && !latestFields["world_key"].empty()) {
         try { flowDraft.bind({latestFields["world_key"], std::stoi(latestFields["dimension"])}); } catch (...) {}
     }
-    WNDCLASSW cls{}; cls.hInstance = GetModuleHandleW(nullptr); cls.lpszClassName = L"BaritoneWorkflowEditor"; cls.lpfnWndProc = flowProc; cls.hCursor = LoadCursorW(nullptr, IDC_ARROW); cls.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_WINDOW + 1); RegisterClassW(&cls);
-    flowWindow = CreateWindowExW(WS_EX_CONTROLPARENT, cls.lpszClassName, L"Baritone Bedrock - Workflow Editor", WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT, 830, 580, window, nullptr, cls.hInstance, nullptr);
+    WNDCLASSW cls{}; cls.hInstance = GetModuleHandleW(nullptr); cls.lpszClassName = L"BaritoneWorkflowEditor"; cls.lpfnWndProc = flowProc; cls.hCursor = LoadCursorW(nullptr, IDC_ARROW); cls.hbrBackground = backgroundBrush; RegisterClassW(&cls);
+    flowWindow = panelWindow(cls.lpszClassName, L"Baritone Bedrock - Workflow Editor", 816, 539, window, cls.hInstance);
+    if (!flowWindow) return;
     flowList = flowControl(L"LISTBOX", L"", LBS_NOTIFY | WS_VSCROLL | WS_TABSTOP | WS_BORDER, 16, 16, 780, 205);
     const wchar_t* labels[] = {L"Node", L"Success", L"Failure", L"Max visits", L"Timeout (s)"}; HWND* boxes[] = {&flowIndex, &flowSuccess, &flowFailure, &flowVisits, &flowTimeout}; const wchar_t* defaults[] = {L"0", L"-1", L"-2", L"1", L"600"};
     for (int i = 0; i < 5; ++i) { flowControl(L"STATIC", labels[i], 0, 16 + i * 155, 232, 140, 22); *boxes[i] = flowControl(L"EDIT", defaults[i], ES_AUTOHSCROLL | WS_TABSTOP, 16 + i * 155, 255, 140, 27); }

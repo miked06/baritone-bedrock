@@ -2,6 +2,18 @@
 
 All notable changes to Baritone Bedrock. Versions follow [semantic versioning](https://semver.org/).
 
+## 1.7.2
+
+Windows x64 release for **Minecraft Bedrock 26.63** (package `1.26.6301.0`).
+The optional `BaritoneControlPanel.exe` has a new dark interface.
+
+- Sidebar sections for navigation, schematics, workflows and the console.
+- Live world, player position and task progress across all sections.
+- A command bar on every page with Enter to send and a persistent Stop button.
+- Matching map and workflow editor styling with desktop DPI scaling.
+
+In-game chat commands remain available through `BaritoneBedrock.dll`.
+
 ## 1.7.1
 
 Windows x64 patch release for **Minecraft Bedrock 26.63** (package
