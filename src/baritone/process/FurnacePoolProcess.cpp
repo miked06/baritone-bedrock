@@ -6,7 +6,8 @@
 #include <set>
 
 namespace baritone {
-void FurnacePoolProcess::start(std::vector<BlockPos> positions,std::string input,std::string output,int count,std::string fuel,int fuelCount) {
+void FurnacePoolProcess::start(std::vector<BlockPos> positions,std::string input,std::string output,int count,std::string fuel,int fuelCount,
+                               bool honorReserves) {
     auto& p=baritone_.player();
     if(active_ || !p.valid() || p.containerOpen() || p.inventoryMovePending())throw std::invalid_argument("Close containers and finish inventory actions before starting the furnace pool");
     if(positions.empty() || positions.size()>16 || count<int(positions.size()) || count>int(positions.size())*64 || fuelCount<int(positions.size()) || fuelCount>int(positions.size())*64 || std::set<BlockPos>(positions.begin(),positions.end()).size()!=positions.size())
@@ -15,6 +16,7 @@ void FurnacePoolProcess::start(std::vector<BlockPos> positions,std::string input
     if(input==output || input==fuel || output==fuel || p.countItem(input)<count || p.countItem(fuel)<fuelCount || p.countItem(output)>2304-count)
         throw std::invalid_argument("Keep enough distinct input/fuel items and room for the requested one-to-one output in inventory");
     input_=std::move(input);output_=std::move(output);fuel_=std::move(fuel);finalTarget_=p.countItem(output_)+count;stations_.clear();
+    honorReserves_ = honorReserves;
     for(std::size_t i=0;i<positions.size();++i)stations_.push_back({positions[i],count/int(positions.size())+(i<std::size_t(count%positions.size())?1:0),fuelCount/int(positions.size())+(i<std::size_t(fuelCount%positions.size())?1:0)});
     phase_=Phase::Survey;pending_=Pending::None;cursor_=0;ticks_=openTicks_=pendingTicks_=actions_=idle_=0;failure_.clear();opened_=succeeded_=false;active_=true;origin_=baritone_.playerFeet();
 }
@@ -83,6 +85,8 @@ std::optional<PathingCommand> FurnacePoolProcess::onTick(bool failed,bool safe) 
     if(phase_==Phase::Input || phase_==Phase::Fuel) {
         const bool loadingInput=phase_==Phase::Input;const auto& item=loadingInput?input_:fuel_;const auto& destination=loadingInput?*input:*fuel;
         const int remaining=loadingInput?station.count-station.inputSubmitted:station.fuel-station.fuelSubmitted;
+        if (honorReserves_ && (!baritone_.loadouts().healthy() || p.countItem(item) - baritone_.loadouts().reserved(item) < remaining))
+            return stop("Available furnace ingredients or fuel would use reserved loadout items");
         auto source=std::ranges::find_if(slots,[&](const ContainerSlot& s){return s.playerInventory && s.stack.name==item && !s.stack.empty() && mergeRoom(s.stack,destination.stack)>0;});
         if(source==slots.end())return stop("Missing input/fuel stack or unsupported stack merge at the workstation");
         const int amount=std::min({remaining,source->stack.count,mergeRoom(source->stack,destination.stack)});

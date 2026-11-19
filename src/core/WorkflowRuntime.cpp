@@ -4,7 +4,7 @@ void Bot::saveWorkflow() { if (workflowHealthy_ && !workflowFile_.empty()) taskW
 void Bot::resumeWorkflow() { if (!workflowHealthy_) throw std::invalid_argument("Repair the workflow file or explicitly clear/load it first"); cancelAll(); workflow_.resume(identity()); saveWorkflow(); }
 void Bot::tickWorkflow() {
     if(baritone_->workshop().isActive())return;
-    if (baritone_->pauser().paused() || baritone_->construction().isActive() || baritone_->undo().isActive() || baritone_->repair().isActive() || baritone_->mending().isActive() || miningActive_ || portalJourney_.active()) return;
+    if (baritone_->pauser().paused() || baritone_->construction().isActive() || baritone_->undo().isActive() || baritone_->repair().isActive() || baritone_->mending().isActive() || baritone_->rail().isActive() || baritone_->shulker().isActive() || miningActive_ || portalJourney_.active()) return;
     // Children continue below; polling a running storage/restock node observes
     // its completion. A newly started independent manual job suspends dispatch.
     const auto& task = workflow_.nodes().at(workflow_.current()).task;

@@ -5,6 +5,7 @@
 #include <functional>
 #include <map>
 #include <optional>
+#include <vector>
 #include <string>
 #include <string_view>
 
@@ -38,8 +39,11 @@ struct CompoundTag {
     }
     const CompoundTag* compound(std::string_view key) const;
     std::optional<std::string> string(std::string_view key) const;
+    std::optional<std::string_view> boundedString(std::string_view key, std::size_t limit) const;
     // Byte, Short or Int as an integer
     std::optional<int64_t> integer(std::string_view key) const;
+    // A bounded snapshot of a ListTag whose entries are all compounds.
+    std::optional<std::vector<const CompoundTag*>> compounds(std::string_view key, std::size_t limit) const;
 };
 
 // Human readable dump (debug).

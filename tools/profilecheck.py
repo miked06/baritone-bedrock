@@ -8,30 +8,51 @@ import argparse
 import json
 from pathlib import Path
 import re
-from relib import Image
 
 
-def check_profile(dump, image_base=None):
+def native_profiles():
     root = Path(__file__).resolve().parents[1]
-    header = (root / 'src/sdk/Offsets.h').read_text(encoding='utf-8')
-    values = {name: int(value, 16) for name, value in re.findall(r'inline constexpr uintptr_t\s+(\w+)\s*=\s*(0x[0-9a-fA-F]+)', header)}
+    source = (root / 'src/core/NativeProfiles.inc').read_text(encoding='utf-8')
+    entries = re.findall(r'^PROFILE\("(\d+\.\d+\.\d+\.\d+)",\s*([^)]*)\)', source, re.M)
+    fields = ('craftingTable', 'craft', 'discard', 'anvilTable', 'anvilPreview', 'anvilTake',
+              'grindstoneTable', 'grindstonePreview', 'grindstoneTake',
+              'inventoryKey', 'scenePop', 'emptyStack', 'itemStackTable')
+    profiles = {version: dict(zip(fields, (int(value.strip(), 16) for value in addresses.split(',')), strict=True))
+                for version, addresses in entries}
+    if not profiles or len(profiles) != len(entries):
+        raise ValueError('Missing or duplicate native package profile')
+    return profiles
+
+
+def check_profile(dump, image_base=None, package=None):
+    from relib import Image
+
+    profiles = native_profiles()
+    if package is None:
+        match = re.fullmatch(r'Minecraft\.Windows_(\d+\.\d+\.\d+\.\d+)\.exe', dump.name)
+        if not match:
+            raise ValueError('Pass --package when the dump filename does not include the package version')
+        package = match.group(1)
+    if package not in profiles:
+        raise ValueError(f'No native profile for {package}. Available: {", ".join(profiles)}')
+    values = profiles[package]
     base = image_base if image_base is not None else int(dump.with_suffix('.base.txt').read_text().strip(), 16)
     image = Image(dump)
     rows = []
-    entries = [('CraftingController', 16, 'autoPlace'), ('CraftingController', 23, 'discard'),
-               ('AnvilController', 8, 'preview'), ('AnvilController', 15, 'take'),
-               ('GrindstoneController', 8, 'preview'), ('GrindstoneController', 15, 'take')]
+    entries = [('craftingTable', 16, 'craft'), ('craftingTable', 23, 'discard'),
+               ('anvilTable', 8, 'anvilPreview'), ('anvilTable', 15, 'anvilTake'),
+               ('grindstoneTable', 8, 'grindstonePreview'), ('grindstoneTable', 15, 'grindstoneTake')]
     for controller, index, action in entries:
-        table, expected = values[controller + '_vtable'], values[controller + '_' + action]
+        table, expected = values[controller], values[action]
         actual = image.u64(table + index * 8) - base
-        rows.append({'check': controller + '.' + action, 'valid': actual == expected and image.section_of(actual) == '.text',
+        rows.append({'check': action, 'valid': actual == expected and image.section_of(actual) == '.text',
                      'expected_rva': hex(expected), 'actual_rva': hex(actual)})
     prefix = bytes.fromhex('55 41 56 56 57 53 48 81 ec 90 00 00 00')
-    rows.append({'check': 'inventory key handler', 'valid': image.bytes(values['ClientInstance_inventoryKey'], len(prefix)) == prefix})
+    rows.append({'check': 'inventory key handler', 'valid': image.bytes(values['inventoryKey'], len(prefix)) == prefix})
     scene_prefix = bytes.fromhex('55 48 83 ec 70 48 8d 6c 24 70')
-    rows.append({'check': 'scene stack pop', 'valid': image.bytes(values['SceneStack_pop'], len(scene_prefix)) == scene_prefix})
-    empty = values['ItemStack_empty']
-    rows.append({'check': 'canonical empty stack', 'valid': image.u64(empty) - base == values['ItemStack_vtable'] and
+    rows.append({'check': 'scene stack pop', 'valid': image.bytes(values['scenePop'], len(scene_prefix)) == scene_prefix})
+    empty = values['emptyStack']
+    rows.append({'check': 'canonical empty stack', 'valid': image.u64(empty) - base == values['itemStackTable'] and
                  image.u64(empty + 8) == 0 and image.u64(empty + 16) == 0 and image.u8(empty + 0x22) == 0})
     return rows
 
@@ -39,11 +60,12 @@ def check_profile(dump, image_base=None):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('dump', type=Path)
+    parser.add_argument('--package', help='Override the package version inferred from the dump filename')
     parser.add_argument('--image-base', type=lambda value: int(value, 0))
     parser.add_argument('--json', type=Path)
     args = parser.parse_args()
     try:
-        rows = check_profile(args.dump, args.image_base)
+        rows = check_profile(args.dump, args.image_base, args.package)
     except (OSError, ValueError, KeyError) as error:
         parser.error(str(error))
     for row in rows:

@@ -2,6 +2,7 @@
 #include "baritone/process/Process.h"
 #include "baritone/production/RecipePlanner.h"
 #include <future>
+#include <optional>
 
 namespace baritone {
 // Coordinates existing processes. A quantity is additional output, while every
@@ -12,7 +13,8 @@ public:
     ~SupplyProductionProcess() { shutdown(); }
     void shutdown() { onLostControl(); if(planning_.valid())planning_.wait(); }
     void start(const RecipeBook& book, BlockPos station, std::string item, int additional,
-               std::string supply = {}, std::string delivery = {});
+               std::string supply = {}, std::string delivery = {},
+               std::optional<BlockPos> furnace = {}, int farmRadius = 0);
     bool isActive() override;
     bool succeeded() const { return succeeded_; }
     const std::string& failure() const { return failure_; }
@@ -23,14 +25,16 @@ public:
     std::string displayName() const override;
     static std::vector<std::string> harvestBlocks(const std::string& item);
 private:
-    enum class Phase { Plan, Supply, Harvest, Craft, Deliver, Return };
+    enum class Phase { Plan, Supply, Harvest, Farm, Smelt, Craft, Deliver, Return };
     Phase phase_ = Phase::Plan;
     RecipeBook book_;
     std::future<ProductionPlan> planning_;
     std::map<std::string,int> planningStock_;
     BlockPos station_{}, origin_{};
+    std::optional<BlockPos> furnace_;
     std::string item_, supply_, delivery_, harvest_, failure_;
     int additional_ = 0, target_ = 0, harvestTarget_ = 0, ticks_ = 0, rounds_ = 0;
+    int farmRadius_ = 0;
     uint64_t diagnostic_ = 0;
     bool active_ = false, succeeded_ = false, supplied_ = false;
 };

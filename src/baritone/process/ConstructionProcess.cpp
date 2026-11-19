@@ -10,6 +10,8 @@ void ConstructionProcess::start(SchematicPtr source, BlockPos origin, std::strin
         throw std::invalid_argument("Planned construction requires exact building: no layers, repeat, start layer, ignored existing blocks, skipped blocks, ignored orientation or substitutions");
     plan_.start(std::move(source), origin, std::move(support), depth, permanent); execute_ = execute; active_ = true; child_ = false; phase_ = ticks_ = 0;
     ++session_;journalPlan_.reset();recoveryChecks_.clear();recoveryCursor_=0;
+    checkpointedPhase_ = -1;
+    checkpointFailed_ = false;
 }
 void ConstructionProcess::resume(ConstructionRecovery recovery) {
     const auto& s=Settings::get();
@@ -18,8 +20,16 @@ void ConstructionProcess::resume(ConstructionRecovery recovery) {
     if(!baritone_.world() || recovery.identity.dimension!=baritone_.world()->dimension())throw std::invalid_argument("Construction checkpoint belongs to another dimension");
     if(s.buildInLayers || s.startAtLayer || s.buildRepeat!=Vec3i{} || s.buildIgnoreExisting || !s.buildIgnoreBlocks.empty() || s.buildIgnoreDirection || !s.buildSkipBlocks.empty() || !s.buildValidSubstitutes.empty() || !s.buildSubstitutes.empty())throw std::invalid_argument("Recovered construction requires exact builder settings");
     plan_=std::move(recovery.plan);phase_=recovery.phase;ticks_=0;child_=false;execute_=active_=true;++session_;
+    checkpointedPhase_ = -1;
+    checkpointFailed_ = false;
     journalPlan_=std::make_shared<ConstructionPlan>(plan_);recoveryChecks_.clear();recoveryCursor_=0;
     for(const auto* entries:{&plan_.targets(),&plan_.supports()})for(const auto& [pos,block]:*entries)recoveryChecks_.push_back(pos);
+}
+void ConstructionProcess::checkpointWritten(uint64_t session, int phase) {
+    if (session == session_ && phase == phase_) checkpointedPhase_ = phase;
+}
+void ConstructionProcess::checkpointFailed(uint64_t session) {
+    if (session == session_) checkpointFailed_ = true;
 }
 bool ConstructionProcess::isActive() { return active_ && !baritone_.pauser().paused(); }
 void ConstructionProcess::onLostControl() { active_ = false; if (child_) baritone_.builder().onLostControl(); child_ = false; }
@@ -27,6 +37,7 @@ std::string ConstructionProcess::displayName() const { return plan_.ready() ? st
 std::optional<PathingCommand> ConstructionProcess::onTick(bool failed, bool safe) {
     if (!active_ || !baritone_.world()) return {};
     auto stop = [&](std::string message, bool error) -> std::optional<PathingCommand> { baritone_.logDirect(message, error); onLostControl(); return PathingCommand{nullptr, PathingCommandType::CancelAndSetGoal}; };
+    if (checkpointFailed_) return stop("Construction stopped because the recovery checkpoint could not be saved", true);
     if (failed || ++ticks_ > 20 * 60 * 60) return stop("Construction stopped: path failure or one-hour deadline; inspect any temporary supports left in place", true);
     for(std::size_t n=0;n<128 && recoveryCursor_<recoveryChecks_.size();++n) {
         const auto pos=recoveryChecks_[recoveryCursor_++];const auto world=baritone_.world();const auto chunk=world->chunk(pos.x>>4,pos.z>>4);
@@ -50,6 +61,7 @@ std::optional<PathingCommand> ConstructionProcess::onTick(bool failed, bool safe
         child_ = false; ++phase_;
     }
     if (phase_ == 3) return stop("Planned construction phases complete; run #schematic verify to compare the final structure", false);
+    if (checkpointedPhase_ != phase_) return PathingCommand{nullptr, PathingCommandType::RequestPause};
     if (!safe) return PathingCommand{nullptr, PathingCommandType::RequestPause};
     diagnostic_ = baritone_.diagnostics().sequence();
     baritone_.builder().build("Planned construction phase " + std::to_string(phase_ + 1), plan_.phase(phase_), plan_.phaseOrigin(), false, false); child_ = true;

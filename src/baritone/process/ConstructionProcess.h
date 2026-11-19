@@ -17,12 +17,16 @@ public:
     uint64_t session() const { return session_; }
     int phase() const { return phase_; }
     const auto& journalPlan() const { return journalPlan_; }
+    void checkpointWritten(uint64_t session, int phase);
+    void checkpointFailed(uint64_t session);
 private:
     ConstructionPlan plan_;
     bool active_ = false, execute_ = false, child_ = false;
     int phase_ = 0, ticks_ = 0;
     uint64_t diagnostic_ = 0;
     uint64_t session_ = 0;
+    int checkpointedPhase_ = -1;
+    bool checkpointFailed_ = false;
     std::shared_ptr<const ConstructionPlan> journalPlan_;
     std::vector<BlockPos> recoveryChecks_;
     std::size_t recoveryCursor_ = 0;

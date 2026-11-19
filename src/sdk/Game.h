@@ -81,6 +81,7 @@ public:
     int maxStackSize() const;
     bool mergeCompatible(const ItemStack& other) const;
     std::string plainStackKey() const;
+    const nbt::CompoundTag* itemData() const;
     // Enchantments (Bedrock ids: 15 efficiency, 16 silk touch, 17 unbreaking...) -> level.
     std::vector<std::pair<int, int>> enchants() const;
     std::string customName() const;
@@ -227,6 +228,9 @@ public:
         auto* c = tryGet<ActorDefinitionIdentifierComponent>();
         if (!c) return {};
         const auto& id = c->identifier;  // fullName is "minecraft:zombie<initEvent>"
+        if (id.nameSpace.size() > 128 || id.identifier.empty() || id.identifier.size() > 128 ||
+            (!id.nameSpace.empty() && !mem::isReadable(id.nameSpace.data(), id.nameSpace.size())) ||
+            !mem::isReadable(id.identifier.data(), id.identifier.size())) return {};
         return (id.nameSpace.empty() ? "minecraft" : id.nameSpace) + ":" + id.identifier;
     }
 

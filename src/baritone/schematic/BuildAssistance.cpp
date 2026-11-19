@@ -26,9 +26,17 @@ std::optional<BuildHint> nextBuildHint(const SchematicWorkspace& placement,const
         if(auto policy=world.protection();policy && (!policy->permitsModify(cell.pos) || !policy->permitsEntry(cell.pos)))continue;
         const auto local=cell.pos.offset(-placement.origin().x,-placement.origin().y,-placement.origin().z);
         auto desired=placement.schematic()->desired(local.x,local.y,local.z,BlockProps{});
-        if(desired.kind!=DesiredBlock::Kind::Block || technical(desired.name))continue;
+        if(desired.kind!=DesiredBlock::Kind::Block || technical(desired.name) || isSecondaryPlacement(desired))continue;
         // Do not imply automatic support for states the builder cannot place.
-        if(std::ranges::any_of(desired.states,[](const auto& state){return !isOrientationState(state.first);}))continue;
+        const auto tallPlant = tallPlantUpper(desired);
+        if(std::ranges::any_of(desired.states,[tallPlant](const auto& state){return !isOrientationState(state.first) && !(tallPlant && state.first == "upper_block_bit");}))continue;
+        if (tallPlant) {
+            const auto& source = *placement.schematic();
+            const auto other = source.inBounds(local.x, local.y + 1, local.z)
+                ? source.desired(local.x, local.y + 1, local.z, BlockProps{}) : DesiredBlock::any();
+            if (other.name != desired.name || !tallPlantUpper(other).value_or(false)) continue;
+            if (auto policy = world.protection(); policy && !policy->permitsModify(cell.pos.above())) continue;
+        }
         bool supported=false;
         for(Direction direction:{Direction::Down,Direction::Up,Direction::North,Direction::South,Direction::East,Direction::West}) {
             const auto against=cell.pos.offset(direction);const auto chunk=world.chunk(against.x>>4,against.z>>4);
@@ -55,9 +63,16 @@ TechnicalAudit auditTechnicalPlacement(const Schematic& source,BlockPos origin) 
         const bool component=technical(desired.name);if(component)++result.technical;
         auto issue=[&](std::string reason){if(result.issues.size()<512)result.issues.push_back({origin.offset(x,y,z),desired.name,std::move(reason)});else result.truncated=true;};
         if(component)issue("Technical component: validate connections, placement and circuit behavior manually; no circuit simulation is performed");
+        if (auto upper = tallPlantUpper(desired)) {
+            const int otherY = y + (*upper ? -1 : 1);
+            const auto other = source.inBounds(x, otherY, z) ? source.desired(x, otherY, z, BlockProps{}) : DesiredBlock::any();
+            if (other.name != desired.name || tallPlantUpper(other) != std::optional<bool>(!*upper))
+                issue("Tall plant needs both halves in the selected schematic layers");
+        }
         for(const auto& [key,value]:desired.states) {
             ++result.stateChecks;
-            if(!isOrientationState(key))issue("State is not reproduced by the current placement controller: "+key+"="+value);
+            if(!isOrientationState(key) && !(key == "upper_block_bit" && tallPlantUpper(desired)))
+                issue("State is not reproduced by the current placement controller: "+key+"="+value);
         }
         if(desired.name.find("chest")!=std::string::npos || desired.name.find("shulker")!=std::string::npos || desired.name.find("sign")!=std::string::npos)
             issue("Block-entity contents/text are not reproduced by ordinary block placement");

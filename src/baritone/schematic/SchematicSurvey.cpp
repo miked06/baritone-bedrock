@@ -18,7 +18,7 @@ void SchematicSurvey::need(const DesiredBlock& desired, BlockPos local) {
         for (const auto& [k, v] : desired.states) if (k == key) return v;
         return {};
     };
-    if (desired.name.ends_with("_door") || desired.name == "minecraft:wooden_door") {
+    if (desired.name.ends_with("_door") || tallPlantUpper(desired).has_value()) {
         if (state("upper_block_bit") == "1" || state("upper_block_bit") == "true") --local.y;
         if (!assemblies_.insert(local).second) return;
     }

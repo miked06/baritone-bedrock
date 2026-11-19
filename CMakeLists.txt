@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.25)
-project(BaritoneBedrock VERSION 1.7.2 LANGUAGES C CXX)
+project(BaritoneBedrock VERSION 1.8.0 LANGUAGES C CXX)
 
 if(NOT CMAKE_SIZEOF_VOID_P EQUAL 8)
     message(FATAL_ERROR "Minecraft Bedrock is x64 only: configure with -A x64")
@@ -43,7 +43,7 @@ target_include_directories(BaritoneBedrock PRIVATE src "${CMAKE_CURRENT_BINARY_D
 target_compile_definitions(BaritoneBedrock PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX _CRT_SECURE_NO_WARNINGS
     BARITONE_BEDROCK_VERSION="${PROJECT_VERSION}")
 target_compile_options(BaritoneBedrock PRIVATE /W4 /permissive- /utf-8 /MP /wd4201 /wd4324)
-target_link_libraries(BaritoneBedrock PRIVATE baritone_core minhook libhat::libhat EnTT::EnTT)
+target_link_libraries(BaritoneBedrock PRIVATE baritone_core minhook libhat::libhat EnTT::EnTT windowscodecs runtimeobject ole32)
 # Keep the PDB next to the DLL: crash logs point into it.
 set_target_properties(BaritoneBedrock PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"

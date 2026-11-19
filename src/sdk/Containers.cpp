@@ -1,4 +1,6 @@
 #include "sdk/Containers.h"
+
+#include "core/GameVersion.h"
 #include <Windows.h>
 #include <cstring>
 #include <memory>
@@ -58,9 +60,9 @@ const ItemStack* emptyStack() {
     // Unique initialized ItemStack with null item/data and count zero in the
     // 1.26.6301.0 image. Native code uses it as its empty-stack fallback.
     const auto base = reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr));
-    const auto* empty = reinterpret_cast<const ItemStack*>(base + offsets::ItemStack_empty);
+    const auto* empty = reinterpret_cast<const ItemStack*>(base + gameversion::profile().emptyStack);
     if (!mem::isReadable(empty, offsets::ItemStack_size) ||
-        *reinterpret_cast<const uintptr_t*>(empty) != base + offsets::ItemStack_vtable ||
+        *reinterpret_cast<const uintptr_t*>(empty) != base + gameversion::profile().itemStackTable ||
         mem::member<uintptr_t>(empty, 8) || mem::member<uintptr_t>(empty, 0x10) || empty->count()) return nullptr;
     return empty;
 }

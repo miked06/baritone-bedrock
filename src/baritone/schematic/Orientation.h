@@ -15,7 +15,12 @@ namespace baritone {
 //   upside_down_bit              (stairs)         same rule as slabs
 //   weirdo_direction             (stairs)         direction the player faces
 //   minecraft:cardinal_direction (furnaces, chests, pumpkins...) faces the player
+//   torch_facing_direction       (torches)        side against its supporting block
 bool isOrientationState(std::string_view key);
+bool isTallPlant(std::string_view name);
+std::optional<bool> tallPlantUpper(const DesiredBlock& desired);
+bool isSecondaryPlacement(const DesiredBlock& desired);
+bool tallPlantHalfMatches(const DesiredBlock& desired, const BlockProps& current);
 
 // Same block and, unless ignoreDirection, the same orientation states.
 bool blockMatches(const DesiredBlock& desired, const BlockProps& current, bool ignoreDirection);

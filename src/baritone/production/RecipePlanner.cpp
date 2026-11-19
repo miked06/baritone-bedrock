@@ -145,6 +145,7 @@ RecipeBook RecipeBook::vanillaBasics() {
     result.set({"crafting_table", 1, {{planks, 4}}});
     result.set({"chest", 1, {{planks, 8}}});
     result.set({"torch", 4, {{{"coal", "charcoal"}, 1}, {{"stick"}, 1}}});
+    result.set({"paper", 3, {{{"sugar_cane"}, 3}}});
     result.set({"furnace", 1, {{{"cobblestone", "cobbled_deepslate", "blackstone"}, 8}}});
     result.set({"wooden_pickaxe", 1, {{planks, 3}, {{"stick"}, 2}}});
     result.set({"stone_pickaxe", 1, {{{"cobblestone", "cobbled_deepslate", "blackstone"}, 3}, {{"stick"}, 2}}});

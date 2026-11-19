@@ -7,6 +7,7 @@
 #include <string>
 
 #include "baritone/schematic/NbtReader.h"
+#include "baritone/schematic/Orientation.h"
 
 namespace baritone {
 
@@ -57,7 +58,9 @@ SchematicMaterials StaticSchematic::materialCounts(int firstY, int lastY) const 
     for (std::size_t i = 0; i < counts.size(); ++i) {
         if (!counts[i]) continue;
         const auto& block = palette_[i];
-        if (block.kind == DesiredBlock::Kind::Block) result.blocks[block.name] += counts[i];
+        if (block.kind == DesiredBlock::Kind::Block) {
+            if (!isSecondaryPlacement(block)) result.blocks[block.name] += counts[i];
+        }
         else if (block.kind == DesiredBlock::Kind::Air) result.air += counts[i];
         else result.ignored += counts[i];
     }
@@ -199,7 +202,7 @@ DesiredBlock transformDirections(DesiredBlock b, F turn, bool swapAxes) {
         if (key == "pillar_axis" && swapAxes) {
             if (value == "x") value = "z";
             else if (value == "z") value = "x";
-        } else if (key == "minecraft:cardinal_direction" || key == "minecraft:facing_direction") {
+        } else if (key == "minecraft:cardinal_direction" || key == "minecraft:facing_direction" || key == "torch_facing_direction") {
             int cw = clockwiseIndex(value);
             if (cw >= 0) value = std::string(kClockwise[turn(cw)]);
         } else if (key == "weirdo_direction" || key == "direction" || key == "facing_direction") {

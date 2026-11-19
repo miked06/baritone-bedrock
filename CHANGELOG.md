@@ -2,6 +2,28 @@
 
 All notable changes to Baritone Bedrock. Versions follow [semantic versioning](https://semver.org/).
 
+## 1.8.0
+
+Windows x64 release for **Minecraft Bedrock 26.65 and 26.63** (packages
+`1.26.6501.0` and `1.26.6301.0`).
+
+- Preview a route and its expected block actions with `#calc`.
+- Load local resource-pack PNGs for in-game schematic previews with `#ghostpack`.
+- Preserve more imported schematic states and resume construction from verified
+  world-specific checkpoints after a reload.
+- Plan production with optional smelting or crop harvesting. Withdraw supplies
+  from supported vanilla shulker boxes with confirmed transfer and recovery.
+- Register rail stations, preview connected routes and use experimental minecart
+  travel. A complete in-game ride still needs validation.
+- Keep selected destination coordinates visible across map refreshes. Report an
+  empty inventory in chat and expose bounded timing diagnostics.
+
+Validation on 26.65 covered 151 C++ tests (also under AddressSanitizer),
+five Python importer tests, live command checks, route and construction previews,
+schematic textures, and HTML and ZIP exports. The
+[Windows validation matrix](docs/WINDOWS_NEXT.md#validation) records the
+remaining live scenarios and villager trading work.
+
 ## 1.7.2
 
 Windows x64 release for **Minecraft Bedrock 26.63** (package `1.26.6301.0`).

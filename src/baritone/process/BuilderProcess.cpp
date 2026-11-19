@@ -36,6 +36,7 @@ std::vector<std::string> substitutesFor(const BlockList& list, const std::string
 bool sameBlockstate(const DesiredBlock& desired, const BlockProps& current) {
     const Settings& s = Settings::get();
     if (desired.kind != DesiredBlock::Kind::Block || desired.name != current.name) return false;
+    if (!tallPlantHalfMatches(desired, current)) return false;
     if (s.buildIgnoreDirection) return true;
     for (const auto& [key, value] : desired.states) {
         if (!isOrientationState(key)) continue;
@@ -275,7 +276,7 @@ std::optional<DesiredBlock> BuilderProcess::getSchematic(int x, int y, int z, co
 std::optional<std::string> BuilderProcess::placeAt(int x, int y, int z, const BlockProps& current) const {
     if (!schematic_) return std::nullopt;
     auto d = getSchematic(x, y, z, current);
-    if (!d || d->kind != DesiredBlock::Kind::Block) return std::nullopt;
+    if (!d || d->kind != DesiredBlock::Kind::Block || tallPlantUpper(*d)) return std::nullopt;
     return d->name;
 }
 
@@ -309,6 +310,10 @@ bool BuilderProcess::haveItemFor(const std::string& block, bool wholeInventory) 
 
 // The block itself, or the first buildSubstitutes alternative we have.
 std::optional<DesiredBlock> BuilderProcess::placeable(const DesiredBlock& wanted, bool wholeInventory) {
+    if (auto upper = tallPlantUpper(wanted)) {
+        if (*upper || !haveItemFor(wanted.name, wholeInventory)) return std::nullopt;
+        return wanted;
+    }
     if (haveItemFor(wanted.name, wholeInventory)) return wanted;
     for (const std::string& alt : substitutesFor(Settings::get().buildSubstitutes, wanted.name)) {
         if (haveItemFor(alt, wholeInventory)) {
@@ -355,6 +360,7 @@ void BuilderProcess::customizeContext(CalculationContext& ctx) {
         auto d = getSchematic(x, y, z, current);
         if (d) {
             if (d->kind == DesiredBlock::Kind::Air) return placeBlockCost * placeMult;  // we'll have to break it eventually
+            if (tallPlantUpper(*d)) return costs::COST_INF;  // only the builder places complete pairs
             if (hotbar.contains(d->name)) return 0.0;  // free to place a block where it should go
             if (!hasThrowaway) return costs::COST_INF;
             return placeBlockCost * 1.5 * placeMult;
@@ -369,6 +375,7 @@ void BuilderProcess::customizeContext(CalculationContext& ctx) {
         auto d = getSchematic(x, y, z, current);
         if (d) {
             if (d->kind == DesiredBlock::Kind::Air) return 1.0;
+            if (tallPlantUpper(*d)) return costs::COST_INF;
             if (valid(current, d, false)) return breakCorrectMult;
             const auto alternatives = substitutesFor(buildSubstitutes, d->name);
             if (!allowPlace || (!hotbar.contains(d->name) &&
@@ -482,7 +489,7 @@ std::optional<std::pair<BlockPos, Rotation>> BuilderProcess::toBreakNearPlayer(E
                 if (dy == -1 && x == pathStart.x && z == pathStart.z) continue;  // don't mine what supports us
                 const BlockProps& current = ec.calc.props(x, y, z);
                 auto desired = getSchematic(x, y, z, current);
-                if (!desired) continue;
+                if (!desired || tallPlantUpper(*desired)) continue;
                 if (!isAir(current) && !isLiquid(current) && !valid(current, desired, false) && !current.unbreakable &&
                     (ec.calc.allowBreak || ec.calc.allowBreakAnyway.contains(current.name)) && !ec.calc.isDisallowedBreaking(current)) {
                     if (desired->kind == DesiredBlock::Kind::Block &&
@@ -502,11 +509,27 @@ bool BuilderProcess::tryPlace(const BlockPos& pos, const DesiredBlock& block, Ex
     CalculationContext& ctx = ec.calc;
     if (!ctx.permitsModify(pos)) return false;
     const auto& current = ctx.props(pos.x, pos.y, pos.z);
+    const auto plant = tallPlantUpper(block);
+    if (plant) {
+        const auto top = pos.above();
+        if (*plant || !ctx.isLoadedLive(top.x, top.z) || top.y >= ctx.bsi.maxY() || !ctx.permitsModify(top) ||
+            !isAir(current)) return false;
+        const auto& topBlock = ctx.props(top.x, top.y, top.z);
+        const auto target = getSchematic(top.x, top.y, top.z, topBlock);
+        if (!target || target->name != block.name || !tallPlantUpper(*target).value_or(false) || !isAir(topBlock) ||
+            movement_helper::intersectsPlayer(baritone_.player(), top)) return false;
+        const auto& soil = ctx.props(pos.x, pos.y - 1, pos.z);
+        const auto& name = soil.name;
+        if (name != "minecraft:grass_block" && name != "minecraft:dirt" && name != "minecraft:coarse_dirt" &&
+            name != "minecraft:podzol" && name != "minecraft:dirt_with_roots" && name != "minecraft:farmland" &&
+            name != "minecraft:moss_block" && name != "minecraft:mycelium") return false;
+    }
     if (current.hasFluid() && ((current.fluidLevel == 0 && !settings.allowPlaceInFluidsSource) ||
         (current.fluidLevel != 0 && !settings.allowPlaceInFluidsFlow))) return false;
     double reach = baritone_.player().blockReachDistance();
     bool ignoreDirection = Settings::get().buildIgnoreDirection;
     for (Direction d : kAllFaces) {
+        if (plant && d != Direction::Down) continue;
         BlockPos against = pos.offset(d);
         if (!helper::canPlaceAgainst(ctx.props(against.x, against.y, against.z))) continue;
         bool side = d != Direction::Up && d != Direction::Down;
@@ -548,7 +571,7 @@ bool BuilderProcess::searchForPlacables(ExecContext& ec, bool isSafeToCancel, st
                 int x = center.x + dx, y = center.y + dy, z = center.z + dz;
                 const BlockProps& current = ctx.props(x, y, z);
                 auto desired = getSchematic(x, y, z, current);
-                if (!desired || desired->kind != DesiredBlock::Kind::Block) continue;
+                if (!desired || desired->kind != DesiredBlock::Kind::Block || tallPlantUpper(*desired).value_or(false)) continue;
                 if (valid(current, desired, false)) continue;
                 if (!helper::isReplaceable(ctx, x, y, z, current)) {
                     if (settings.allowPlace && settings.allowInventory && !placeable(*desired, false)) {
@@ -661,6 +684,7 @@ GoalPtr BuilderProcess::assemble(CalculationContext& ctx, bool wholeInventory, b
             if (!desired) {
                 outOfBounds.push_back(pos);
             } else if (desired->kind == DesiredBlock::Kind::Block) {
+                if (tallPlantUpper(*desired).value_or(false)) continue;
                 if (auto b = placeable(*desired, wholeInventory)) placeableList.emplace_back(pos, *b);
                 else missing[desired->name]++;
             }
@@ -668,7 +692,7 @@ GoalPtr BuilderProcess::assemble(CalculationContext& ctx, bool wholeInventory, b
             (helper::possiblyFlowing(state) ? flowingLiquids : sourceLiquids).push_back(pos);
         } else {
             const auto wanted = getSchematic(pos.x, pos.y, pos.z, state);
-            if (!wanted) continue;
+            if (!wanted || tallPlantUpper(*wanted)) continue;
             if (wanted->kind == DesiredBlock::Kind::Block) {
                 if (!allowPlace) continue;
                 if (!placeable(*wanted, wholeInventory)) {

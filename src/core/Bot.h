@@ -10,6 +10,7 @@
 
 #include "baritone/Baritone.h"
 #include "baritone/cache/Waypoints.h"
+#include "baritone/pathing/calc/PathPreview.h"
 #include "baritone/selection/ClickSelection.h"
 #include "baritone/schematic/SchematicWorkspace.h"
 #include "baritone/schematic/SchematicCatalog.h"
@@ -72,6 +73,8 @@ public:
     void loadSchematicAsync(std::string file, baritone::BlockPos origin, bool preview);
     void cancelSchematicLoad() { schematicLoad_.cancel(); }
     void runDiagnosticAsync(std::function<void()> task);
+    void startPathPreview(baritone::BlockPos start, baritone::GoalPtr goal);
+    void clearPathPreview();
     void startSchematicSurvey(bool materials);
     const baritone::SchematicSurvey& schematicSurvey() const { return survey_; }
     void setBuildAssistance(bool enabled) { assistEnabled_=enabled; assistHint_.reset(); }
@@ -172,13 +175,16 @@ private:
     void tickMiningPlan();
     void tickHistory();
     void tickConstructionJournal();
+    void pollPathPreview();
+    std::future<baritone::PathPreview> pathPreviewJob_;
+    std::shared_ptr<const baritone::PathPreview> pathPreview_;
+    bool pathPreviewWanted_ = false;
     void updateMap();
     std::future<void> constructionJournal_;
     uint64_t constructionSavedSession_ = 0;
     int constructionSavedPhase_ = -1;
     uint64_t constructionObservedSession_ = 0;
     baritone::WorldIdentity constructionIdentity_;
-    bool constructionJournalFailed_ = false;
     void recordIntent(baritone::BlockPos position);
     std::shared_ptr<baritone::MiningPlan> miningPlan_;
     bool miningActive_ = false, miningExecute_ = false, miningStarted_ = false, miningChecking_ = false;
@@ -217,7 +223,8 @@ private:
     bool loadingSchematicPreview_ = true;
     uint64_t worldGeneration_ = 0, loadingSchematicGeneration_ = 0;
     void pollSchematicLoad();
-    std::vector<baritone::SchematicWorkspace::PreviewCell> schematicPreview_;
+    std::shared_ptr<const std::vector<baritone::SchematicWorkspace::PreviewCell>> schematicPreview_;
+    bool texturedSchematicPreview_ = false;
     uint64_t schematicPreviewRevision_ = 0;
     std::optional<int> schematicDimension_;
     std::optional<baritone::BlockPos> clickTarget_;

@@ -20,7 +20,6 @@
 #include "baritone/Settings.h"
 #include "baritone/cache/CachedChunk.h"
 #include "baritone/cache/WorldScanner.h"
-#include "baritone/pathing/calc/AStarPathFinder.h"
 #include "baritone/pathing/movement/MovementHelper.h"
 #include "baritone/schematic/Schematic.h"
 #include "command/SchematicCommands.h"
@@ -640,7 +639,7 @@ void registerAll(CommandManager& manager, Bot& bot) {
 
     manager.add({{"version"}, "version", "Show the bot version", [](const Args&) {
         chat::info(std::format("Baritone Bedrock " BARITONE_BEDROCK_VERSION
-                              " (port of cabaletta/baritone) - Minecraft Bedrock {}", gameversion::supported));
+                              " (port of cabaletta/baritone) - Minecraft Bedrock package {}", gameversion::profile().package));
     }});
 
     manager.add({{"explore"}, "explore [x z]", "Explore chunks that have never been loaded, in a spiral", [&bot](const Args& args) {
@@ -1192,9 +1191,11 @@ void registerAll(CommandManager& manager, Bot& bot) {
         requirePlayer();
         auto& p = bot.player();
         int slots = !args.empty() && args[0] == "all" ? 36 : 9;
+        bool found = false;
         for (int i = 0; i < slots; ++i) {
             auto s = p.hotbar(i);
             if (s.empty()) continue;
+            found = true;
             std::string extra;
             if (s.maxDamage > 0) extra += std::format(" [damage {}/{}]", s.damage, s.maxDamage);
             if (s.efficiency) extra += std::format(" [efficiency {}]", s.efficiency);
@@ -1204,6 +1205,7 @@ void registerAll(CommandManager& manager, Bot& bot) {
                                    s.tool != baritone::Tool::None ? std::format(" [tool tier {} speed {}]", s.toolTier, s.toolSpeed) : "",
                                    extra));
         }
+        if (!found) chat::info(slots == 36 ? "Inventory is empty" : "Hotbar is empty");
     }});
 
     manager.add({{"break"}, "break <dx> <dy> <dz>", "Dev: break a block (relative to feet)", [&bot](const Args& args) {
@@ -1304,8 +1306,13 @@ void registerAll(CommandManager& manager, Bot& bot) {
         }
     }});
 
-    manager.add({{"calc"}, "calc <x> [y] <z>", "Dev: calculate a path without moving (using the player's abilities)", [](const Args& args) {
-        if (args.size() != 2 && args.size() != 3) throw CommandError("Usage: #calc <x> [y] <z>");
+    manager.add({{"calc"}, "calc <x> [y] <z> | clear", "Preview a path and its required block actions without moving", [&bot](const Args& args) {
+        if (args == Args{"clear"}) {
+            bot.clearPathPreview();
+            chat::info("Path preview cleared");
+            return;
+        }
+        if (args.size() != 2 && args.size() != 3) throw CommandError("Usage: #calc <x> [y] <z> | clear");
         auto& player = requirePlayer();
         sdk::BlockPos feet = sdk::BlockPos::floor(player.feet());
         baritone::BlockPos start{feet.x, feet.y, feet.z};
@@ -1316,33 +1323,7 @@ void registerAll(CommandManager& manager, Bot& bot) {
         } else {
             goal = std::make_shared<baritone::GoalXZ>(parseCoord(args[0], feet.x, "x"), parseCoord(args[1], feet.z, "z"));
         }
-        auto snap = platform::WorldTracker::get().snapshot();
-        if (!snap) throw CommandError("No world snapshot available");
-        baritone::PlayerAbilities abilities = Bot::get().baritone().inventory().abilities();
-        Bot::get().runDiagnosticAsync([snap, start, goal, abilities] {
-            chat::info(std::format("Calculating a path from {} to {}...", start, goal->toString()));
-            auto t0 = std::chrono::steady_clock::now();
-            auto ctx = std::make_unique<baritone::CalculationContext>(snap, abilities, true);
-            baritone::AStarPathFinder finder(start, goal, std::move(ctx), {});
-            auto result = finder.calculate(2000, 5000);
-            double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
-            if (!result.path) {
-                chat::error(std::format("No path ({:.0f} ms, type {}): {}", ms, static_cast<int>(result.type),
-                                        result.error));
-                return;
-            }
-            const char* kind = result.type == baritone::PathResultType::SuccessToGoal ? "complete" : "segment";
-            chat::info(std::format("Path {}: {} positions, estimated {:.1f} s, {} nodes, {:.0f} ms", kind,
-                                   result.path->length(), result.path->totalTicks() / 20.0,
-                                   result.path->numNodesConsidered(), ms));
-            std::string moves;
-            for (const auto& m : result.path->movements()) {
-                static constexpr const char* names[] = {"T", "A", "D", "F", "Di", "P", "Dw", "Pk"};
-                moves += names[static_cast<int>(m.type)];
-                moves += ' ';
-            }
-            logger::info("path: {}", moves);
-        });
+        bot.startPathPreview(start, std::move(goal));
     }});
 
     manager.add({{"nbt"}, "nbt [dx dy dz]", "Dev: show block states (relative to feet)", [](const Args& args) {

@@ -27,6 +27,8 @@ Baritone::Baritone(PlayerContext& player, Notify notify)
       storage_(*this),
       trees_(*this),
       vehicle_(*this),
+      rail_(*this),
+      shulker_(*this),
       smelt_(*this),
       craft_(*this),
       production_(*this),
@@ -56,6 +58,8 @@ Baritone::Baritone(PlayerContext& player, Notify notify)
     control_.registerProcess(&storage_);
     control_.registerProcess(&trees_);
     control_.registerProcess(&vehicle_);
+    control_.registerProcess(&rail_);
+    control_.registerProcess(&shulker_);
     control_.registerProcess(&smelt_);
     control_.registerProcess(&craft_);
     control_.registerProcess(&production_);

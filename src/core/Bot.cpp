@@ -89,6 +89,7 @@ void Bot::saveSettings() {
 }
 
 void Bot::cancelAll() {
+    clearPathPreview();
     setBuildAssistance(false);
     portalJourney_.cancel();
     miningActive_ = miningStarted_ = miningChecking_ = false;
@@ -330,7 +331,7 @@ void Bot::bindWorldPlayer(sdk::LocalPlayer* player) {
     schematics_.clear();
     placements_.clear();
     placementsFile_.clear();
-    schematicPreview_.clear();
+    schematicPreview_.reset();
     schematicDimension_.reset();
     platform::PathRenderer::get().clear();
     cancelAll();
@@ -353,6 +354,7 @@ void Bot::onFrame() {
     while (auto line = devpipe::poll()) commands_.execute(*line);
     if (auto error = taskWriter_.poll()) chat::error("Task checkpoint error: " + *error);
     pollSchematicLoad();
+    pollPathPreview();
     if (player) {
         player_.pumpInventoryUi();
         updateClickSelection();
@@ -431,7 +433,7 @@ void Bot::onTick(void* level) {
         if (expected) { portalJourney_ = std::move(continued); chat::info("Registered portal transition confirmed; continuing the route"); }
         schematics_.clear();
         placements_.clear();
-        schematicPreview_.clear();
+        schematicPreview_.reset();
     }
     schematicDimension_ = tracker.dimension();
     tickHistory();
@@ -542,6 +544,7 @@ void Bot::onTick(void* level) {
     platform::PathRenderer::Frame frame;
     if(assistHint_)frame.assistedBlock=assistHint_->position;
     frame.path = pathing.currentPathPositions();
+    frame.pathPreview = pathPreview_;
     frame.pathPosition = pathing.currentPathPosition();
     frame.next = pathing.nextPathPositions();
     frame.calculating = pathing.calculationInProgress();
@@ -559,17 +562,21 @@ void Bot::onTick(void* level) {
     frame.selections = selectionBoxes();
     frame.build = baritone_->builder().bounds();
     if (schematics_.loaded() || !placements_.entries().empty()) {
-        if (ticks_ % 10 == 0 || schematicPreviewRevision_ != schematics_.revision()) {
+        const bool textured = static_cast<bool>(platform::PathRenderer::get().ghostTextures());
+        if (!schematicPreview_ || ticks_ % 10 == 0 || schematicPreviewRevision_ != schematics_.revision() ||
+            texturedSchematicPreview_ != textured) {
             perf::Scope previewTiming(perf::Metric::Preview);
-            schematicPreview_ = placements_.preview(*tracker.snapshot(), {feet.x, feet.y, feet.z}, schematics_);
+            auto cells = placements_.preview(*tracker.snapshot(), {feet.x, feet.y, feet.z}, schematics_, 512, textured);
             if (schematicPreviewRevision_ != schematics_.revision())
-                logger::debug("Schematic preview: {} difference boxes, origin {}", schematicPreview_.size(), schematics_.origin());
+                logger::debug("Schematic preview: {} difference boxes, origin {}", cells.size(), schematics_.origin());
+            schematicPreview_ = std::make_shared<const decltype(cells)>(std::move(cells));
             schematicPreviewRevision_ = schematics_.revision();
+            texturedSchematicPreview_ = textured;
         }
         if (schematics_.loaded() && schematics_.previewEnabled()) frame.schematicBounds = schematics_.bounds();
         frame.schematicPreview = schematicPreview_;
     } else {
-        schematicPreview_.clear();
+        schematicPreview_.reset();
     }
     frame.elytraPath = baritone_->elytra().path();
     frame.elytraAim = baritone_->elytra().aim();

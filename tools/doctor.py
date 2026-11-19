@@ -11,9 +11,10 @@ import hashlib
 import json
 import os
 from pathlib import Path
-import re
 import struct
 import subprocess
+
+from profilecheck import native_profiles
 
 
 def process_ids():
@@ -77,11 +78,8 @@ def main():
     args = parser.parse_args()
     if os.name != 'nt' or ctypes.sizeof(ctypes.c_void_p) != 8:
         parser.error('Run with 64-bit Python on Windows')
-    header = (root / 'src/core/GameVersion.h').read_text(encoding='utf-8')
-    match = re.search(r'package (\d+\.\d+\.\d+\.\d+)', header)
-    if not match:
-        parser.error('Cannot identify the project compatibility profile')
-    report = {'supported_package': match.group(1), 'checks': [], 'read_only': True}
+    supported = list(native_profiles())
+    report = {'supported_packages': supported, 'checks': [], 'read_only': True}
     def check(name, state, message):
         report['checks'].append({'check': name, 'state': state, 'message': message})
         print(f'{state.upper()} {name}: {message}')
@@ -102,8 +100,10 @@ def main():
             report['package_identity'] = identity
             parts = identity.split('_')
             version = parts[1] if len(parts) > 1 else ''
-            compatible = (version == match.group(1) and len(parts) > 2 and parts[0] == 'Microsoft.MinecraftUWP' and parts[2] == 'x64')
-            check('Game package', 'pass' if compatible else 'fail', identity)
+            compatible = (version in supported and len(parts) > 2 and parts[0] == 'Microsoft.MinecraftUWP' and parts[2] == 'x64')
+            report['selected_profile'] = version if compatible else None
+            message = f'{identity}. ' + (f'Profile {version} selected' if compatible else f'No native profile. Available x64 packages: {", ".join(supported)}')
+            check('Game package', 'pass' if compatible else 'fail', message)
         except OSError as error:
             check('Game package', 'fail', str(error))
         try:

@@ -19,6 +19,8 @@
 #include "baritone/selection/ClickSelection.h"
 #include "baritone/behavior/InventoryBehavior.h"
 #include "baritone/pathing/calc/AStarPathFinder.h"
+#include "baritone/pathing/calc/PathPreview.h"
+#include "baritone/pathing/RailPath.h"
 #include "baritone/pathing/goals/Goal.h"
 #include "baritone/cache/CachedWorld.h"
 #include "baritone/cache/CachedMesh.h"
@@ -468,7 +470,7 @@ TEST(sponge_schem_loading) {
     w.named(2, "Length"), w.i16(2);
     w.named(10, "Palette");
     w.named(3, "minecraft:stone"), w.i32(0);
-    w.named(3, "minecraft:oak_stairs[facing=north,half=bottom]"), w.i32(1);
+    w.named(3, "minecraft:oak_stairs[facing=north,half=bottom,shape=inner_left,waterlogged=false]"), w.i32(1);
     w.named(3, "minecraft:air"), w.i32(2);
     w.named(3, "minecraft:cobweb"), w.i32(3);
     w.end();
@@ -482,6 +484,8 @@ TEST(sponge_schem_loading) {
     CHECK(s->desired(1, 0, 0, "").name == "minecraft:oak_stairs");
     CHECK(s->desired(0, 0, 1, "").kind == DesiredBlock::Kind::Air);
     CHECK(s->desired(1, 0, 1, "").name == "minecraft:web");
+    CHECK(std::ranges::any_of(s->warnings(), [](const std::string& note) { return note.contains("shape=inner_left"); }));
+    CHECK(std::ranges::none_of(s->warnings(), [](const std::string& note) { return note.contains("waterlogged=false"); }));
 }
 
 TEST(litematic_loading) {
@@ -517,11 +521,13 @@ TEST(litematic_loading) {
     SchematicPtr s = loadSchematic(path);
     std::filesystem::remove(path);
     CHECK(s->size() == (BlockPos{30, 1, 1}));
+    CHECK(std::ranges::any_of(s->warnings(), [](const std::string& note) { return note.contains("minecraft:red_bed color="); }));
     const char* bedrock[] = {"", "minecraft:stone", "minecraft:bed", "minecraft:dirt", "minecraft:mob_spawner"};
     for (int x = 0; x < 30; ++x) {
         DesiredBlock d = s->desired(x, 0, 0, "");
         if (values[x] == 0) CHECK_MSG(d.kind == DesiredBlock::Kind::Air, std::format("x={}", x));
         else CHECK_MSG(d.name == bedrock[values[x]], std::format("x={} got {}", x, d.name));
+        if (values[x] == 2) CHECK(isSecondaryPlacement(d));
     }
 }
 
@@ -571,6 +577,13 @@ TEST(orientation_rules) {
     DesiredBlock slab = javaToBedrock("minecraft:stone_brick_slab[type=top]");
     CHECK(placementGivesOrientation(slab, {Direction::Up, true, Direction::North}));  // under a block
     CHECK(javaToBedrock("minecraft:oak_slab[type=double]").name == "minecraft:oak_double_slab");
+
+    auto torch = javaToBedrock("minecraft:soul_wall_torch[facing=east]");
+    CHECK(torch.name == "minecraft:soul_torch");
+    CHECK(placementGivesOrientation(torch, {Direction::West, false, Direction::North}));
+    CHECK(!placementGivesOrientation(torch, {Direction::East, false, Direction::North}));
+    CHECK(placementGivesOrientation(rotateBlock(torch, 1), {Direction::North, false, Direction::North}));
+    CHECK(placementGivesOrientation(javaToBedrock("minecraft:torch"), {Direction::Down, false, Direction::North}));
 
     BlockProps placed;
     placed.name = "minecraft:oak_stairs";
@@ -1240,6 +1253,10 @@ TEST(schematic_workspace_preview_is_bounded_and_uses_live_states) {
     CHECK(preview[0].pos == (BlockPos{1, 1, 0}) && preview[0].difference == D::Missing);
     CHECK(preview[1].difference == D::Wrong);
     CHECK(preview[2].difference == D::Remove);
+    CHECK(preview[0].material.empty());
+    const auto textured = work.preview(*world.snapshot(), {0, 1, 0}, 16, 2048, true);
+    CHECK(textured.size() == 3);
+    CHECK(textured[0].material == "minecraft:stone" && textured[1].material == "minecraft:stone" && textured[2].material.empty());
     CHECK(work.preview(*world.snapshot(), {0, 1, 0}, 16, 1).size() == 1);
     CHECK(work.preview(*world.snapshot(), {1000, 1, 0}).empty());
     work.move({15, 1, 0});
@@ -1457,6 +1474,63 @@ TEST(builder_keeps_the_source_until_the_replacement_is_available) {
         breaking |= bot.controls().input(Input::ClickLeft);
     }
     CHECK(breaking);
+}
+
+TEST(paired_schematic_states_survive_import_and_count_one_item) {
+    auto upper = javaToBedrock("minecraft:sunflower[half=upper]");
+    auto lower = javaToBedrock("minecraft:sunflower[half=lower]");
+    StaticSchematic pair({1, 2, 1}, {lower, upper}, {0, 1});
+    CHECK(pair.materialCounts().blocks.at("minecraft:sunflower") == 1);
+    CHECK(pair.materialCounts(1, 1).blocks.empty());
+    BlockProps native;
+    native.name = lower.name;
+    native.states = {{"upper_block_bit", "false"}};
+    CHECK(blockMatches(lower, native, false));
+    CHECK(!blockMatches(upper, native, true));
+    const auto door = javaToBedrock("minecraft:oak_door[half=upper,facing=east,hinge=right,open=true]");
+    CHECK(door.name == "minecraft:wooden_door" && isSecondaryPlacement(door));
+    const auto bed = rotateBlock(javaToBedrock("minecraft:red_bed[part=head,facing=east]"), 1);
+    native.name = bed.name;
+    native.states = {{"head_piece_bit", "true"}, {"direction", "0"}};
+    CHECK(isSecondaryPlacement(bed) && blockMatches(bed, native, false));
+    native.states[0].second = "0";
+    CHECK(!blockMatches(bed, native, false));
+}
+
+TEST(builder_places_a_tall_plant_only_when_both_cells_can_be_modified) {
+    SettingsGuard guard;
+    Settings::get().allowPlace = true;
+    Settings::get().buildInLayers = false;
+    TestWorld world(1);
+    world.floor(0, Blocks::get().grass);
+    test::TestPlayer player;
+    player.inventory[0] = {"minecraft:sunflower", 8, true};
+    Baritone bot(player, [](const std::string&, bool) {});
+    bot.tick(world.snapshot());
+    const auto base = javaToBedrock("minecraft:sunflower[half=lower]");
+    const auto top = javaToBedrock("minecraft:sunflower[half=upper]");
+    const BlockPos origin{2, 1, 0};
+    const auto source = std::make_shared<StaticSchematic>(BlockPos{1, 2, 1}, std::vector{base, top}, std::vector{0, 1});
+    auto clicks = [&](SchematicPtr schematic) {
+        bot.builder().build("paired plant", std::move(schematic), origin, false, false);
+        for (int tick = 0; tick < 8; ++tick) {
+            bot.controls() = {};
+            bot.builder().onTick(false, true);
+            CHECK(!bot.controls().input(Input::ClickLeft));
+            if (bot.controls().target.rotation) player.facing = *bot.controls().target.rotation;
+            if (bot.controls().input(Input::ClickRight)) return true;
+        }
+        return false;
+    };
+    CHECK(!clicks(std::make_shared<FillSchematic>(BlockPos{1, 1, 1}, base)));
+    auto policy = std::make_shared<ProtectionPolicy>();
+    policy->add({"above plant", {origin.above(), origin.above()}, ProtectionPolicy::NoModify});
+    world.snapshot()->setProtection(policy);
+    bot.tick(world.snapshot());
+    CHECK(!clicks(source));
+    world.snapshot()->setProtection({});
+    bot.tick(world.snapshot());
+    CHECK(clicks(source));
 }
 
 TEST(builder_incremental_layers_and_repeats_complete_with_a_shared_tick_budget) {
@@ -1944,6 +2018,153 @@ TEST(vehicle_routes_use_wide_corridors_and_refuse_land_or_unloaded_water) {
     CHECK(!vehicleNodeClear(*world.snapshot(),{4,1,0},VehicleKind::Boat));
     CHECK(!findVehiclePath(*world.snapshot(),{0,1,0},{16,1,0},VehicleKind::Boat).error.empty());
     CHECK(!findVehiclePath(*world.snapshot(),{0,1,0},{8,1,0},VehicleKind::Horse).error.empty());
+}
+
+StateId railState(std::string name, int shape, bool powered = false) {
+    BlockProps rail;
+    rail.name = std::move(name);
+    rail.collides = false;
+    rail.states = {{"rail_direction", std::to_string(shape)}, {"rail_data_bit", powered ? "1" : "0"}};
+    return BlockRegistry::get().add(std::move(rail));
+}
+
+TEST(rail_path_follows_curves_and_slopes_and_checks_the_stopping_platform) {
+    TestWorld world(1);
+    world.floor(0, Blocks::get().stone);
+    auto flat = railState("minecraft:rail", 1);
+    auto climb = railState("minecraft:rail", 2);
+    auto curve = railState("minecraft:rail", 7);
+    auto northSouth = railState("minecraft:rail", 0);
+    auto brake = railState("minecraft:golden_rail", 0);
+    const BlockPos start{0,1,0}, end{2,2,2};
+    world.set(0, 1, 0, flat);
+    world.set(1, 1, 0, climb);
+    world.fill(2, 1, 0, 2, 1, 2, Blocks::get().stone);
+    world.set(2, 2, 0, curve);
+    world.set(2, 2, 1, northSouth);
+    world.set(2, 2, 2, brake);
+    world.set(1, 1, 2, Blocks::get().stone);
+    world.set(3, 1, 2, Blocks::get().stone);
+    const auto route = findRailPath(*world.snapshot(), start, end);
+    CHECK_MSG(route.error.empty(), route.error);
+    CHECK((route.points == std::vector<BlockPos>{start, {1,1,0}, {2,2,0}, {2,2,1}, end}));
+    CHECK(railHasStoppingPlatform(*world.snapshot(), end));
+    world.set(2, 2, 2, railState("minecraft:golden_rail", 0, true));
+    CHECK(!railHasStoppingPlatform(*world.snapshot(), end));
+    world.set(2, 2, 2, brake);
+    world.set(1, 2, 2, Blocks::get().stone);
+    CHECK(!railHasStoppingPlatform(*world.snapshot(), end));
+    world.set(2, 2, 0, flat);
+    CHECK(!findRailPath(*world.snapshot(), start, end).error.empty());
+    world.set(2, 2, 0, curve);
+    auto policy = std::make_shared<ProtectionPolicy>();
+    policy->add({"closed track", {{2,2,1},{2,4,1}}, ProtectionPolicy::Both});
+    world.snapshot()->setProtection(policy);
+    CHECK(!findRailPath(*world.snapshot(), start, end).error.empty());
+}
+
+TEST(minecart_waits_for_boarding_and_stops_only_after_observed_dismount) {
+    SettingsGuard guard;
+    TestWorld world(1);
+    world.floor(0, Blocks::get().stone);
+    auto flat = railState("minecraft:rail", 1);
+    auto brake = railState("minecraft:golden_rail", 1);
+    for (int x = 0; x < 4; ++x) world.set(x, 1, 0, flat);
+    world.set(4, 1, 0, brake);
+    test::TestPlayer player;
+    player.riding = false;
+    EntityInfo cart;
+    cart.id = 17;
+    cart.type = "minecraft:minecart";
+    cart.position = player.feet;
+    player.nearby.push_back(cart);
+    std::string result;
+    Baritone bot(player, [&](const std::string& line, bool) { result = line; });
+    bot.tick(world.snapshot());
+    bot.rail().start({0,1,0}, {4,1,0});
+    for (int i = 0; i < 11; ++i) bot.tick(world.snapshot());
+    CHECK(player.interactions == 1 && bot.rail().displayName() == "Boarding minecart");
+    player.riding = true;
+    player.nearby.front().position = player.feet = {1.5, 1, .5};
+    bot.tick(world.snapshot());
+    CHECK(bot.rail().displayName() == "Minecart route: rail 2/5");
+    for (int x = 2; x <= 4; ++x) {
+        player.nearby.front().position = player.feet = {x + .5, 1, .5};
+        bot.tick(world.snapshot());
+        CHECK(!bot.controls().input(Input::Sneak));
+    }
+    for (int i = 0; i < 5; ++i) bot.tick(world.snapshot());
+    CHECK(bot.rail().isActive() && bot.controls().input(Input::Sneak));
+    player.riding = false;
+    bot.tick(world.snapshot());
+    CHECK(!bot.rail().isActive() && result == "Rail destination reached and dismount confirmed");
+}
+
+TEST(portable_shulker_checks_contents_and_confirms_withdrawal_and_recovery) {
+    SettingsGuard guard;
+    Settings::get().allowPlace = Settings::get().allowBreak = true;
+    TestWorld world(1);
+    world.floor(0, Blocks::get().stone);
+    BlockProps boxBlock;
+    boxBlock.name = "minecraft:red_shulker_box";
+    boxBlock.fullCube = boxBlock.canPlaceAgainst = true;
+    const auto state = BlockRegistry::get().add(boxBlock);
+    const BlockPos target{2, 1, 0};
+    struct Player : test::TestPlayer {
+        TestWorld& world;
+        const BlockPos target;
+        const StateId block;
+        PortableShulker box{"minecraft:red_shulker_box", {{0, {"minecraft:diamond", 14}}, {5, {"minecraft:coal", 6}}}};
+        int placements = 0, recoveries = 0;
+        bool substitute = false;
+        Player(TestWorld& w, BlockPos p, StateId id) : world(w), target(p), block(id) {
+            inventory[0] = {box.block, 1, true};
+        }
+        std::optional<PortableShulker> portableShulker(int i) const override {
+            return i == 0 && !inventory[0].empty() ? std::optional<PortableShulker>(box) : std::nullopt;
+        }
+        void useItemOn(const BlockPos& support, Direction side, const Vec3d&) override {
+            CHECK(support == target.below() && side == Direction::Up && selected == 0);
+            ++placements;
+            inventory[0] = {};
+            auto& container = workstationInventories[target];
+            for (int i = 0; i < 27; ++i) container.push_back({"shulker", i, false, {}, 7});
+            for (const auto& [index, item] : box.items) {
+                container[index].stack = {item.name, item.count};
+                container[index].stack.stackKey = item.name + ":0";
+            }
+            if (substitute) container[5].stack.count = 7;
+            world.set(target.x, target.y, target.z, block);
+        }
+        bool startOrContinueBreaking(const BlockPos& pos, Direction) override {
+            CHECK(pos == target && !containerOpen());
+            ++recoveries;
+            const auto& container = workstationInventories[target];
+            box.items.clear();
+            for (const auto& part : container)
+                if (!part.stack.empty()) box.items.emplace(part.slot, ShulkerItem{part.stack.name, part.stack.count});
+            inventory[0] = {box.block, 1, true};
+            world.set(target.x, target.y, target.z, Blocks::get().air);
+            return true;
+        }
+    };
+    auto run = [&](Player& player) {
+        std::string last;
+        Baritone bot(player, [&](const std::string& line, bool) { last = line; });
+        bot.tick(world.snapshot());
+        bot.shulker().start(0, "diamond", 10, target);
+        for (int tick = 0; tick < 120 && bot.shulker().isActive(); ++tick) bot.tick(world.snapshot());
+        CHECK_MSG(!bot.shulker().isActive(), last);
+        return last;
+    };
+    Player player(world, target, state);
+    CHECK(run(player).starts_with("Portable shulker withdrawal complete"));
+    CHECK(player.placements == 1 && player.transferRequests == 1 && player.recoveries == 1);
+    CHECK(player.countItem("minecraft:diamond") == 10 && player.box.items.at(0).count == 4 && player.box.items.at(5).count == 6);
+    Player changed(world, target, state);
+    changed.substitute = true;
+    CHECK(run(changed).contains("recovery was not confirmed"));
+    CHECK(changed.placements == 1 && changed.transferRequests == 0 && changed.recoveries == 0);
 }
 
 TEST(quarry_path_calculations_cannot_destroy_the_access_ramp) {
@@ -2545,6 +2766,67 @@ TEST(production_objective_restocks_then_delivers_and_respects_deposit_reserves) 
     CHECK(player.countItem("minecraft:torch")==12 && player.workstationInventories[delivery][0].stack.count==4 && !player.containerOpen());
 }
 
+TEST(production_objective_smelts_a_missing_crafting_ingredient_and_preserves_reserves) {
+    SettingsGuard guard;
+    TestWorld world(1);
+    world.floor(0, Blocks::get().stone);
+    test::TestPlayer player;
+    const BlockPos table{1, 1, 0}, furnace{0, 1, 1};
+    player.inventory[0] = {"minecraft:raw_iron", 4};
+    player.inventory[1] = {"minecraft:coal", 2};
+    player.inventory[2] = {"minecraft:stick", 2};
+    player.workstationInventories[table] = {};
+    player.workstationInventories[furnace] = {{"input", 0, false, {}, 25}, {"fuel", 0, false, {}, 24}, {"output", 0, false, {}, 26}};
+    player.recipeOptions = {{"recipes", "minecraft:iron_pickaxe", 0, 1}};
+    Baritone bot(player, [](const std::string&, bool) {});
+    bot.loadouts().set("reserve", {"raw_iron", 1, 1, -1, 0});
+    bot.loadouts().set("reserve", {"coal", 1, 1, -1, 0});
+    bot.loadouts().activate("reserve");
+    bot.tick(world.snapshot());
+    bot.produce().start(RecipeBook::vanillaBasics(), table, "iron_pickaxe", 1, {}, {}, furnace);
+    bool cooked = false, crafted = false;
+    for (int tick = 0; tick < 1200 && bot.produce().isActive(); ++tick) {
+        bot.tick(world.snapshot());
+        auto& slots = player.workstationInventories[furnace];
+        if (!cooked && slots[0].stack.count == 3 && slots[1].stack.count == 1) {
+            slots[0].stack = {};
+            slots[1].stack = {};
+            slots[2].stack = {"minecraft:iron_ingot", 3};
+            cooked = true;
+        }
+        if (!crafted && player.craftRequests != 0) {
+            CHECK(player.lastCraft.item == "minecraft:iron_pickaxe");
+            CHECK(player.countItem("minecraft:iron_ingot") == 3);
+            for (auto& stack : player.inventory)
+                if (stack.name == "minecraft:iron_ingot" || stack.name == "minecraft:stick") stack = {};
+            player.inventory[20] = {"minecraft:iron_pickaxe", 1};
+            player.crafting = TransferState::Accepted;
+            crafted = true;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    CHECK_MSG(bot.produce().succeeded(), bot.produce().failure());
+    CHECK(cooked && crafted && player.countItem("minecraft:iron_pickaxe") == 1);
+    CHECK(player.countItem("minecraft:raw_iron") == 1 && player.countItem("minecraft:coal") == 1);
+}
+
+TEST(production_objective_harvests_a_missing_crop_and_cancels_its_farm_task) {
+    SettingsGuard guard;
+    TestWorld world(1);
+    world.floor(0, Blocks::get().stone);
+    test::TestPlayer player;
+    Baritone bot(player, [](const std::string&, bool) {});
+    bot.tick(world.snapshot());
+    bot.produce().start(RecipeBook::vanillaBasics(), {1, 1, 0}, "paper", 3, {}, {}, {}, 8);
+    for (int tick = 0; tick < 300 && !bot.farm().isActive() && bot.produce().isActive(); ++tick) {
+        bot.produce().onTick(false, true);
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    CHECK(bot.farm().isActive() && !bot.mine().isActive());
+    bot.produce().onLostControl();
+    CHECK(!bot.produce().isActive() && !bot.farm().isActive());
+}
+
 TEST(workflow_templates_capture_absolute_targets_and_load_paused) {
     auto flow=instantiateWorkflow("produce-store",{"table","torch","16","supply","output"},{"test",0},{{"minecraft:torch",8}});
     CHECK(!flow.running() && flow.nodes().size()==2);
@@ -2641,6 +2923,61 @@ TEST(construction_checkpoint_preserves_support_cleanup_and_recovery_checks_curre
     auto wrongDimension=ConstructionPlan::recover(plan.checkpoint({"world",1},0));
     refused=false;try{bot.construction().resume(std::move(wrongDimension));}catch(const std::invalid_argument&){refused=true;}CHECK(refused && !bot.construction().isActive());
     refused=false;try{bot.construction().resume({});}catch(const std::invalid_argument&){refused=true;}CHECK(refused && !bot.construction().isActive());
+}
+
+TEST(construction_waits_for_its_own_checkpoint_before_enabling_builder) {
+    SettingsGuard guard;
+    TestWorld world(1);
+    world.floor(0, Blocks::get().stone);
+    test::TestPlayer player;
+    Baritone bot(player, [](const std::string&, bool) {});
+    bot.tick(world.snapshot());
+    auto& process = bot.construction();
+    auto source = std::make_shared<FillSchematic>(BlockPos{1, 1, 1}, DesiredBlock::block("minecraft:stone"));
+    process.start(source, {2, 3, 0}, "minecraft:cobblestone", 8, false, true);
+
+    const auto waiting = process.onTick(false, true);
+    CHECK(waiting && waiting->type == PathingCommandType::RequestPause && process.journalPlan());
+    CHECK(!bot.builder().isActive());
+    process.checkpointWritten(process.session() - 1, process.phase());
+    process.checkpointWritten(process.session(), process.phase() + 1);
+    process.onTick(false, true);
+    CHECK(!bot.builder().isActive());
+
+    process.checkpointFailed(process.session());
+    process.onTick(false, true);
+    CHECK(!process.isActive() && !bot.builder().isActive());
+
+    process.start(source, {2, 3, 0}, "minecraft:cobblestone", 8, false, true);
+    process.onTick(false, true);
+    auto restored = ConstructionPlan::recover(process.journalPlan()->checkpoint({"world", 0}, 0));
+    process.onLostControl();
+    process.resume(std::move(restored));
+    process.onTick(false, true);
+    CHECK(!bot.builder().isActive());
+    process.checkpointWritten(process.session(), process.phase());
+    process.onTick(false, true);
+    CHECK(bot.builder().isActive());
+}
+
+TEST(path_preview_reports_required_changes_and_nearby_hazards) {
+    SettingsGuard guard;
+    TestWorld world(1);
+    world.floor(0, Blocks::get().stone);
+    world.set(1, 1, 0, Blocks::get().stone);
+    world.set(2, 0, 0, Blocks::get().air);
+    world.set(1, 1, 1, Blocks::get().lava);
+    const BlockPos start{0, 1, 0}, blocked{1, 1, 0}, gap{2, 1, 0};
+    auto path = Path::fromParts({start, blocked, gap},
+        {{MovementType::Traverse, start, blocked, 4.0, true}, {MovementType::Traverse, blocked, gap, 4.0, false}},
+        std::make_shared<GoalBlock>(gap), 2);
+    CalculationContext context(world.snapshot(), {}, false);
+    auto preview = describePath(path, context);
+    CHECK(preview.path == path);
+    CHECK(preview.toBreak == std::vector<BlockPos>{blocked});
+    CHECK(preview.toPlace == std::vector<BlockPos>{gap.below()});
+    CHECK((preview.hazards == std::vector<BlockPos>{{1, 1, 1}}));
+    CHECK(preview.cachedMoves == 1 && preview.largestDrop == 0);
 }
 
 TEST(map_frames_distinguish_unknown_loaded_and_visited_without_loading_cache_regions) {

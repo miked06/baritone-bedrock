@@ -52,15 +52,16 @@ void SchematicCatalog::load(const std::filesystem::path& file) {
     }
     entries_ = std::move(parsed); ++revision_;
 }
-std::vector<SchematicWorkspace::PreviewCell> SchematicCatalog::preview(const WorldSnapshot& world, BlockPos center, const SchematicWorkspace& active, std::size_t limit) const {
+std::vector<SchematicWorkspace::PreviewCell> SchematicCatalog::preview(const WorldSnapshot& world, BlockPos center,
+    const SchematicWorkspace& active, std::size_t limit, bool includeMaterials) const {
     limit = std::min<std::size_t>(limit, 512);
-    auto result = active.preview(world, center, entries_.empty() ? 16 : 8, limit);
+    auto result = active.preview(world, center, entries_.empty() ? 16 : 8, limit, includeMaterials);
     std::set<BlockPos> seen; for (const auto& c : result) seen.insert(c.pos);
     for (const auto& [name, e] : entries_) {
         if (result.size() >= limit) break;
         if (!e.resident) continue;
-        for (const auto& cell : e.resident->preview(world, center, 8, limit - result.size()))
-            if (seen.insert(cell.pos).second) result.push_back(cell);
+        for (auto& cell : e.resident->preview(world, center, 8, limit - result.size(), includeMaterials))
+            if (seen.insert(cell.pos).second) result.push_back(std::move(cell));
     }
     return result;
 }

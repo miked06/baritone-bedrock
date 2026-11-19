@@ -4,11 +4,24 @@ HWND mapWindow=nullptr,mapMessage=nullptr;
 std::optional<baritone::MapFrame> mapFrame;
 std::optional<baritone::BlockPos> mapDestination;
 std::future<std::string> mapJob;
+
+void updateMapMessage() {
+    if (mapDestination) {
+        const auto& target = *mapDestination;
+        SetWindowTextW(mapMessage, wide("Destination X " + std::to_string(target.x) + ", Z " +
+            std::to_string(target.z) + ". Click Go to walk there.").c_str());
+        return;
+    }
+    const auto& label = latestFields["world_key"] == mapFrame->identity.name ? latestFields["world"] : mapFrame->identity.name;
+    SetWindowTextW(mapMessage, wide(label + " | Dimension " + std::to_string(mapFrame->identity.dimension) +
+        " | Click to select a destination").c_str());
+}
+
 LRESULT CALLBACK mapProc(HWND hwnd,UINT message,WPARAM wp,LPARAM lp) {
     constexpr int side=baritone::MapFrame::side;
     const int left=px(20),top=px(92),cell=px(20),extent=side*cell;
     if(message==WM_CLOSE){DestroyWindow(hwnd);return 0;}
-    if(message==WM_DESTROY){KillTimer(hwnd,1);mapWindow=nullptr;return 0;}
+    if(message==WM_DESTROY){KillTimer(hwnd,1);mapDestination.reset();mapFrame.reset();mapWindow=nullptr;return 0;}
     if (auto result = themeMessage(message, wp, lp)) return *result;
     if(message==WM_TIMER) {
         if(mapJob.valid() && mapJob.wait_for(std::chrono::seconds(0))==std::future_status::ready) {
@@ -16,8 +29,7 @@ LRESULT CALLBACK mapProc(HWND hwnd,UINT message,WPARAM wp,LPARAM lp) {
                 auto next=baritone::MapFrame::decode(mapJob.get());
                 if(!mapFrame || !(next.identity==mapFrame->identity)){mapDestination.reset();EnableWindow(GetDlgItem(hwnd,MapGo),FALSE);}
                 mapFrame=std::move(next);
-                const auto& label = latestFields["world_key"] == mapFrame->identity.name ? latestFields["world"] : mapFrame->identity.name;
-                SetWindowTextW(mapMessage,wide(label+" | Dimension "+std::to_string(mapFrame->identity.dimension)+" | Click to select a destination").c_str());
+                updateMapMessage();
             } catch(const std::exception&) {mapFrame.reset();mapDestination.reset();EnableWindow(GetDlgItem(hwnd,MapGo),FALSE);SetWindowTextW(mapMessage,L"Map unavailable. Connect to a supported Minecraft world.");}
             InvalidateRect(hwnd,nullptr,FALSE);
         }
@@ -30,7 +42,8 @@ LRESULT CALLBACK mapProc(HWND hwnd,UINT message,WPARAM wp,LPARAM lp) {
             const int ox=((mapFrame->player.x>>4)-baritone::MapFrame::radius)*16,oz=((mapFrame->player.z>>4)-baritone::MapFrame::radius)*16;
             mapDestination=baritone::BlockPos{ox+x*16/cell,mapFrame->player.y,oz+z*16/cell};
             EnableWindow(GetDlgItem(hwnd,MapGo),TRUE);
-            SetWindowTextW(mapMessage,wide("Destination X "+std::to_string(mapDestination->x)+", Z "+std::to_string(mapDestination->z)+". Click Go to walk there.").c_str());InvalidateRect(hwnd,nullptr,FALSE);
+            updateMapMessage();
+            InvalidateRect(hwnd,nullptr,FALSE);
         }
         return 0;
     }

@@ -45,9 +45,25 @@ Each Minecraft update moves functions and may change class layouts.
    ```
 
    Fix patterns in `src/memory/Signatures.h` by comparing functions with the previous dump (strings, callers and matching instruction sequences). Every pattern must match exactly once. `Rel32` resolves a relative call or address at the specified displacement offset. The injected scanner also rejects ambiguous patterns.
-3. **Check layouts and calling conventions before injecting.** These include `src/sdk/Offsets.h`, the client map value in `Game.cpp`, render context fields in `Render.cpp`, and function argument types in the SDK/hooks. Update the exact supported package version in `core/GameVersion.cpp` only after verifying these against the new binary. Then use `#debug` to check position, rotation, held item, dimension, armor, hunger and game target. `#vt`, `#hex`, `#hexat`, `#ecsdump` and `#attrs` dump memory read-only to find the new layout.
+3. **Check layouts and calling conventions before injecting.** These include `src/sdk/Offsets.h`, the client map value in `Game.cpp`, render context fields in `Render.cpp`, and function argument types in the SDK/hooks. Add an exact package entry in `src/core/NativeProfiles.inc` after verifying the fixed references and shared layouts against the new binary. Run `tools/profilecheck.py` for each supported dump. Then use `#debug` to check position, rotation, held item, dimension, armor, hunger and game target. `#vt`, `#hex`, `#hexat`, `#ecsdump` and `#attrs` dump memory read-only to find the new layout.
 4. **EnTT**: if components are no longer found, the game may use another EnTT revision; update the pinned commit in `cmake/Dependencies.cmake`.
 5. Run the tests and a few in-game checks (`#goto`, `#mine`, `#build`, `#elytra`), then update the version in the README.
+
+## Reverse engineering notes (26.65)
+
+Windows package `1.26.6501.0` retains the 27 unique signatures and the verified
+instruction bodies for the fixed workstation entries, inventory-key handler,
+scene stack, player/region accessors and core GameMode actions. The fixed image
+addresses changed and are selected by exact package alongside `1.26.6301.0`.
+Both offline dumps pass all nine `profilecheck.py` prerequisites. On 26.65,
+the DLL started in an existing save and `#doctor`, inventory inspection, task,
+storage and portal listings, Survival status and `#calc` succeeded.
+The same save passed a short walk in each direction with breaking and placement
+disabled. A construction on one already-matching block recorded all phases. An
+unfinished checkpoint remained readable after a DLL reload and could be resumed
+without the original schematic. The test cell and saved movement settings were
+verified afterward. A complete game restart and a large Survival build remain to
+be validated.
 
 ## Reverse engineering notes (26.63)
 
@@ -69,7 +85,7 @@ the local-player/region getters and GameMode break/place/interact/attack methods
 | Complete inventory-key handler / scene-stack pop | `657E170` / `56C380` |
 | Canonical empty ItemStack / its vtable | `1293CE90` / `EFFAE80` |
 
-Constants now live in `sdk/Offsets.h`. Startup checks the package, unique
+Image-relative addresses now live in `core/NativeProfiles.inc`. Startup checks the package, unique
 signatures, six controller vtable entries, both inventory/scene handler prefixes
 and the canonical empty stack before installing hooks. Run both binary checks:
 

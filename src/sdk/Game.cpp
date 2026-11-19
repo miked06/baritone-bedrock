@@ -1,5 +1,7 @@
 #include "sdk/Game.h"
 
+#include "core/GameVersion.h"
+
 #include <cmath>
 #include <algorithm>
 #include <format>
@@ -60,7 +62,7 @@ bool LocalPlayer::openCreativeInventoryScreen() {
     // is a server-open callback and omits Creative's controller preparation.
     // Checked in 1.26.6301.0 at +657E170, including the native request/scene branch.
     const auto base=reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr));
-    auto* client=ClientInstance::get(); const auto address=base+offsets::ClientInstance_inventoryKey;
+    auto* client=ClientInstance::get(); const auto address=base+gameversion::profile().inventoryKey;
     constexpr uint8_t prefix[]{0x55,0x41,0x56,0x56,0x57,0x53,0x48,0x81,0xEC,0x90,0,0,0};
     if (!client || client->localPlayer()!=this || containerManager() || !mem::isReadable(reinterpret_cast<void*>(address),sizeof(prefix)) ||
         std::memcmp(reinterpret_cast<void*>(address),prefix,sizeof(prefix))!=0) return false;
@@ -75,7 +77,7 @@ void LocalPlayer::closeInventory() {
     // container cleanup, after all its bound callbacks have finished.
     auto* scene=client ? mem::member<void*>(client,0x5E8) : nullptr;
     const auto base=reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr));
-    if (!mem::isReadable(scene,0x40) || reinterpret_cast<uintptr_t>(mem::vtable(scene)[26])!=base+offsets::SceneStack_pop) {
+    if (!mem::isReadable(scene,0x40) || reinterpret_cast<uintptr_t>(mem::vtable(scene)[26])!=base+gameversion::profile().scenePop) {
         logger::warn("Cannot close container: native scene-stack interface does not match this game profile"); return;
     }
     mem::callVirtual<void,int>(scene,26,1);
@@ -287,6 +289,10 @@ bool ItemStack::mergeCompatible(const ItemStack& other) const {
 std::string ItemStack::plainStackKey() const {
     if (empty() || mem::member<const void*>(this, offsets::ItemStack_userData)) return {};
     return std::format("{:x}:{:x}:{}", reinterpret_cast<uintptr_t>(item()), reinterpret_cast<uintptr_t>(block()), mem::member<uint16_t>(this, 0x20));
+}
+
+const nbt::CompoundTag* ItemStack::itemData() const {
+    return mem::member<const nbt::CompoundTag*>(this, offsets::ItemStack_userData);
 }
 
 std::vector<std::pair<int, int>> ItemStack::enchants() const {

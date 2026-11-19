@@ -12,6 +12,13 @@ constexpr std::string_view kVerticalHalf = "minecraft:vertical_half";
 constexpr std::string_view kUpsideDown = "upside_down_bit";
 constexpr std::string_view kWeirdo = "weirdo_direction";
 constexpr std::string_view kCardinal = "minecraft:cardinal_direction";
+constexpr std::string_view kTorch = "torch_facing_direction";
+
+std::optional<bool> bit(std::string_view value) {
+    if (value == "1" || value == "true") return true;
+    if (value == "0" || value == "false") return false;
+    return std::nullopt;
+}
 
 std::string_view axisOf(Direction d) {
     switch (d) {
@@ -62,13 +69,49 @@ std::optional<Direction> facingFromWeirdo(std::string_view v) {
 }  // namespace
 
 bool isOrientationState(std::string_view key) {
-    return key == kAxis || key == kVerticalHalf || key == kUpsideDown || key == kWeirdo || key == kCardinal;
+    return key == kAxis || key == kVerticalHalf || key == kUpsideDown || key == kWeirdo || key == kCardinal || key == kTorch;
+}
+
+bool isTallPlant(std::string_view name) {
+    return name == "minecraft:sunflower" || name == "minecraft:lilac" || name == "minecraft:rose_bush" ||
+           name == "minecraft:peony" || name == "minecraft:tall_grass" || name == "minecraft:large_fern";
+}
+
+std::optional<bool> tallPlantUpper(const DesiredBlock& desired) {
+    if (!isTallPlant(desired.name)) return std::nullopt;
+    for (const auto& [key, value] : desired.states)
+        if (key == "upper_block_bit") return bit(value);
+    return std::nullopt;
+}
+
+bool isSecondaryPlacement(const DesiredBlock& desired) {
+    for (const auto& [key, value] : desired.states) {
+        if (key == "head_piece_bit" && desired.name == "minecraft:bed") return bit(value).value_or(false);
+        if (key == "upper_block_bit" && (isTallPlant(desired.name) || desired.name.ends_with("_door")))
+            return bit(value).value_or(false);
+    }
+    return false;
+}
+
+bool tallPlantHalfMatches(const DesiredBlock& desired, const BlockProps& current) {
+    const auto upper = tallPlantUpper(desired);
+    return !upper || upper == bit(current.state("upper_block_bit"));
 }
 
 bool blockMatches(const DesiredBlock& desired, const BlockProps& current, bool ignoreDirection) {
     if (desired.kind != DesiredBlock::Kind::Block || desired.name != current.name) return false;
+    for (const auto& [key, value] : desired.states) {
+        if ((key == "upper_block_bit" && (isTallPlant(desired.name) || desired.name.ends_with("_door"))) ||
+            (key == "head_piece_bit" && desired.name == "minecraft:bed")) {
+            if (bit(value) != bit(current.state(key))) return false;
+        }
+    }
     if (ignoreDirection) return true;
     for (const auto& [key, value] : desired.states) {
+        if (key == "direction" && desired.name == "minecraft:bed") {
+            if (value != current.state(key)) return false;
+            continue;
+        }
         if (!isOrientationState(key)) continue;
         std::string_view have = current.state(key);
         if (!have.empty() && have != value) return false;
@@ -88,6 +131,8 @@ bool placementGivesOrientation(const DesiredBlock& desired, const Placement& p) 
             if (value != weirdoOf(p.playerFacing)) return false;
         } else if (key == kCardinal) {
             if (value != cardinalName(opposite(p.playerFacing))) return false;  // faces the player
+        } else if (key == kTorch) {
+            if (value != (p.against == Direction::Down ? "top" : cardinalName(p.against))) return false;
         }
     }
     return true;

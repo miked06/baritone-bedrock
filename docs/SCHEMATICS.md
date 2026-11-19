@@ -41,6 +41,8 @@ The workspace holds one placement. `#schematica` and `#litematica` with no argum
 | `#schematic layer all` | Preview/build every layer. |
 | `#schematic layer y [yMax]` | Restrict both preview and construction to this zero-based local Y range. |
 | `#schematic preview on\|off` | Show/hide the ghost; hiding it does not cancel a running build. |
+| `#ghostpack load <folder>` | Import the unpacked local resource pack's PNG textures for the current schematic. |
+| `#ghostpack status\|off` | Show the imported block and image counts, or return to the standard preview. |
 | `#schematic materials [page]` | Count block positions by type in the active placement, plus air/ignored cells. |
 | `#schematic build` | Build the previewed origin, rotation, mirror and layer mask. |
 | `#schematic clear` | Stop its build and unload the placement. |
@@ -56,7 +58,35 @@ Load coordinates are relative to your feet; move coordinates are relative to the
 - **Gray:** the chunk is not loaded, or the position is outside build height; the comparison is unknown.
 - **Blue outline:** the complete placement bounds. Matching and ignored positions have no individual ghost.
 
-The ghost uses translucent unit cubes and outlines, rather than original block textures/shapes. Up to 512 differences within 16 blocks of the player are displayed and refreshed about twice per second. Walk around a larger placement to inspect it. Cached chunk approximations are never counted as exact live block matches.
+The standard ghost uses translucent unit cubes and outlines. Up to 512 differences within 16 blocks of the player are displayed and refreshed about twice per second. Walk around a larger placement to inspect it. Cached chunk approximations are never counted as exact live block matches.
+
+### Local textures in Minecraft
+
+After loading a schematic, select an unpacked Bedrock resource pack folder.
+
+```text
+#ghostpack load "C:\resource-packs\My Pack"
+#ghostpack status
+#ghostpack off
+```
+
+The importer reads the pack's `textures/terrain_texture.json` or root-level
+`terrain_texture.json`, optional `blocks.json` face mappings and local PNGs.
+It decodes textures in the background and samples them at 8×8 for the 16 nearest
+matching difference boxes. Status outlines still identify missing and wrong
+blocks. Rerun the import after loading a schematic with different materials.
+The selection lasts until disabled or Baritone is unloaded.
+
+The in-game preview uses cube faces and a reduced color palette. Animated
+textures, biome tint, block-state-specific models and TGA textures are outside
+its current coverage. Use `#preview3d output.html` for the standalone viewer.
+
+On Bedrock 26.65, a four-cell fixture in an existing world displayed two
+distinct materials with red and cyan difference outlines. The local pack used
+three synthetic PNGs, including a separate top-face texture. Short stationary
+captures measured overlay p95 of 0.135 ms with the standard ghost (253 samples)
+and 0.249 ms with the textured ghost (245 samples). Larger placements and other
+graphics configurations still need measurement.
 
 The workspace owns its spatial transforms and active layer mask. `buildSchematicRotation`, `buildSchematicMirror` and `schematicOrientationX/Y/Z` are not applied a second time when it builds. `mapArtMode` and `buildOnlySelection` are file-build wrappers for the older direct `#build <file>` workflow, not workspace transforms. Ordinary execution settings, including `allowBreak`, `allowPlace`, `allowInventory`, substitutes, ignored/skipped blocks, build layers and repeats, still control the builder. Material counts describe the source placement, before substitutions/skips; they are not remaining inventory requirements. Beds, doors and double slabs can consume different numbers of items than their block-position counts.
 
@@ -68,6 +98,18 @@ The workspace owns its spatial transforms and active layer mask. `buildSchematic
 | `.schem` | Sponge v1/v2 and nested v3 block palettes/varint data, plain NBT or gzip/zlib. |
 | `.litematic` | Litematica regions, negative region dimensions, multi-region gaps, bit-packed indices spanning long boundaries. |
 | `.schematic` | Legacy MCEdit numeric IDs/metadata; Sponge files using this extension are also detected. |
+
+Java floor and wall torches preserve their attachment side, including when the
+placement is rotated or mirrored. `.schem` and `.litematic` imports report a
+bounded set of Java properties with no direct placement mapping. Check those
+notes before building multi-block furniture, doors or technical components.
+
+Imported tall plants preserve their lower and upper halves. Provide both halves
+in the active layers. The builder uses the base on compatible soil and verifies
+each block separately. A protected or occupied upper position blocks placement.
+Beds preserve the head/foot and orientation for verification. Doors preserve
+the lower/upper half and facing. Check Java import notes for bed color, door
+hinges and open state before building.
 
 Imports validate dimensions and palette references. Gzip/zlib checksums, lengths and headers are validated; concatenated gzip members and trailing compressed data are rejected. NBT collections are checked against available input and an allocation budget before reservation. Input files and decompressed streams are capped at 256 MiB; schematic volumes at 64 million blocks. NBT allocation limits can reject a smaller but unusually expensive representation. Material counts use a palette histogram, including active layers, to avoid copying a block-state string for every position in a large file.
 

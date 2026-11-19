@@ -70,6 +70,8 @@ public:
     float health() const override;
     bool holdUseItem(bool held) override;
     std::optional<bool> ridingState() const override;
+    std::optional<baritone::Vec3d> entityPosition(uint64_t id) const override;
+    std::optional<baritone::PortableShulker> portableShulker(int slot) const override;
     bool interactEntity(uint64_t id) override;
     bool attackEntity(uint64_t id) override;
     bool containerOpen() const override;

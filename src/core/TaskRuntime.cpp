@@ -219,9 +219,9 @@ void Bot::tickTasks() {
     prepareTasks();
     if (workflow_.running()) { tickWorkflow(); return; }
     if (!tasks_.running() || baritone_->pauser().paused()) return;
-    if(baritone_->workshop().isActive())return;
+    if (baritone_->workshop().isActive() || baritone_->shulker().isActive()) return;
     const auto& activeKind=tasks_.tasks().at(tasks_.currentIndex()).kind;
-    if ((baritone_->produce().isActive() && activeKind!="produce") || (baritone_->production().executing() && activeKind!="produce") || (baritone_->logistics().isActive() && activeKind!="produce" && activeKind!="loadout" && activeKind!="restock") || baritone_->construction().isActive() || baritone_->undo().isActive() || baritone_->repair().isActive() || baritone_->mending().isActive() || miningActive_ || portalJourney_.active()) return;
+    if ((baritone_->produce().isActive() && activeKind!="produce") || (baritone_->production().executing() && activeKind!="produce") || (baritone_->logistics().isActive() && activeKind!="produce" && activeKind!="loadout" && activeKind!="restock") || baritone_->construction().isActive() || baritone_->undo().isActive() || baritone_->repair().isActive() || baritone_->mending().isActive() || baritone_->rail().isActive() || miningActive_ || portalJourney_.active()) return;
     if ((baritone_->craft().isActive() && activeKind!="produce") || baritone_->smelt().isActive()) return;
     if (baritone_->storage().isActive()) {
         const auto& kind = tasks_.tasks().at(tasks_.currentIndex()).kind;

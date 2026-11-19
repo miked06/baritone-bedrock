@@ -1,4 +1,8 @@
 #include "core/Perf.h"
+
+#include <Windows.h>
+#include <Psapi.h>
+
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -41,16 +45,30 @@ void markFrame() {
 std::vector<std::string> report() {
     std::vector<std::string> lines;
     lines.push_back(std::format("Performance capture {} (last {} samples per metric, milliseconds; frame interval includes Minecraft)", enabled() ? "on" : "off", capacity));
-    std::lock_guard lock(mutex);
+    PROCESS_MEMORY_COUNTERS_EX memory{};
+    memory.cb = sizeof(memory);
+    if (K32GetProcessMemoryInfo(GetCurrentProcess(), reinterpret_cast<PROCESS_MEMORY_COUNTERS*>(&memory), memory.cb)) {
+        constexpr double mib = 1024.0 * 1024.0;
+        lines.push_back(std::format("Minecraft process: {:.1f} MiB working set, {:.1f} MiB private, {:.1f} MiB peak working set",
+                                    memory.WorkingSetSize / mib, memory.PrivateUsage / mib, memory.PeakWorkingSetSize / mib));
+    }
+
     for (std::size_t i = 0; i < samples.size(); ++i) {
-        const auto& bucket = samples[i];
-        if (!bucket.size) continue;
-        std::vector<double> sorted(bucket.values.begin(), bucket.values.begin() + bucket.size);
+        std::vector<double> sorted;
+        sorted.reserve(capacity);
+        uint64_t total = 0;
+        {
+            std::lock_guard lock(mutex);
+            const auto& bucket = samples[i];
+            sorted.assign(bucket.values.begin(), bucket.values.begin() + bucket.size);
+            total = bucket.total;
+        }
+        if (sorted.empty()) continue;
         std::ranges::sort(sorted);
         double sum = 0;
         for (double value : sorted) sum += value;
         auto percentile = [&](double q) { return sorted[static_cast<std::size_t>(std::ceil(q * sorted.size())) - 1]; };
-        lines.push_back(std::format("{}: n={} mean={:.3f} p95={:.3f} p99={:.3f} max={:.3f}", names[i], bucket.total,
+        lines.push_back(std::format("{}: n={} mean={:.3f} p95={:.3f} p99={:.3f} max={:.3f}", names[i], total,
             sum / sorted.size(), percentile(0.95), percentile(0.99), sorted.back()));
     }
     return lines;

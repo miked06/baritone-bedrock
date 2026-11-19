@@ -24,7 +24,8 @@ public:
     uint64_t revision() const { return revision_; }
     void save(const std::filesystem::path& file) const;
     void load(const std::filesystem::path& file);
-    std::vector<SchematicWorkspace::PreviewCell> preview(const WorldSnapshot& world, BlockPos center, const SchematicWorkspace& active, std::size_t limit = 512) const;
+    std::vector<SchematicWorkspace::PreviewCell> preview(const WorldSnapshot& world, BlockPos center,
+        const SchematicWorkspace& active, std::size_t limit = 512, bool includeMaterials = false) const;
 private:
     std::map<std::string, Entry> entries_;
     uint64_t revision_ = 0;

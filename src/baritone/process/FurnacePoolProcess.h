@@ -4,7 +4,8 @@ namespace baritone {
 class FurnacePoolProcess : public Process {
 public:
     using Process::Process;
-    void start(std::vector<BlockPos> stations,std::string input,std::string output,int count,std::string fuel,int fuelCount);
+    void start(std::vector<BlockPos> stations,std::string input,std::string output,int count,std::string fuel,int fuelCount,
+               bool honorReserves = false);
     bool isActive() override;
     bool isTemporary() const override{return true;}
     double priority() const override{return 3.6;}
@@ -24,5 +25,6 @@ private:
     std::size_t cursor_=0;
     int ticks_=0,openTicks_=0,pendingTicks_=0,pendingCount_=0,actions_=0,idle_=0,finalTarget_=0;
     bool active_=false,opened_=false,succeeded_=false;
+    bool honorReserves_ = false;
 };
 }

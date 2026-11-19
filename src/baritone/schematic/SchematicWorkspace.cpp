@@ -79,14 +79,16 @@ SchematicWorkspace::Materials SchematicWorkspace::materials() const {
     auto size = placed_->size();
     for (int x = 0; x < size.x; ++x) for (int y = 0; y < size.y; ++y) for (int z = 0; z < size.z; ++z) {
         const auto d = placed_->desired(x, y, z, BlockProps{});
-        if (d.kind == DesiredBlock::Kind::Block) ++result.blocks[d.name];
+        if (d.kind == DesiredBlock::Kind::Block) {
+            if (!isSecondaryPlacement(d)) ++result.blocks[d.name];
+        }
         else if (d.kind == DesiredBlock::Kind::Air) ++result.air;
         else ++result.ignored;
     }
     return result;
 }
 std::vector<SchematicWorkspace::PreviewCell> SchematicWorkspace::preview(
-    const WorldSnapshot& world, BlockPos center, int radius, std::size_t maxCells) const {
+    const WorldSnapshot& world, BlockPos center, int radius, std::size_t maxCells, bool includeMaterials) const {
     std::vector<PreviewCell> result;
     if (!loaded() || !preview_ || !maxCells || radius < 0) return result;
     // A caller cannot accidentally turn this into a full-volume per-frame scan.
@@ -108,7 +110,8 @@ std::vector<SchematicWorkspace::PreviewCell> SchematicWorkspace::preview(
         else if (desired.kind == DesiredBlock::Kind::Air) {
             if (current.type != BlockType::Air) result.push_back({p, Difference::Remove});
         } else if (!blockMatches(desired, current, false)) {
-            result.push_back({p, current.type == BlockType::Air || current.replaceable ? Difference::Missing : Difference::Wrong});
+            result.push_back({p, current.type == BlockType::Air || current.replaceable ? Difference::Missing : Difference::Wrong,
+                              includeMaterials ? std::move(desired.name) : std::string{}});
         }
         if (result.size() >= maxCells) return result;
     }

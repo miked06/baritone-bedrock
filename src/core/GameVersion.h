@@ -1,9 +1,21 @@
 #pragma once
 
+#include <cstdint>
+#include <string>
+#include <string_view>
+
 namespace gameversion {
-inline constexpr char supported[] = "26.63 (package 1.26.6301.0)";
+struct NativeProfile {
+    std::string_view package;
+    uintptr_t craftingTable, craft, discard;
+    uintptr_t anvilTable, anvilPreview, anvilTake;
+    uintptr_t grindstoneTable, grindstonePreview, grindstoneTake;
+    uintptr_t inventoryKey, scenePop, emptyStack, itemStackTable;
+};
+
+// Select an exact package before reading game objects or installing hooks.
+bool selectNativeProfile();
+const NativeProfile& profile();
+std::string supportedPackages();
 bool validateNativeProfile();
-// Check before reading game objects or installing hooks: signatures alone do not
-// establish that offsets, vtable indices, or calling conventions still match.
-bool check();
 }

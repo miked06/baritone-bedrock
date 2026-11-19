@@ -164,6 +164,53 @@ baritone::HotbarStack GamePlayerContext::armor(int slot) const {
     return armor ? describe(armor->getItem(slot)) : baritone::HotbarStack{};
 }
 
+std::optional<baritone::PortableShulker> GamePlayerContext::portableShulker(int slot) const {
+    if (!player_ || slot < 0 || slot >= 36) return std::nullopt;
+    auto* inventory = player_->supplies()->inventory();
+    const auto* stack = inventory ? inventory->getItem(slot) : nullptr;
+    if (!mem::isReadable(stack, offsets::ItemStack_size) || stack->count() != 1 || !stack->block() ||
+        !mem::isReadable(stack->item(), offsets::Item_namespacedId + sizeof(sdk::HashedString))) return std::nullopt;
+    const std::string_view item = stack->item()->name();
+    if (item.size() > 128 || !mem::isReadable(item.data(), item.size())) return std::nullopt;
+    if (item != "minecraft:shulker_box" && !item.ends_with("_shulker_box")) return std::nullopt;
+    if (!mem::isReadable(stack->block(), offsets::Block_serializationId + sizeof(sdk::nbt::CompoundTag))) return std::nullopt;
+    const auto name = stack->block()->serializationId().boundedString("name", 128);
+    if (!name || (!name->ends_with("_shulker_box") && *name != "minecraft:shulker_box")) return std::nullopt;
+    baritone::PortableShulker result{std::string(*name), {}};
+    const auto* data = stack->itemData();
+    if (!data) return result;
+    if (!mem::isReadable(data, sizeof(*data)) || data->tags.size() > 2) return std::nullopt;
+    for (const auto& [key, value] : data->tags)
+        if (key != "Items" && key != "BlockEntityTag") return std::nullopt;
+    if (data->get("BlockEntityTag")) {
+        if (data->get("Items")) return std::nullopt;
+        data = data->compound("BlockEntityTag");
+        if (!data || data->tags.size() > 1 || (!data->tags.empty() && !data->get("Items"))) return std::nullopt;
+    }
+    const auto entries = data->compounds("Items", 27);
+    if (!entries) return std::nullopt;
+    for (const auto* entry : *entries) {
+        if (entry->tags.size() > 7) return std::nullopt;
+        const auto itemName = entry->boundedString("Name", 128);
+        const auto count = entry->integer("Count"), index = entry->integer("Slot");
+        if (!itemName || itemName->size() > 128 || !itemName->starts_with("minecraft:") ||
+            itemName->ends_with("shulker_box") || !count || *count < 1 || *count > 64 ||
+            !index || *index < 0 || *index >= 27 || (entry->get("Damage") && entry->integer("Damage") != 0)) return std::nullopt;
+        for (const auto& [key, value] : entry->tags) {
+            if (key == "Name" || key == "Count" || key == "Damage" || key == "Slot" || key == "WasPickedUp") continue;
+            if (key == "Block" && value.type() == sdk::nbt::TagType::Compound) {
+                const auto* block = entry->compound("Block");
+                const auto* states = block->compound("states");
+                if (states && states->tags.empty() && block->tags.size() <= 3 && block->boundedString("name", 128) == itemName) continue;
+            }
+            return std::nullopt;
+        }
+        if (!result.items.emplace(static_cast<int>(*index), baritone::ShulkerItem{std::string(*itemName), static_cast<int>(*count)}).second)
+            return std::nullopt;
+    }
+    return result;
+}
+
 namespace {
 baritone::HotbarStack describe(const sdk::ItemStack* stack, bool transferDetails) {
     baritone::HotbarStack out;
@@ -248,6 +295,14 @@ bool GamePlayerContext::holdUseItem(bool held) {
     gamehooks::holdUseItem(held ? 150 : 0); return valid();
 }
 std::optional<bool> GamePlayerContext::ridingState() const { return player_ ? player_->dataFlag(2) : std::nullopt; }
+std::optional<baritone::Vec3d> GamePlayerContext::entityPosition(uint64_t id) const {
+    if (!level_) return std::nullopt;
+    for (auto* actor : level_->actors()) {
+        if (actor && actor != player_ && actor->runtimeId() == id && actor->stateVector() && actor->aabbShape() && !actor->isDead())
+            return toVec(actor->feet());
+    }
+    return std::nullopt;
+}
 bool GamePlayerContext::interactEntity(uint64_t id) { return actOnEntity(id, false); }
 bool GamePlayerContext::attackEntity(uint64_t id) { return actOnEntity(id, true); }
 bool GamePlayerContext::actOnEntity(uint64_t id, bool attack) {
@@ -557,10 +612,18 @@ std::vector<baritone::EntityInfo> GamePlayerContext::entities() const {
         if (auto health = actor->attribute("minecraft:health")) e.health = health->value;
         if (e.isPlayer) e.name = static_cast<sdk::Player*>(actor)->name();
         if (e.isItem) {
-            const auto& stack = mem::member<sdk::ItemStack>(actor, offsets::ItemActor_stack);
-            if (mem::isReadable(&stack, 0x30) && !stack.empty() && mem::isReadable(stack.item(), 0x150)) {
-                e.itemName = stack.item()->name();
-                e.itemCount = stack.count();
+            const auto* stack = &mem::member<sdk::ItemStack>(actor, offsets::ItemActor_stack);
+            if (mem::isReadable(stack, offsets::ItemStack_size) && stack->count() > 0 && stack->count() <= 64) {
+                const auto* weak = mem::member<sdk::Item* const*>(stack, 0x8);
+                const auto* item = mem::isReadable(weak, sizeof(*weak)) ? *weak : nullptr;
+                if (mem::isReadable(item, offsets::Item_namespacedId + sizeof(sdk::HashedString))) {
+                    const auto& name = item->name();
+                    if (!name.empty() && name.size() <= 128 && mem::isReadable(name.data(), name.size()) &&
+                        std::string_view(name).starts_with("minecraft:")) {
+                        e.itemName = name;
+                        e.itemCount = stack->count();
+                    }
+                }
             }
         }
         e.position = toVec(actor->feet());

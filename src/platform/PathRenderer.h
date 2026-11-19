@@ -7,6 +7,7 @@
 #include <atomic>
 
 #include "baritone/pathing/goals/Goal.h"
+#include "baritone/pathing/calc/PathPreview.h"
 #include "baritone/cache/CachedMesh.h"
 #include "baritone/elytra/ElytraPhysics.h"
 #include "baritone/schematic/SchematicWorkspace.h"
@@ -18,6 +19,8 @@ class ScreenContext;
 
 namespace platform {
 
+struct GhostTexturePack;
+
 // Draws the paths, goals and the block being broken in the world (Baritone's
 // PathRenderer). update() on the game thread, render() from the render hook.
 class PathRenderer {
@@ -28,8 +31,9 @@ public:
         std::optional<baritone::BlockPos> clickTarget, clickStart;
         std::optional<baritone::BlockPos> assistedBlock;
         std::optional<std::pair<baritone::BlockPos, baritone::BlockPos>> schematicBounds;
-        std::vector<baritone::SchematicWorkspace::PreviewCell> schematicPreview;
+        std::shared_ptr<const std::vector<baritone::SchematicWorkspace::PreviewCell>> schematicPreview;
         std::vector<baritone::BlockPos> path, next, calculating;
+        std::shared_ptr<const baritone::PathPreview> pathPreview;
         std::size_t pathPosition = 0;                        // drawn from 3 movements before it
         std::vector<baritone::BlockPos> mostRecent;           // colorMostRecentConsidered
         std::vector<baritone::BlockPos> toBreak, toPlace, toWalkInto;
@@ -52,12 +56,18 @@ public:
     void clear() { update({}); }
     void shutdown();  // join geometry work before the DLL is unmapped
     void render(sdk::LevelRenderer* renderer, sdk::ScreenContext* screen);
+    std::shared_ptr<const GhostTexturePack> ghostTextures();
+    uint64_t ghostPackGeneration();
+    bool finishGhostPackLoad(uint64_t request, std::shared_ptr<const GhostTexturePack> pack);
+    void clearGhostTextures();
 
 private:
     std::mutex mutex_;
     std::mutex updateMutex_;
     std::atomic<bool> stopping_{false};
     Frame frame_;
+    std::shared_ptr<const GhostTexturePack> ghostTextures_;
+    uint64_t ghostPackGeneration_ = 0;
     uint64_t meshTicks_ = 0, meshStarted_ = 0;
     std::shared_ptr<baritone::CachedWorld> meshSource_, buildingSource_;
     std::shared_ptr<const std::vector<baritone::CachedFace>> cachedMesh_;

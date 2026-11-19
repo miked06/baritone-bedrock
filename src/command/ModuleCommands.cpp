@@ -1,10 +1,12 @@
 #include "command/ModuleCommands.h"
+#include <chrono>
 #include <filesystem>
 #include <format>
 #include <cmath>
 #include <fstream>
 #include <sstream>
 #include "baritone/schematic/PreviewExport.h"
+#include "baritone/pathing/RailPath.h"
 #include "baritone/task/WorkflowTemplates.h"
 #include "baritone/task/DiagnosticBundle.h"
 #include "baritone/schematic/RoadPlan.h"
@@ -18,6 +20,8 @@
 #include "core/GameVersion.h"
 #include "memory/Signatures.h"
 #include "memory/Memory.h"
+#include "platform/GhostTexturePack.h"
+#include "platform/PathRenderer.h"
 
 namespace command {
 void registerModuleCommands(CommandManager& manager, Bot& bot) {
@@ -86,7 +90,7 @@ void registerModuleCommands(CommandManager& manager, Bot& bot) {
         std::map<std::string,std::string> entries;
         entries["README.txt"]="Baritone Bedrock local diagnostic report. Nothing was uploaded.\nInspect before sharing: logs/settings may include coordinates, world names, commands and local file paths.\nNo world saves, credentials or chunk caches were collected. Log tail is bounded; ZIP entries use fixed timestamps.\n";
         std::ostringstream status;
-        status<<"version="<<BARITONE_BEDROCK_VERSION<<"\nsupported_game="<<gameversion::supported<<"\ntick="<<bot.ticks()<<"\nworld="<<bot.worldName()<<"\n";
+        status<<"version="<<BARITONE_BEDROCK_VERSION<<"\nsupported_game="<<gameversion::profile().package<<"\ntick="<<bot.ticks()<<"\nworld="<<bot.worldName()<<"\n";
         if(bot.player().valid())status<<std::format("position={}\ndimension={}\n",bot.baritone().playerFeet(),bot.identity().dimension);
         for(const auto* signature:sigs::all())status<<"signature."<<signature->name<<"="<<(signature->address?"resolved":"missing")<<"\n";
         entries["status.txt"]=status.str();
@@ -103,17 +107,26 @@ void registerModuleCommands(CommandManager& manager, Bot& bot) {
         });
         chat::info("Exporting diagnostic archive in the background");
     }});
-    manager.add({{"produce"}, "produce station item additional [supply|-] [delivery|-]; status", "Gather supported missing resources, craft confirmed output and optionally deliver it", [&bot](const Args& args) {
+    manager.add({{"produce"}, "produce table item additional [supply|-] [delivery|-] [furnace|-] [farmRadius]; status", "Gather, harvest, smelt or craft missing resources and optionally deliver the output", [&bot](const Args& args) {
         auto& job=bot.baritone().produce();
         if (args.size()==1 && args[0]=="status") { chat::info(job.isActive()?job.displayName():job.succeeded()?"Production objective complete":"Production objective idle"); if(!job.failure().empty())chat::error(job.failure()); return; }
-        if(args.size()<3 || args.size()>5)throw CommandError("Usage: #produce registeredTable item additional [supply|-] [delivery|-]; status");
+        if(args.size()<3 || args.size()>7)throw CommandError("Usage: #produce registeredTable item additional [supply|-] [delivery|-] [furnace|-] [farmRadius 0..64]; status");
         bot.prepareTasks(); const auto at=bot.baritone().storage().locations().find(args[0]);
         if(at==bot.baritone().storage().locations().end())throw CommandError("Register the crafting table with #storage add first");
         const auto station=at->second; const int amount=parseInt(args[2],"additional output");
         if(amount<1 || amount>2304)throw CommandError("Additional output must be 1..2304");
         const std::string source=args.size()>3 && args[3]!="-"?args[3]:"", delivery=args.size()>4 && args[4]!="-"?args[4]:"";
         for(const auto& location:{source,delivery})if(!location.empty()&&!bot.baritone().storage().locations().contains(location))throw CommandError("Unknown registered container: "+location);
-        bot.cancelAll(); job.start(bot.recipeBook(),station,args[1],amount,source,delivery);
+        std::optional<baritone::BlockPos> furnace;
+        if (args.size() > 5 && args[5] != "-") {
+            const auto found = bot.baritone().storage().locations().find(args[5]);
+            if (found == bot.baritone().storage().locations().end()) throw CommandError("Register the empty furnace with #storage add first");
+            if (found->second == station) throw CommandError("Crafting table and furnace must be distinct stations");
+            furnace = found->second;
+        }
+        const int farmRadius = args.size() == 7 ? parseInt(args[6], "farm radius") : 0;
+        if (farmRadius < 0 || farmRadius > 64) throw CommandError("Production farm radius must be 0..64");
+        bot.cancelAll(); job.start(bot.recipeBook(),station,args[1],amount,source,delivery,furnace,farmRadius);
     }});
     manager.add({{"repair"}, "repair <preview|start> <anvil|grindstone> station toolSlot materialSlot materialCount maxLevels; mend xpSource toolSlot targetPercent timeoutSeconds; open station; close; status", "Repair through confirmed workstation actions or observed Mending progress at a real XP source", [&bot](const Args& args) {
         if (args.size()==5 && args[0]=="mend") {
@@ -173,6 +186,35 @@ void registerModuleCommands(CommandManager& manager, Bot& bot) {
             else chat::info("Inventory quantity transfer submitted; verify #inv all after the server response");
         });
     }});
+    manager.add({{"ghostpack"}, "ghostpack <load folder|status|off>", "Apply local resource pack PNG textures to the nearby schematic preview", [&bot](const Args& args) {
+        auto& renderer = platform::PathRenderer::get();
+        if (args.empty() || (args.size() == 1 && args[0] == "status")) {
+            const auto pack = renderer.ghostTextures();
+            chat::info(pack ? std::format("Textured preview: {} block types, {} PNG textures", pack->blocks.size(), pack->imageCount)
+                            : "Textured preview is off; schematic difference outlines are available");
+            return;
+        }
+        if (args.size() == 1 && args[0] == "off") {
+            renderer.clearGhostTextures();
+            chat::info("Textured preview disabled");
+            return;
+        }
+        if (args.size() != 2 || args[0] != "load")
+            throw CommandError("Usage: #ghostpack load \"resource pack folder\"; status; off");
+        if (!bot.schematics().loaded() || bot.schematicLoading()) throw CommandError("Load a schematic first");
+        const auto& input = args[1];
+        const std::filesystem::path folder(std::u8string(input.begin(), input.end()));
+        const auto generation = renderer.ghostPackGeneration();
+        auto workspace = bot.schematics();
+        bot.runDiagnosticAsync([folder, generation, workspace = std::move(workspace)] {
+            auto pack = std::make_shared<const platform::GhostTexturePack>(
+                platform::loadGhostTexturePack(folder, workspace.materials()));
+            if (pack->blocks.empty()) throw std::runtime_error("No compatible PNG textures found for the selected schematic");
+            if (platform::PathRenderer::get().finishGhostPackLoad(generation, pack))
+                chat::info(std::format("Textured preview enabled: {} block types, {} PNG textures", pack->blocks.size(), pack->imageCount));
+        });
+        chat::info("Reading local resource pack textures in the background");
+    }});
     manager.add({{"preview3d"}, "preview3d output.html", "Export the transformed placement to a local interactive textured viewer", [&bot](const Args& args) {
         if (args.size() != 1 || !bot.schematics().loaded() || bot.schematicLoading()) throw CommandError("Usage: #preview3d output.html after loading a schematic");
         auto file = std::filesystem::u8path(args[0]);
@@ -226,17 +268,25 @@ void registerModuleCommands(CommandManager& manager, Bot& bot) {
         }
         throw CommandError("Usage: #maintenance on [remainingPercent 1..90]; off; check");
     }});
-    manager.add({{"construction"}, "construction <plan|start> [temporary|permanent] [supportBlock] [depth]", "Plan foundations and support dependencies before a three-phase build", [&bot](const Args& args) {
-        if(args.size()==1 && args[0]=="recover") {
-            bot.prepareTasks();const auto file=bot.worldDataPath("construction");
+    manager.add({{"construction"}, "construction <plan|start> [temporary|permanent] [supportBlock] [depth] | checkpoint | recover", "Plan foundations, inspect or recover a checkpointed build", [&bot](const Args& args) {
+        if (args.size() == 1 && (args[0] == "checkpoint" || args[0] == "recover")) {
+            if (!bot.player().valid() || bot.worldName().empty()) throw CommandError("Enter the construction world first");
+            const auto file = bot.worldDataPath("construction");
+            if (!std::filesystem::exists(file)) throw CommandError("This world and dimension have no construction checkpoint");
             if(std::filesystem::file_size(file)>8*1024*1024)throw CommandError("Construction checkpoint exceeds eight MiB");
             std::ifstream input(file,std::ios::binary);if(!input)throw CommandError("Could not read the construction checkpoint");
             auto recovery=baritone::ConstructionPlan::recover(std::string(std::istreambuf_iterator<char>(input),{}));
             if(!(recovery.identity==bot.identity()))throw CommandError("Construction checkpoint belongs to another world/dimension");
+            if (args[0] == "checkpoint") {
+                const char* phases[]{"place supports", "build targets", "remove temporary supports", "complete"};
+                chat::info(std::format("Construction checkpoint: {}, {} target cells, {} planned support blocks near {}",
+                                       phases[recovery.phase], recovery.plan.targets().size(), recovery.plan.supports().size(), recovery.plan.phaseOrigin()));
+                return;
+            }
             if(recovery.phase>=3)throw CommandError("The saved construction phases are already complete");
             bot.cancelAll();bot.baritone().construction().resume(std::move(recovery));chat::info("Construction recovery requested. Loaded chunks, protection and obstacles are checked before rebuilding the saved phase; cleanup only removes matching support blocks");return;
         }
-        if (args.empty() || args.size() > 4 || (args[0] != "plan" && args[0] != "start")) throw CommandError("Usage: #construction plan|start [temporary|permanent] [cobblestone|stone|dirt] [depth 1..16]");
+        if (args.empty() || args.size() > 4 || (args[0] != "plan" && args[0] != "start")) throw CommandError("Usage: #construction plan|start [temporary|permanent] [cobblestone|stone|dirt] [depth 1..16] | checkpoint | recover");
         if (!bot.player().valid() || !bot.schematics().loaded() || bot.schematicLoading()) throw CommandError("Enter a world and load a schematic first");
         if (args.size() > 1 && args[1] != "temporary" && args[1] != "permanent") throw CommandError("Foundation policy must be temporary or permanent");
         const auto source = bot.schematics().schematic(); const auto origin = bot.schematics().origin();
@@ -283,8 +333,9 @@ void registerModuleCommands(CommandManager& manager, Bot& bot) {
     }});
     manager.add({{"doctor"}, "doctor", "Read compatibility and module prerequisites without changing game state", [&bot](const Args& args) {
         if (!args.empty()) throw CommandError("Usage: #doctor");
-        const bool compatible = gameversion::check() && gameversion::validateNativeProfile();
-        chat::info(std::format("Game profile {}: {}", compatible ? "matched" : "unsupported", gameversion::supported));
+        const bool compatible = gameversion::validateNativeProfile();
+        chat::info(std::format("Game package {}: native profile {}", gameversion::profile().package, compatible ? "matched" : "mismatched"));
+        chat::info("Available x64 packages: " + gameversion::supportedPackages());
         std::size_t resolved = 0;
         for (const auto* signature : sigs::all()) {
             if (signature->address && mem::isReadable(reinterpret_cast<const void*>(signature->address), 1)) ++resolved;
@@ -463,6 +514,63 @@ void registerModuleCommands(CommandManager& manager, Bot& bot) {
         }
         throw CommandError("Usage: #vehicle board boat|horse; #vehicle goto boat|horse x y z; #vehicle dismount");
     }});
+    manager.add({{"rail"}, "rail <add name [x y z]|remove name|list|route from to|go from to|status>", "Register rail stations, inspect connected tracks and ride a passenger minecart", [&bot](const Args& args) {
+        auto& trip = bot.baritone().rail();
+        if (args == Args{"status"}) { chat::info(trip.displayName()); return; }
+        const auto world = bot.baritone().world();
+        if (!world || !bot.player().valid() || bot.waypoints().path().empty()) throw CommandError("Enter a world first");
+        const auto stations = bot.waypoints().list("rail");
+        auto named = [&](const std::string& name) {
+            return std::ranges::find_if(stations, [&](const auto& wp) { return wp.dimension == world->dimension() && wp.name == name; });
+        };
+        if (args == Args{"list"}) {
+            std::size_t count = 0;
+            for (const auto& station : stations) {
+                if (station.dimension != world->dimension()) continue;
+                chat::info(std::format("{} at {}", station.name, station.pos));
+                if (++count == 32) { chat::info("Showing up to 32 stations in this dimension"); break; }
+            }
+            if (!count) chat::info("No registered rail stations in this dimension");
+            return;
+        }
+        if ((args.size() == 2 || args.size() == 5) && args[0] == "add") {
+            const auto& name = args[1];
+            if (name.empty() || name.size() > 40 || name.find_first_not_of("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-") != name.npos)
+                throw CommandError("Use 1..40 letters, digits, underscores or hyphens for a station name");
+            if (named(name) != stations.end()) throw CommandError("A station already uses that name in this dimension");
+            const auto here = bot.baritone().playerFeet();
+            std::optional<baritone::BlockPos> pos = baritone::railBelow(*world, bot.player().position());
+            if (args.size() == 5) pos = baritone::BlockPos{parseCoord(args[2], here.x, "x"), parseCoord(args[3], here.y, "y"), parseCoord(args[4], here.z, "z")};
+            if (!pos || !baritone::railUsable(*world, *pos)) throw CommandError("Use the coordinates of a loaded, unobstructed rail block");
+            const auto now = std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count();
+            bot.waypoints().add({"rail", name, *pos, world->dimension(), now});
+            chat::info(std::format("Rail station {} at {} registered", name, *pos));
+            return;
+        }
+        if (args.size() == 2 && args[0] == "remove") {
+            const auto station = named(args[1]);
+            if (station == stations.end()) throw CommandError("Unknown station in this dimension");
+            bot.waypoints().removeExact(*station);
+            chat::info("Rail station removed");
+            return;
+        }
+        if (args.size() == 3 && (args[0] == "route" || args[0] == "go")) {
+            const auto from = named(args[1]), to = named(args[2]);
+            if (from == stations.end() || to == stations.end()) throw CommandError("Register both stations in this dimension first");
+            if (args[0] == "go") {
+                bot.cancelAll();
+                trip.start(from->pos, to->pos);
+                chat::info(std::format("Rail trip from {} to {} started", from->name, to->name));
+            } else {
+                const auto route = baritone::findRailPath(*world, from->pos, to->pos);
+                if (!route.error.empty()) throw CommandError(route.error);
+                chat::info(std::format("{} to {}: {} connected rails. {}", from->name, to->name, route.points.size(),
+                    baritone::railHasStoppingPlatform(*world, to->pos) ? "Stopping platform ready" : "A brake rail and clear exits are required to run this trip"));
+            }
+            return;
+        }
+        throw CommandError("Usage: #rail add name [x y z] | remove name | list | route from to | go from to | status");
+    }});
     manager.add({{"trees"}, "trees [count]", "Harvest complete trees in the selection and replant matching saplings", [&bot](const Args& args) {
         if (args.size()>1) throw CommandError("Usage: #trees [count]");
         const auto& sels=bot.baritone().selections().all(); if (sels.empty()) throw CommandError("Select the complete trees and canopy with #sel first");
@@ -527,6 +635,31 @@ void registerModuleCommands(CommandManager& manager, Bot& bot) {
             b.logistics().start({{args[1], parseInt(args[2], "absolute inventory target")}}, args.size() == 4 ? args[3] : ""); return;
         }
         throw CommandError("Usage: #restock item item target [source]; auto on [source]; auto off; status");
+    }});
+    manager.add({{"shulker"}, "shulker <inspect slot|withdraw slot item count x y z|status>", "Inspect or withdraw supplies from a portable shulker box in the hotbar", [&bot](const Args& args) {
+        if (args == Args{"status"}) { chat::info(bot.baritone().shulker().displayName()); return; }
+        if (!bot.player().valid()) throw CommandError("Enter a world first");
+        const bool inspect = args.size() == 2 && args[0] == "inspect";
+        if (!inspect && !(args.size() == 7 && args[0] == "withdraw"))
+            throw CommandError("Usage: #shulker inspect slot | withdraw slot item count x y z | status");
+        const int slot = parseInt(args[1], "hotbar slot");
+        if (slot < 1 || slot > (inspect ? 36 : 9))
+            throw CommandError(inspect ? "Use inventory slot 1..36" : "Use hotbar slot 1..9");
+        if (inspect) {
+            auto box = bot.player().portableShulker(slot - 1);
+            if (!box) throw CommandError("No supported shulker in this slot, or its contents could not be read");
+            std::map<std::string, int> items;
+            for (const auto& [index, stack] : box->items) items[stack.name] += stack.count;
+            chat::info(std::format("Slot {}: {}, {} occupied slots", slot, box->block, box->items.size()));
+            for (const auto& [name, count] : items) chat::info(std::format("{} x{}", name, count));
+            return;
+        }
+        const auto here = bot.baritone().playerFeet();
+        const int count = parseInt(args[3], "quantity");
+        const baritone::BlockPos position{parseCoord(args[4], here.x, "x"), parseCoord(args[5], here.y, "y"), parseCoord(args[6], here.z, "z")};
+        bot.cancelAll();
+        bot.baritone().shulker().start(slot - 1, args[2], count, position);
+        chat::info(std::format("Preparing a portable withdrawal at {}", position));
     }});
     manager.add({{"storage"}, "storage <add|remove|list|open|inspect|scan|find|sort|withdraw|deposit>", "Register containers, transfer supplies and return to the interrupted task", [&bot](const Args& args) {
         bot.prepareTasks(); auto& storage = bot.baritone().storage();

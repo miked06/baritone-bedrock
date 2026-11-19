@@ -5,6 +5,22 @@
 #include <chrono>
 
 namespace baritone {
+namespace {
+std::string furnaceInput(const std::string& output) {
+    if (output == "minecraft:iron_ingot") return "minecraft:raw_iron";
+    if (output == "minecraft:copper_ingot") return "minecraft:raw_copper";
+    if (output == "minecraft:gold_ingot") return "minecraft:raw_gold";
+    if (output == "minecraft:glass") return "minecraft:sand";
+    if (output == "minecraft:stone") return "minecraft:cobblestone";
+    return {};
+}
+
+bool farmedInput(const std::string& item) {
+    return item == "minecraft:sugar_cane" || item == "minecraft:bamboo" || item == "minecraft:cactus" ||
+           item == "minecraft:pumpkin" || item == "minecraft:melon_slice";
+}
+}
+
 std::vector<std::string> SupplyProductionProcess::harvestBlocks(const std::string& item) {
     // Only deterministic ordinary drops. In particular, never treat raw ores as
     // ingots, or mine silk-touch ores while expecting their normal drops.
@@ -23,12 +39,14 @@ std::vector<std::string> SupplyProductionProcess::harvestBlocks(const std::strin
     return {};
 }
 void SupplyProductionProcess::start(const RecipeBook& book, BlockPos station, std::string item, int additional,
-                                    std::string supply, std::string delivery) {
+                                    std::string supply, std::string delivery, std::optional<BlockPos> furnace, int farmRadius) {
     if (!baritone_.player().valid() || active_ || baritone_.player().containerOpen() || baritone_.player().inventoryMovePending())
         throw std::invalid_argument("Enter a world, close containers and finish the current inventory job first");
     for (const auto& location : {supply, delivery})
         if (!location.empty() && !baritone_.storage().locations().contains(location)) throw std::invalid_argument("Unknown registered supply/delivery location: " + location);
     if(additional<1 || additional>2304)throw std::invalid_argument("Additional production target must be 1..2304");
+    if (farmRadius < 0 || farmRadius > 64) throw std::invalid_argument("Production farm radius must be 0..64");
+    if (furnace && *furnace == station) throw std::invalid_argument("Register distinct crafting and smelting stations");
     if(planning_.valid()) {
         if(planning_.wait_for(std::chrono::seconds(0))!=std::future_status::ready)throw std::invalid_argument("Wait for the previous ingredient calculation to finish");
         try{(void)planning_.get();}catch(const std::exception&){}
@@ -36,6 +54,7 @@ void SupplyProductionProcess::start(const RecipeBook& book, BlockPos station, st
     book_=book; item_=BlockFilter::normalize(std::move(item)); additional_=additional; target_=baritone_.player().countItem(item_)+additional;
     if (target_>2304) throw std::invalid_argument("Final output target exceeds inventory capacity");
     station_=station; origin_=baritone_.playerFeet(); supply_=std::move(supply); delivery_=std::move(delivery);
+    furnace_ = furnace; farmRadius_ = farmRadius;
     ticks_=rounds_=0; failure_.clear(); harvest_.clear(); phase_=Phase::Plan; supplied_=succeeded_=false; active_=true;
 }
 bool SupplyProductionProcess::isActive() { return active_ && !baritone_.pauser().paused(); }
@@ -43,12 +62,14 @@ void SupplyProductionProcess::onLostControl() {
     if (!active_) return;
     if (phase_==Phase::Supply) baritone_.logistics().onLostControl();
     if (phase_==Phase::Harvest) baritone_.mine().onLostControl();
+    if (phase_==Phase::Farm) baritone_.farm().onLostControl();
+    if (phase_==Phase::Smelt) baritone_.workshop().onLostControl();
     if (phase_==Phase::Craft) baritone_.production().onLostControl();
     if (phase_==Phase::Deliver) baritone_.storage().onLostControl();
     active_=false; if (failure_.empty()) failure_="Production objective cancelled; completed transfers and crafting are preserved";
 }
 std::string SupplyProductionProcess::displayName() const {
-    static constexpr const char* names[]={"Planning", "Restocking", "Gathering", "Crafting", "Delivering", "Returning"};
+    static constexpr const char* names[]={"Planning", "Restocking", "Gathering", "Harvesting", "Smelting", "Crafting", "Delivering", "Returning"};
     return std::format("{} production objective: {} additional {}", names[int(phase_)],additional_,item_);
 }
 std::optional<PathingCommand> SupplyProductionProcess::onTick(bool failed,bool safe) {
@@ -72,6 +93,18 @@ std::optional<PathingCommand> SupplyProductionProcess::onTick(bool failed,bool s
         else if (!baritone_.mine().isActive()) return stop("Gathering stopped before the required inventory quantity of "+harvest_);
         else if (!baritone_.diagnostics().errorsAfter(diagnostic_).empty()) return stop("Gathering failed: "+baritone_.diagnostics().errorsAfter(diagnostic_));
         else return PathingCommand{nullptr,PathingCommandType::Defer};
+    }
+    if (phase_ == Phase::Farm) {
+        if (baritone_.farm().isActive()) return PathingCommand{nullptr, PathingCommandType::Defer};
+        if (!baritone_.farm().succeeded() || p.countItem(harvest_) < harvestTarget_)
+            return stop("Production harvest did not reach its inventory target: " + baritone_.farm().failure());
+        phase_ = Phase::Plan;
+    }
+    if (phase_ == Phase::Smelt) {
+        if (baritone_.workshop().isActive()) return PathingCommand{nullptr, PathingCommandType::Defer};
+        if (!baritone_.workshop().succeeded() || p.countItem(harvest_) < harvestTarget_)
+            return stop("Production smelting output was not confirmed: " + baritone_.workshop().failure());
+        phase_ = Phase::Plan;
     }
     if (phase_==Phase::Craft) {
         if (baritone_.production().isActive()) return PathingCommand{nullptr,PathingCommandType::Defer};
@@ -124,8 +157,36 @@ std::optional<PathingCommand> SupplyProductionProcess::onTick(bool failed,bool s
     }
     // Check all missing types before allowing a destructive acquisition pass.
     for (const auto& [id,count]:plan.missing)
-        if (harvestBlocks(id).empty()) return stop("No automatic gathering policy for "+id+"; supply it in inventory or a registered source chest");
-    const auto& [id,count]=*plan.missing.begin();
+        if (harvestBlocks(id).empty() && !(farmRadius_ && farmedInput(id)) && !(furnace_ && !furnaceInput(id).empty()))
+            return stop("No automatic gathering policy for "+id+"; supply it in inventory or a registered source chest");
+    std::string id = plan.missing.begin()->first;
+    int count = plan.missing.begin()->second;
+    if (farmRadius_ && farmedInput(id)) {
+        baritone_.farm().harvest(id, count, farmRadius_, origin_);
+        harvest_ = id;
+        harvestTarget_ = p.countItem(id) + count;
+        phase_ = Phase::Farm;
+        return PathingCommand{nullptr, PathingCommandType::Defer};
+    }
+    if (furnace_) {
+        const std::string input = furnaceInput(id);
+        if (!input.empty()) {
+            const std::string fuel = "minecraft:coal";
+            const int batch = std::min(count, 64);
+            const int fuelCount = (batch + 7) / 8;
+            const int missingInput = batch + baritone_.loadouts().reserved(input) - p.countItem(input);
+            const int missingFuel = fuelCount + baritone_.loadouts().reserved(fuel) - p.countItem(fuel);
+            if (missingInput <= 0 && missingFuel <= 0) {
+                baritone_.workshop().start({*furnace_}, input, id, batch, fuel, fuelCount, true);
+                harvest_ = id;
+                harvestTarget_ = p.countItem(id) + batch;
+                phase_ = Phase::Smelt;
+                return PathingCommand{nullptr, PathingCommandType::Defer};
+            }
+            id = missingInput > 0 ? input : fuel;
+            count = missingInput > 0 ? missingInput : missingFuel;
+        }
+    }
     const bool ordinaryDrops=id=="minecraft:coal" || id=="minecraft:diamond" || id=="minecraft:raw_iron" || id=="minecraft:raw_gold" || id=="minecraft:raw_copper" || id=="minecraft:redstone" || id=="minecraft:lapis_lazuli" || id=="minecraft:cobblestone" || id=="minecraft:cobbled_deepslate";
     if (ordinaryDrops) for (int slot=0;slot<36;++slot)
         if (p.hotbar(slot).silkTouch && p.hotbar(slot).tool==Tool::Pickaxe)

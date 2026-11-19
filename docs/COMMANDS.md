@@ -44,6 +44,9 @@ You can also type a setting name directly: `#allowBreak false` is the same as `#
 | `#follow players` | Follow every player. |
 | `#follow player <name>` | Follow one player. |
 | `#follow entities` / `#follow entity <type>` | Follow entities, or entities of one type (`#follow entity zombie`). |
+| `#rail add <name> [x y z]` / `#rail list` / `#rail remove <name>` | Register, list or remove stations in the current dimension. Use a loaded rail block. |
+| `#rail route <from> <to>` | Check the connected rails and the destination platform. |
+| `#rail go <from> <to>` / `#rail status` | Board a passenger minecart near the departure station and ride to a prepared braking platform. See [rail setup and validation](WINDOWS_NEXT.md#minecart-routes). |
 
 **Examples**
 
@@ -55,6 +58,10 @@ You can also type a setting name directly: `#allowBreak false` is the same as `#
 ```
 
 ## Mining and gathering
+
+`#shulker inspect <slot>` reads a portable box in inventory slots 1–36.
+`#shulker withdraw <hotbarSlot> <item> <count> <x y z>` places the box,
+withdraws supplies and recovers it in Survival. See [portable shulker setup](WINDOWS_NEXT.md#portable-shulker-withdrawal).
 
 | Command | Description |
 |---|---|
@@ -219,11 +226,11 @@ These read the game's memory and help when updating the bot to a new game versio
 |---|---|
 | `#debug` (`#info`) | What the bot reads from the game: position, block under the feet, held item, armor, hunger, effects, the game's target. Run it first after a game update. |
 | `#world` | State of the world snapshot. |
-| `#calc <x> [y] <z>` | Compute a path without moving and print it (with the player's tools, blocks and water bucket). |
+| `#calc <x> [y] <z>` / `#calc clear` | Preview a path without moving, then hide it with `clear`. Reports estimated travel time, required block changes, nearby hazards, drops and movements planned from cached chunks. The in-game overlay uses cyan for the route, red for break, green for placement and amber for nearby hazards. |
 | `#cost` | Cost of every movement from the player's position. |
 | `#inv [all]` (`#hotbar`) | Hotbar (or whole inventory) contents. |
 | `#entities` (`#ent`) | Loaded entities. |
-| `#perf [on\|off\|reset]` | Opt-in rolling timings in milliseconds: mean, p95, p99 and maximum for game-frame intervals, bot work, scanning, preview/rendering and background loads. `on` starts a fresh capture; `off` stops and reports; no argument reports the current capture. The last 4096 samples per metric are retained; `n` counts all recorded samples. Disabled by default. |
+| `#perf [on\|off\|reset]` | Opt-in rolling timings in milliseconds: mean, p95, p99 and maximum for game-frame intervals, bot work, scanning, preview/rendering and background loads. Reports Minecraft's current and peak working set and private allocation. `on` starts a fresh capture; `off` stops and reports; no argument reports the current capture. The last 4096 samples per metric are retained; `n` counts all recorded samples. Disabled by default. |
 | `#nbt [dx dy dz]` | Block states of a block near the player. |
 | `#ecs <Component...>` / `#ecsdump <Component> [bytes]` | Does the player have these EnTT components / raw content of one. |
 | `#attrs` | Player attributes (health, hunger, speed...). |

@@ -1,5 +1,6 @@
 #pragma once
 #include <cstdint>
+#include <map>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -56,6 +57,16 @@ struct ContainerSlot {
     uint8_t networkName = 0;
 };
 enum class TransferState { Idle, Pending, Accepted, Rejected };
+struct ShulkerItem {
+    std::string name;
+    int count = 0;
+    bool operator==(const ShulkerItem&) const = default;
+};
+struct PortableShulker {
+    std::string block;
+    std::map<int, ShulkerItem> items;
+    bool operator==(const PortableShulker&) const = default;
+};
 struct RecipeOption { std::string collection,item; int slot=0,count=0; };
 struct RepairPreview {
     std::string method;
@@ -84,6 +95,7 @@ public:
     virtual int selectedSlot() const = 0;
     virtual void selectSlot(int slot) = 0;
     virtual HotbarStack hotbar(int slot) const = 0;  // any slot: 0-8 hotbar, 9-35 main inventory
+    virtual std::optional<PortableShulker> portableShulker(int /*slot*/) const { return std::nullopt; }
     // worn armor: 0 head, 1 chest, 2 legs, 3 feet (Java getItemBySlot)
     virtual HotbarStack armor(int /*slot*/) const { return {}; }
     // Swaps two inventory slots through the server (Baritone's windowClick SWAP). False if
@@ -134,6 +146,11 @@ public:
 
     // Loaded entities except the local player.
     virtual std::vector<EntityInfo> entities() const = 0;
+    virtual std::optional<Vec3d> entityPosition(uint64_t id) const {
+        for (const auto& entity : entities())
+            if (entity.id == id && !entity.dead) return entity.position;
+        return std::nullopt;
+    }
 
     // Interaction. `face` is the face of `pos` being clicked.
     // true when the block broke after several ticks of hitting (Java hasBrokenBlock after damage)

@@ -7,12 +7,14 @@
 #include <cctype>
 #include <climits>
 #include <map>
+#include <set>
 #include <stdexcept>
 #include <string_view>
 #include <unordered_map>
 
 #include "baritone/schematic/Inflate.h"
 #include "baritone/schematic/NbtReader.h"
+#include "baritone/schematic/Orientation.h"
 #include "baritone/schematic/Schematic.h"
 
 namespace baritone {
@@ -32,46 +34,88 @@ int64_t intOf(const nbt::Tag* t, const char* what) {
 
 static DesiredBlock javaToBedrockName(std::string name, const std::map<std::string, std::string>& properties);
 
-DesiredBlock javaToBedrock(std::string_view state) {
+namespace {
+using JavaProperties = std::map<std::string, std::string>;
+
+std::pair<std::string, JavaProperties> parseJavaState(std::string_view state) {
     std::map<std::string, std::string> props;
     std::size_t open = state.find('[');
     if (open != std::string_view::npos) {
-        std::string_view list = state.substr(open + 1, state.find(']', open) - open - 1);
+        if (state.find(']', open) != state.size() - 1) invalid("Malformed Java block-state brackets");
+        std::string_view list = state.substr(open + 1, state.size() - open - 2);
         while (!list.empty()) {
             std::size_t comma = list.find(',');
             std::string_view kv = list.substr(0, comma);
             std::size_t eq = kv.find('=');
-            if (eq != std::string_view::npos) props.emplace(std::string(kv.substr(0, eq)), std::string(kv.substr(eq + 1)));
+            if (eq == kv.npos || eq == 0 || eq + 1 == kv.size() ||
+                !props.emplace(kv.substr(0, eq), kv.substr(eq + 1)).second) invalid("Malformed or duplicate Java block-state property");
             if (comma == std::string_view::npos) break;
             list.remove_prefix(comma + 1);
         }
     }
-    return javaToBedrock(std::string(state.substr(0, open)), props);
+    auto name = state.substr(0, open);
+    if (name.empty()) invalid("Empty Java block name");
+    return {std::string(name), std::move(props)};
 }
 
-namespace {
-
 // Java properties -> the Bedrock orientation states of Orientation.h
-void convertOrientation(DesiredBlock& b, const std::map<std::string, std::string>& p) {
-    auto get = [&](const char* k) -> std::string {
-        auto it = p.find(k);
-        return it == p.end() ? std::string() : it->second;
+void convertOrientation(DesiredBlock& b, std::string_view sourceName, JavaProperties& p) {
+    auto take = [&](const char* k) -> std::string {
+        auto property = p.extract(k);
+        return property.empty() ? std::string() : std::move(property.mapped());
     };
     const std::string& n = b.name;
+    if (isTallPlant(n) || n.ends_with("_door")) {
+        const auto half = take("half");
+        if (half == "upper" || half == "lower") b.states.emplace_back("upper_block_bit", half == "upper" ? "1" : "0");
+        else if (!half.empty()) p.emplace("half", half);
+        if (n.ends_with("_door")) {
+            const auto facing = take("facing");
+            if (facing == "north" || facing == "south" || facing == "east" || facing == "west")
+                b.states.emplace_back("minecraft:cardinal_direction", facing);
+            else if (!facing.empty()) p.emplace("facing", facing);
+        }
+        return;
+    }
+    if (n == "minecraft:bed") {
+        const auto part = take("part");
+        if (part == "head" || part == "foot") b.states.emplace_back("head_piece_bit", part == "head" ? "1" : "0");
+        else if (!part.empty()) p.emplace("part", part);
+        const auto facing = take("facing");
+        static const std::map<std::string, std::string> directions{{"south", "0"}, {"west", "1"}, {"north", "2"}, {"east", "3"}};
+        if (auto value = directions.find(facing); value != directions.end()) b.states.emplace_back("direction", value->second);
+        else if (!facing.empty()) p.emplace("facing", facing);
+        return;
+    }
+    if (n == "minecraft:torch" || n == "minecraft:soul_torch" || n == "minecraft:redstone_torch") {
+        if (sourceName.ends_with("wall_torch")) {
+            // Java describes where the torch points, while Bedrock stores the
+            // side of the target that touches the supporting block.
+            const auto facing = take("facing");
+            if (facing == "east") b.states.emplace_back("torch_facing_direction", "west");
+            else if (facing == "west") b.states.emplace_back("torch_facing_direction", "east");
+            else if (facing == "north") b.states.emplace_back("torch_facing_direction", "south");
+            else if (facing == "south") b.states.emplace_back("torch_facing_direction", "north");
+            else p.emplace("facing", facing.empty() ? "(unspecified)" : facing);
+        } else {
+            b.states.emplace_back("torch_facing_direction", "top");
+        }
+        return;
+    }
     if (n.ends_with("_stairs")) {
         static const std::map<std::string, std::string> weirdo = {{"east", "0"}, {"west", "1"}, {"south", "2"}, {"north", "3"}};
-        if (auto it = weirdo.find(get("facing")); it != weirdo.end()) b.states.emplace_back("weirdo_direction", it->second);
-        if (std::string half = get("half"); !half.empty()) b.states.emplace_back("upside_down_bit", half == "top" ? "1" : "0");
+        if (auto it = weirdo.find(take("facing")); it != weirdo.end()) b.states.emplace_back("weirdo_direction", it->second);
+        if (std::string half = take("half"); !half.empty()) b.states.emplace_back("upside_down_bit", half == "top" ? "1" : "0");
         return;
     }
     if (n.ends_with("_slab")) {
-        std::string type = get("type");
+        std::string type = take("type");
         if (type == "double") b.name = n.substr(0, n.size() - 5) + "_double_slab";
         else if (type == "top" || type == "bottom") b.states.emplace_back("minecraft:vertical_half", type);
         return;
     }
-    if (std::string axis = get("axis"); !axis.empty() && n != "minecraft:portal") {
-        b.states.emplace_back("pillar_axis", axis);
+    if (n != "minecraft:portal" && p.contains("axis")) {
+        b.states.emplace_back("pillar_axis", take("axis"));
         return;
     }
     static const char* cardinal[] = {"minecraft:furnace", "minecraft:lit_furnace", "minecraft:blast_furnace",
@@ -79,19 +123,52 @@ void convertOrientation(DesiredBlock& b, const std::map<std::string, std::string
                                      "minecraft:chest", "minecraft:trapped_chest", "minecraft:ender_chest",
                                      "minecraft:carved_pumpkin", "minecraft:lit_pumpkin"};
     if (std::ranges::find(cardinal, n) != std::end(cardinal)) {
-        std::string facing = get("facing");
+        std::string facing = take("facing");
         if (facing == "north" || facing == "south" || facing == "east" || facing == "west") {
             b.states.emplace_back("minecraft:cardinal_direction", facing);
         }
     }
 }
 
+struct JavaImportNotes {
+    std::set<std::string> omitted;
+    bool truncated = false;
+
+    void add(const std::string& name, const std::string& key, const std::string& value) {
+        const auto entry = name.substr(0, 80) + " " + key.substr(0, 40) + "=" + value.substr(0, 40);
+        if (omitted.contains(entry)) return;
+        if (omitted.size() < 12) omitted.insert(entry);
+        else truncated = true;
+    }
+
+    void append(std::vector<std::string>& warnings) const {
+        for (const auto& entry : omitted) warnings.push_back("No direct Java placement mapping for " + entry);
+        if (truncated) warnings.push_back("Additional Java properties without a direct placement mapping were omitted from this report");
+    }
+};
+
+DesiredBlock convertJava(const std::string& name, JavaProperties properties, JavaImportNotes* notes = nullptr) {
+    DesiredBlock block = javaToBedrockName(name, properties);
+    if (block.kind != DesiredBlock::Kind::Block) return block;
+    convertOrientation(block, name, properties);
+    if (notes) {
+        if (block.name == "minecraft:bed") notes->add(name, "color", "check the Bedrock bed manually");
+        for (const auto& [key, value] : properties) {
+            if ((key == "waterlogged" || key == "lit") && value == "false") continue;
+            notes->add(name, key, value);
+        }
+    }
+    return block;
+}
 }  // namespace
 
+DesiredBlock javaToBedrock(std::string_view state) {
+    auto [name, properties] = parseJavaState(state);
+    return convertJava(name, std::move(properties));
+}
+
 DesiredBlock javaToBedrock(std::string name, const std::map<std::string, std::string>& properties) {
-    DesiredBlock b = javaToBedrockName(std::move(name), properties);
-    if (b.kind == DesiredBlock::Kind::Block) convertOrientation(b, properties);
-    return b;
+    return convertJava(name, properties);
 }
 
 static DesiredBlock javaToBedrockName(std::string name, const std::map<std::string, std::string>& properties) {
@@ -182,12 +259,14 @@ SchematicPtr parseSponge(const nbt::Tag& root) {
 
     std::vector<DesiredBlock> pal;
     std::unordered_set<int64_t> defined;
+    JavaImportNotes notes;
     for (const auto& [state, idx] : *palette->compound()) {
         auto i = idx.integer();
         if (!i || *i < 0 || *i > 1'000'000) invalid("invalid palette index");
         if (!defined.insert(*i).second) invalid("duplicate palette index");
         if (pal.size() <= static_cast<std::size_t>(*i)) pal.resize(*i + 1, DesiredBlock::any());
-        pal[*i] = javaToBedrock(state);
+        auto [name, properties] = parseJavaState(state);
+        pal[*i] = convertJava(name, std::move(properties), &notes);
     }
 
     // varint encoded, index (y * length + z) * width + x
@@ -219,6 +298,7 @@ SchematicPtr parseSponge(const nbt::Tag& root) {
     if (const auto* entities = s->get("Entities"); entities && entities->list() && !entities->list()->empty())
         warnings.emplace_back("Entities are not built by the survival builder");
     warnings.emplace_back("Java conversion reproduces block names and supported orientation states; other properties can differ on Bedrock");
+    notes.append(warnings);
     return std::make_shared<StaticSchematic>(BlockPos{w, h, l}, std::move(pal), std::move(indices), std::move(warnings));
 }
 
@@ -234,6 +314,7 @@ SchematicPtr parseLitematic(const nbt::Tag& root) {
     };
     std::vector<Region> list;
     std::vector<std::string> warnings;
+    JavaImportNotes notes;
     BlockPos lo{INT32_MAX, INT32_MAX, INT32_MAX}, hi{INT32_MIN, INT32_MIN, INT32_MIN};
     for (const auto& [name, r] : *regions->compound()) {
         for (const char* key : {"TileEntities", "Entities"})
@@ -271,7 +352,7 @@ SchematicPtr parseLitematic(const nbt::Tag& root) {
                     if (v.string()) props.emplace(k, *v.string());
             }
             if (!n || !n->string()) invalid("Missing block palette Name");
-            reg.palette.push_back(javaToBedrock(*n->string(), props));
+            reg.palette.push_back(convertJava(*n->string(), std::move(props), &notes));
         }
         if (reg.palette.empty()) invalid("Empty block palette");
         lo = {std::min(lo.x, min.x), std::min(lo.y, min.y), std::min(lo.z, min.z)};
@@ -311,6 +392,7 @@ SchematicPtr parseLitematic(const nbt::Tag& root) {
         }
     }
     warnings.emplace_back("Java conversion reproduces block names and supported orientation states; other properties can differ on Bedrock");
+    notes.append(warnings);
     return std::make_shared<StaticSchematic>(total, std::move(palette), std::move(indices), std::move(warnings));
 }
 

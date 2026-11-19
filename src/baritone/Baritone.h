@@ -20,6 +20,8 @@
 #include "baritone/process/StorageProcess.h"
 #include "baritone/process/TreeProcess.h"
 #include "baritone/process/VehicleProcess.h"
+#include "baritone/process/RailProcess.h"
+#include "baritone/process/ShulkerProcess.h"
 #include "baritone/process/SmeltProcess.h"
 #include "baritone/process/CraftProcess.h"
 #include "baritone/process/ProductionProcess.h"
@@ -71,6 +73,8 @@ public:
     StorageProcess& storage() { return storage_; }
     TreeProcess& trees() { return trees_; }
     VehicleProcess& vehicle() { return vehicle_; }
+    RailProcess& rail() { return rail_; }
+    ShulkerProcess& shulker() { return shulker_; }
     SmeltProcess& smelt() { return smelt_; }
     CraftProcess& craft() { return craft_; }
     ProductionProcess& production() { return production_; }
@@ -121,6 +125,8 @@ private:
     StorageProcess storage_;
     TreeProcess trees_;
     VehicleProcess vehicle_;
+    RailProcess rail_;
+    ShulkerProcess shulker_;
     SmeltProcess smelt_;
     CraftProcess craft_;
     ProductionProcess production_;

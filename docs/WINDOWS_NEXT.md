@@ -8,20 +8,20 @@ remain English. No adaptive performance controller is included.
 
 | Requested addition | Implementation in 1.7.0 | Remaining work |
 |---|---|---|
-| Production objectives | `#produce` coordinates stock acquisition, supported gathering, recursive crafting and optional delivery | Survival/native execution; automatically inserting smelting/farming stages into dependency plans |
+| Production objectives | `#produce` coordinates stock acquisition, supported gathering, recursive crafting and delivery, with opt-in smelting and harvesting | Full Survival/native runs of combined jobs |
 | Game recipe catalog | Local Bedrock shaped/shapeless JSON importer, explicit tag mappings, up to 2048 planning outputs | Direct native ingredient extraction, multiple recipes per output and auxiliary item variants |
 | Smelting workshop | Empty-station survey, distributed input/fuel, later output collection and unused fuel return | Native multi-furnace/blast-furnace/smoker validation |
-| In-game textured ghosts | Not implemented in this expansion | Native texture/model/render integration; existing HTML viewer remains available |
+| In-game textured ghosts | Opt-in local Bedrock resource pack PNGs rendered on nearby difference boxes, visually checked on Bedrock 26.65 | Complex models, live texture atlas integration and larger preview benchmarks |
 | Manual build assistant | Nearby missing-block highlight, matching hotbar selection and orientation text | Native visual/gameplay checks; complex blocks and moving main-inventory stacks are excluded |
 | Construction recovery | World/dimension-bound plan checkpoints including support columns and phase; explicit recovery checks current chunks/protection/obstacles | Native crash/restart and large Survival site validation |
-| Portable shulker logistics | Not implemented in this expansion | Contents/NBT identity, placement, recovery and confirmed inventory ownership |
-| Interactive map | Native control-panel map with loaded/session-visited chunks, route, local markers and protection footprints; world-bound navigation | Native UI/gameplay checks, persistent exploration layers and terrain-height rendering |
+| Portable shulker logistics | Survival placement, observed withdrawal and matching box recovery verified on Bedrock 26.65 | Additional item metadata formats and larger transfer batches |
+| Interactive map | Native control-panel map with loaded/session-visited chunks, route, local markers and protection footprints. Live selection and rejection of a request for another save also passed | Native navigation to a selected destination on this build, persistent exploration layers and terrain-height rendering |
 | Roads and bridges | Bounded road preview, headroom, lighting and existing foundation/construction integration | Native construction and larger terrain validation |
 | Specialized farms | Bounded single-crop jobs for sugar cane, bamboo, cactus, pumpkin and melon; base preservation and observed item targets | Native crop fixtures still required |
 | Villager trading | Not implemented in this expansion | Native offer discovery, budgets, stock refresh and confirmed trade actions |
-| Rail travel | Not implemented in this expansion | Native minecart boarding, rail route/station state and dismount handling |
+| Rail travel | Per-world station registration, rail geometry and passenger minecart control | Native route validation passed on a three-rail fixture, full in-game ride and dismount still to validate |
 | Technical build validation | Bounded static audit flags technical components, unsupported states and block-entity contents | Native validation; no redstone circuit/timing simulation |
-| Exportable diagnostics | Local ZIP containing version/signature status, recent events, task/workflow definitions, settings and bounded log tail | Native command/panel export validation |
+| Exportable diagnostics | Local ZIP with version/signature status, recent events, task/workflow definitions, settings and bounded log tail; `#report` produced a valid archive on Bedrock 26.65 | Panel export validation |
 | Workflow library | Paused, configurable build/stock, gather/store, produce/store and loadout templates | Native end-to-end template validation |
 
 The initial read-only check on **2026-11-07** found installed package
@@ -48,6 +48,8 @@ only the accepted package number would be insufficient. Local evidence:
 #storage add output x y z
 #produce table torch 128 supplies output
 #produce table torch 16 -
+#produce table iron_pickaxe 1 - output furnace
+#produce table paper 12 - output - 16
 #produce status
 #stop
 ```
@@ -61,11 +63,16 @@ missing inputs stop before gathering; supply those materials explicitly. Ordinar
 ore drops require putting Silk Touch pickaxes into storage, because the miner's
 tool selector could otherwise choose one.
 
+When an empty furnace is registered, `#produce` can smelt iron, copper or gold
+ingots, glass or stone as intermediate ingredients or final outputs. It uses coal
+and keeps active loadout reserves. A farm radius of 1–64 blocks around the starting
+position enables harvesting missing sugar cane, bamboo, cactus, pumpkins or melon
+slices. The job replans from observed inventory after each successful stage.
+
 Dependency calculations run in a bounded background job. Inventory changes while
 planning trigger a fresh calculation. Limit: 64 planning passes, one hour and the
 existing 2304-item crafting target. The job stops on missing resources, failed
-children or unconfirmed output. It does not fabricate ingredients or infer ingots
-from raw ores. Optional delivery deposits the requested additional quantity,
+children or unconfirmed output. Optional delivery deposits the requested additional quantity,
 leaving existing stock and any crafting-batch surplus. Completed actions are not
 rolled back on cancellation.
 
@@ -151,6 +158,7 @@ it must not be presented as validation of every redstone state.
 
 ```text
 #construction start temporary cobblestone 16
+#construction checkpoint
 #construction recover
 ```
 
@@ -158,10 +166,12 @@ A ready, executing construction plan saves a bounded checkpoint in the world's
 `construction` data category. It includes exact target descriptions, support
 columns, the foundation policy and current phase. Encoding/writing happens off
 the game thread; the immutable plan snapshot is copied once after planning.
+Each phase waits for its checkpoint to be saved before it can modify blocks.
+`#construction checkpoint` shows the recorded phase and support/target counts.
 Loading a world does not automatically resume any job. Run `#construction recover`
 explicitly after inspecting the site and inventory.
 
-Recovery requires the same world name/dimension and exact builder settings. It
+Recovery requires the same local save identity and dimension, and exact builder settings. It
 checks all target/support cells incrementally for loaded chunks, current
 protection and fluid/unbreakable obstacles before resuming. A partially completed
 phase is repeated by comparing live blocks, rather than replaying inventory
@@ -220,6 +230,45 @@ meal is spent. Pumpkin/melon stems are not harvesting targets. Missing ripe crop
 cause a bounded wait, not a fabricated completion. The generic `#farm` remains
 available for mixed crops and its existing planting behavior.
 
+## Portable shulker withdrawal
+
+```text
+#shulker inspect 3
+#shulker withdraw 3 diamond 8 ~1 ~ ~
+#shulker status
+```
+
+Place the box in hotbar slot 1–9 to withdraw. Inspection can read inventory
+slots 1–36. Use Survival, with two empty cells above a reachable solid floor
+within three blocks. The box and its contents must use supported vanilla stack
+data. The original hotbar slot is reserved for pickup. The process matches the
+original container slots, checks the inventory increase after each receipt and
+verifies the remaining contents in the recovered box. Interruption or a failed
+check reports the last box position for manual pickup.
+
+## Minecart routes
+
+```text
+#rail add departure x y z
+#rail add arrival x y z
+#rail route departure arrival
+#rail go departure arrival
+```
+
+Register both rail blocks in the same dimension. The planner follows up to 512
+loaded track blocks and checks slopes, curves, clearance and protected regions.
+Use a passenger minecart at the departure station and start within eight blocks.
+Provide powered rails as needed. The arrival rail must be flat and unpowered,
+with solid ground and two blocks of clearance on both sides. Baritone waits for
+the cart to stop on that rail before sending the normal dismount input. Use
+`#stop` to release the controls and `#rail status` to inspect the current phase.
+
+On Bedrock 26.65, station commands, planning on a connected three-rail track and
+rejection of an arrival without a braking rail passed in an existing save. The
+temporary stations and tracks were removed. Simulated tests cover curves,
+slopes, blocking changes, boarding and dismount confirmation. Complete rides
+with a real cart, propulsion and a braking rail still need a gameplay test.
+
 ## Workflow templates and diagnostics
 
 ```text
@@ -250,6 +299,27 @@ inspect the archive before sharing. Limits are 16 entries, two MiB per entry and
 eight MiB total; existing output files are preserved.
 
 ## Validation
+
+The Windows candidate was tested on Bedrock 26.65 on 2026-11-19.
+
+- **151 C++ tests** passed in the normal and AddressSanitizer builds. The five
+  Python recipe importer tests passed. Offline profile checks passed for both
+  supported Windows packages.
+- The game resolved 27 native signatures. It returned help for 108 primary
+  commands and 27 aliases, and passed 28 live status and read-only probes
+  plus the navigation preview, road and foundation planning, schematic
+  import, texture import and rejection, technical audit, HTML viewer export
+  and diagnostics ZIP checks. Chromium displayed the exported viewer.
+- The minecart regression reproduced incorrect cancellation when boarding was
+  confirmed on the second rail. It now passes, including observed dismount in
+  the simulated trip. A complete in-game ride remains pending.
+- The control panel showed the live world and chunk map. The selected
+  destination label now survives refreshes. Closing the map clears its selection.
+  An empty inventory now produces visible feedback from `#inv all`.
+
+The read-only checks and previews left the player at the same position in the
+peaceful save. Full in-game rail and elytra trips, the unimplemented villager
+trading module, and combined Survival jobs remain open.
 
 ```powershell
 cmake --build build --config RelWithDebInfo

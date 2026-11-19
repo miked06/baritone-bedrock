@@ -9,6 +9,7 @@
 
 #include "baritone/Settings.h"
 #include "sdk/Render.h"
+#include "platform/GhostTexturePack.h"
 #include "platform/WorldTracker.h"
 #include "core/Log.h"
 #include "core/Perf.h"
@@ -56,6 +57,90 @@ sdk::Color schematicTint(baritone::SchematicWorkspace::Difference difference, fl
     if (difference == D::Wrong) return {1, 0.15f, 0.15f, alpha};
     if (difference == D::Remove) return {1, 0.65f, 0.1f, alpha};
     return {0.6f, 0.6f, 0.6f, alpha * 0.5f};
+}
+
+void drawGhostTextures(const GhostTexturePack& pack,
+                       const std::vector<baritone::SchematicWorkspace::PreviewCell>& cells,
+                       sdk::Tessellator& tess, sdk::ShaderColor& shader, const sdk::Vec3& origin,
+                       sdk::ScreenContext* screen, sdk::MaterialPtr* material) {
+    struct Candidate {
+        BlockPos pos;
+        const GhostTexturePack::Block* block;
+        double distance;
+    };
+    constexpr std::size_t kMaxCells = 16;
+    const Vec3d camera{origin.x, origin.y, origin.z};
+    std::vector<Candidate> candidates;
+    for (const auto& cell : cells) {
+        if (cell.material.empty()) continue;
+        const auto texture = pack.blocks.find(cell.material);
+        if (texture == pack.blocks.end()) continue;
+        candidates.push_back({cell.pos, &texture->second, (Vec3d::center(cell.pos) - camera).lengthSq()});
+    }
+    if (candidates.empty()) return;
+    const auto end = candidates.begin() + std::min(candidates.size(), kMaxCells);
+    std::partial_sort(candidates.begin(), end, candidates.end(), [](const Candidate& a, const Candidate& b) {
+        return a.distance != b.distance ? a.distance < b.distance : a.pos < b.pos;
+    });
+    candidates.erase(end, candidates.end());
+    struct Face { BlockPos normal; Vec3d start, u, v; };
+    constexpr Face faces[] = {
+        {{0, -1, 0}, {0, 0, 0}, {1, 0, 0}, {0, 0, 1}},
+        {{0, 1, 0}, {0, 1, 1}, {1, 0, 0}, {0, 0, -1}},
+        {{0, 0, -1}, {0, 1, 0}, {1, 0, 0}, {0, -1, 0}},
+        {{0, 0, 1}, {1, 1, 1}, {-1, 0, 0}, {0, -1, 0}},
+        {{-1, 0, 0}, {0, 1, 1}, {0, 0, -1}, {0, -1, 0}},
+        {{1, 0, 0}, {1, 1, 0}, {0, 0, 1}, {0, -1, 0}},
+    };
+    using Quad = std::array<Vec3d, 4>;
+    std::array<std::vector<Quad>, GhostTexturePack::colorCount> batches;
+    constexpr int size = GhostTexturePack::tileSize;
+    constexpr double step = 1.0 / size;
+    for (const auto& candidate : candidates) {
+        const auto& pos = candidate.pos;
+        const Vec3d corner{static_cast<double>(pos.x), static_cast<double>(pos.y), static_cast<double>(pos.z)};
+        for (std::size_t faceIndex = 0; faceIndex < std::size(faces); ++faceIndex) {
+            const auto& tile = (*candidate.block)[faceIndex];
+            if (!tile) continue;
+            const auto& face = faces[faceIndex];
+            const Vec3d start = corner + face.start;
+            const auto delta = camera - start;
+            if (delta.x * face.normal.x + delta.y * face.normal.y + delta.z * face.normal.z <= 0) continue;
+            const auto neighbor = std::ranges::find(candidates, pos + face.normal, &Candidate::pos);
+            if (neighbor != candidates.end()) {
+                const auto& opposite = (*neighbor->block)[faceIndex ^ 1];
+                if (opposite && std::ranges::find(*opposite, GhostTexturePack::transparent) == opposite->end()) continue;
+            }
+            for (int y = 0; y < size; ++y) {
+                int x = 0;
+                while (x < size) {
+                    const auto colorIndex = (*tile)[y * size + x];
+                    const int first = x++;
+                    while (x < size && (*tile)[y * size + x] == colorIndex) ++x;
+                    if (colorIndex == GhostTexturePack::transparent) continue;
+                    const auto p = start + face.u * (first * step) + face.v * (y * step);
+                    const auto u = face.u * ((x - first) * step);
+                    const auto v = face.v * step;
+                    batches[colorIndex].push_back({p, p + u, p + u + v, p + v});
+                }
+            }
+        }
+    }
+    for (std::size_t i = 0; i < batches.size(); ++i) {
+        const auto& quads = batches[i];
+        if (quads.empty()) continue;
+        const auto tint = color(pack.colors[i], 0.62f);
+        shader.set(tint);
+        tess.begin(sdk::Primitive::Quad, static_cast<int>(quads.size() * 4));
+        tess.color(tint);
+        for (const auto& quad : quads) {
+            for (const auto& vertex : quad) {
+                tess.vertex(static_cast<float>(vertex.x - origin.x), static_cast<float>(vertex.y - origin.y),
+                            static_cast<float>(vertex.z - origin.z));
+            }
+        }
+        sdk::renderMeshImmediately(screen, &tess, material);
+    }
 }
 
 void addBox(std::vector<Line>& out, Vec3d lo, Vec3d hi, sdk::Color c) {
@@ -208,6 +293,29 @@ PathRenderer& PathRenderer::get() {
     return *instance;
 }
 
+std::shared_ptr<const GhostTexturePack> PathRenderer::ghostTextures() {
+    std::lock_guard lock(mutex_);
+    return ghostTextures_;
+}
+
+uint64_t PathRenderer::ghostPackGeneration() {
+    std::lock_guard lock(mutex_);
+    return ghostPackGeneration_;
+}
+
+bool PathRenderer::finishGhostPackLoad(uint64_t request, std::shared_ptr<const GhostTexturePack> pack) {
+    std::lock_guard lock(mutex_);
+    if (request != ghostPackGeneration_ || stopping_) return false;
+    ghostTextures_ = std::move(pack);
+    return true;
+}
+
+void PathRenderer::clearGhostTextures() {
+    std::lock_guard lock(mutex_);
+    ++ghostPackGeneration_;
+    ghostTextures_.reset();
+}
+
 void PathRenderer::update(Frame frame) {
     std::lock_guard updateLock(updateMutex_);
     if (stopping_) return;
@@ -258,6 +366,7 @@ void PathRenderer::shutdown() {
     meshSource_.reset();
     buildingSource_.reset();
     std::lock_guard frameLock(mutex_);
+    ghostTextures_.reset();
     frame_ = {};
 }
 
@@ -266,12 +375,14 @@ void PathRenderer::render(sdk::LevelRenderer* renderer, sdk::ScreenContext* scre
     const Settings& s = Settings::get();
     std::vector<Line> lines;
     std::shared_ptr<const std::vector<baritone::CachedFace>> cachedMesh;
-    std::vector<baritone::SchematicWorkspace::PreviewCell> schematicCells;
+    std::shared_ptr<const std::vector<baritone::SchematicWorkspace::PreviewCell>> schematicPreview;
+    std::shared_ptr<const GhostTexturePack> textures;
     {
         std::lock_guard lock(mutex_);
         const Frame& f = frame_;
         cachedMesh = f.cachedMesh;
-        schematicCells = f.schematicPreview;
+        schematicPreview = f.schematicPreview;
+        textures = ghostTextures_;
         // Java PathRenderer.render
         if (s.renderGoal && f.goal) {
             int budget = 100;
@@ -303,6 +414,27 @@ void PathRenderer::render(sdk::LevelRenderer* renderer, sdk::ScreenContext* scre
             depthMode(lines, movementLines, s.renderPathIgnoreDepth);
         }
         widen(lines, pathLines, s.pathRenderLineWidthPixels);
+        if (s.renderPath && f.pathPreview && f.player) {
+            const auto& preview = *f.pathPreview;
+            const auto start = lines.size();
+            drawPath(lines, preview.path->positions(), 0, {67, 219, 255}, false);
+            if (s.renderSelectionBoxes) {
+                auto boxes = [&](const auto& positions, baritone::Color tint) {
+                    int budget = 128;
+                    for (const auto& p : positions) {
+                        if (std::abs(p.x - f.player->x) > 48 || std::abs(p.y - f.player->y) > 48 ||
+                            std::abs(p.z - f.player->z) > 48) continue;
+                        addBlockBox(lines, p, color(tint, 0.75f));
+                        if (--budget == 0) break;
+                    }
+                };
+                boxes(preview.toBreak, {255, 77, 77});
+                boxes(preview.toPlace, {92, 238, 116});
+                boxes(preview.hazards, {255, 178, 61});
+            }
+            widen(lines, start, s.pathRenderLineWidthPixels);
+            depthMode(lines, start, s.renderPathIgnoreDepth);
+        }
         // Java ElytraBehavior.onRenderPass
         const std::size_t elytraLines = lines.size();
         if (s.renderElytraPath || s.elytraRenderSimulation) {
@@ -371,8 +503,9 @@ void PathRenderer::render(sdk::LevelRenderer* renderer, sdk::ScreenContext* scre
         depthMode(lines, clickLines, true);
         const std::size_t schematicLines = lines.size();
         if (f.schematicBounds) addRegion(lines, f.schematicBounds->first, f.schematicBounds->second, {0.6f, 0.8f, 1, 0.35f});
-        for (const auto& cell : f.schematicPreview) {
-            addBlockBox(lines, cell.pos, schematicTint(cell.difference, 0.75f), 0.003);
+        if (schematicPreview) {
+            for (const auto& cell : *schematicPreview)
+                addBlockBox(lines, cell.pos, schematicTint(cell.difference, 0.75f), 0.003);
         }
         // Wire ghosts remain visible through existing terrain. The bounded
         // placement preview has its own on/off switch, independent of path lines.
@@ -385,6 +518,8 @@ void PathRenderer::render(sdk::LevelRenderer* renderer, sdk::ScreenContext* scre
     sdk::Vec3 origin = renderer->origin();
     sdk::ShaderColor* shader = screen->shaderColor();
     static bool loggedSchematic = false;
+    static const std::vector<baritone::SchematicWorkspace::PreviewCell> empty;
+    const auto& schematicCells = schematicPreview ? *schematicPreview : empty;
     if (!schematicCells.empty() && !loggedSchematic) {
         logger::debug("Schematic render: {} boxes, camera origin {} {} {}, tessellator {}, shader {}",
             schematicCells.size(), origin.x, origin.y, origin.z, static_cast<void*>(tess), static_cast<void*>(shader));
@@ -446,6 +581,8 @@ void PathRenderer::render(sdk::LevelRenderer* renderer, sdk::ScreenContext* scre
             sdk::renderMeshImmediately(screen, tess, overlay);
         }
     }
+    if (textures && overlay && !schematicCells.empty())
+        drawGhostTextures(*textures, schematicCells, *tess, *shader, origin, screen, overlay);
 
     // These position-only materials use a uniform color. Batch by color as well
     // as depth mode so every path/goal/fade keeps its requested color and alpha.

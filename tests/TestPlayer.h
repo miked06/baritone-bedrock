@@ -24,6 +24,8 @@ public:
     int interactions = 0, attacks = 0;
     bool containerOpened = false, ownedContainer = false, rejectTransfer = false;
     bool pendingInventory = false;
+    std::optional<bool> riding;
+    std::optional<bool> ridingState() const override { return riding; }
     bool inventoryMovePending() const override { return pendingInventory; }
     baritone::TransferState transfer = baritone::TransferState::Idle;
     std::vector<baritone::ContainerSlot> externalSlots;

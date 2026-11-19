@@ -14,7 +14,7 @@ namespace baritone {
 class SchematicWorkspace {
 public:
     enum class Difference { Missing, Wrong, Remove, Unloaded };
-    struct PreviewCell { BlockPos pos; Difference difference; };
+    struct PreviewCell { BlockPos pos; Difference difference; std::string material{}; };
     using Materials = SchematicMaterials;
     void load(std::string name, SchematicPtr source, BlockPos origin, std::string sourcePath = {});
     const std::string& sourcePath() const { return sourcePath_; }
@@ -39,7 +39,7 @@ public:
     // Only exact live chunks are compared. Work is bounded spatially and by the
     // number of output boxes; cached approximations are never treated as matches.
     std::vector<PreviewCell> preview(const WorldSnapshot& world, BlockPos center,
-                                    int radius = 16, std::size_t maxCells = 2048) const;
+                                    int radius = 16, std::size_t maxCells = 2048, bool includeMaterials = false) const;
 private:
     void rebuild();
     void requireLoaded() const;
