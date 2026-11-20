@@ -1,4 +1,5 @@
 #pragma once
+#include <array>
 #include <map>
 #include <unordered_set>
 #include "baritone/schematic/SchematicWorkspace.h"
@@ -9,9 +10,14 @@ namespace baritone {
 class SchematicSurvey {
 public:
     struct Result {
+        using Difference = SchematicWorkspace::Difference;
+        static constexpr std::size_t sampleLimit = 128;
         uint64_t matching = 0, missing = 0, wrong = 0, extra = 0, unknown = 0, ignored = 0;
         std::map<std::string, uint64_t> items;
-        std::vector<SchematicWorkspace::PreviewCell> problems;
+        std::array<std::vector<BlockPos>, 4> problemSamples;
+        const std::vector<BlockPos>& locations(Difference difference) const {
+            return problemSamples[static_cast<std::size_t>(difference)];
+        }
         std::vector<std::string> warnings;
     };
     void start(SchematicPtr schematic, BlockPos origin, uint64_t revision);

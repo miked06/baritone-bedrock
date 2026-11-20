@@ -2,6 +2,20 @@
 
 All notable changes to Baritone Bedrock. Versions follow [semantic versioning](https://semver.org/).
 
+## 1.9.0
+
+Windows x64 release for **Minecraft Bedrock 26.65**, package `1.26.6501.0`.
+This is the only active native profile in this release.
+
+- Use `#schematic issues` after verification to page through recorded missing,
+  wrong, extra or unloaded positions.
+- Use `#rail inspect` with a station name or coordinates to check the stopping
+  rail and dismount exits. Route and trip commands report the same cause when
+  the destination fails inspection.
+
+See the [Windows validation matrix](https://github.com/miked06/baritone-bedrock/blob/v1.9.0/docs/WINDOWS_NEXT.md#validation)
+for the completed checks and remaining native scenarios.
+
 ## 1.8.0
 
 Windows x64 release for **Minecraft Bedrock 26.65 and 26.63** (packages

@@ -19,8 +19,8 @@ def native_profiles():
               'inventoryKey', 'scenePop', 'emptyStack', 'itemStackTable')
     profiles = {version: dict(zip(fields, (int(value.strip(), 16) for value in addresses.split(',')), strict=True))
                 for version, addresses in entries}
-    if not profiles or len(profiles) != len(entries):
-        raise ValueError('Missing or duplicate native package profile')
+    if len(profiles) != 1 or len(entries) != 1:
+        raise ValueError('Expected exactly one native package profile')
     return profiles
 
 

@@ -1751,8 +1751,29 @@ TEST(schematic_survey_counts_only_live_differences_and_yields) {
     while (survey.active()) survey.step(*world.snapshot(), 5);
     auto r = survey.result();
     CHECK(r.matching == 1 && r.wrong == 1 && r.missing == 1 && r.extra == 1 && r.unknown == 1);
-    CHECK(r.items.at("minecraft:stone") == 2 && r.problems.size() == 4);
+    using D = SchematicWorkspace::Difference;
+    CHECK(r.items.at("minecraft:stone") == 2);
+    CHECK((r.locations(D::Wrong) == std::vector<BlockPos>{{0, 1, 0}}));
+    CHECK((r.locations(D::Missing) == std::vector<BlockPos>{{1, 1, 0}}));
+    CHECK((r.locations(D::Remove) == std::vector<BlockPos>{{2, 1, 0}}));
+    CHECK((r.locations(D::Unloaded) == std::vector<BlockPos>{{48, 1, 0}}));
     CHECK(survey.revision() == 7);
+}
+
+TEST(schematic_survey_samples_each_issue_type_independently) {
+    using D = SchematicWorkspace::Difference;
+    TestWorld world(1);
+    world.set(15, 10, 0, Blocks::get().dirt);
+    SchematicSurvey survey;
+    survey.start(std::make_shared<FillSchematic>(BlockPos{16, 10, 1},
+        DesiredBlock::block("minecraft:stone")), {0, 1, 0}, 17);
+    while (survey.active()) survey.step(*world.snapshot());
+    const auto& result = survey.result();
+    CHECK(result.missing == 159 && result.wrong == 1);
+    CHECK(result.locations(D::Missing).size() == SchematicSurvey::Result::sampleLimit);
+    CHECK((result.locations(D::Wrong) == std::vector<BlockPos>{{15, 10, 0}}));
+    survey.clear();
+    CHECK(!survey.ready() && survey.result().locations(D::Wrong).empty());
 }
 
 TEST(material_plan_reserves_exact_items_before_substitutions) {
@@ -2049,11 +2070,24 @@ TEST(rail_path_follows_curves_and_slopes_and_checks_the_stopping_platform) {
     CHECK_MSG(route.error.empty(), route.error);
     CHECK((route.points == std::vector<BlockPos>{start, {1,1,0}, {2,2,0}, {2,2,1}, end}));
     CHECK(railHasStoppingPlatform(*world.snapshot(), end));
+    CHECK(railStoppingIssue(*world.snapshot(), {1,1,0}) == "The stopping rail must be flat");
+    CHECK(railStoppingIssue(*world.snapshot(), start) == "Install an unpowered powered rail to brake the cart");
     world.set(2, 2, 2, railState("minecraft:golden_rail", 0, true));
     CHECK(!railHasStoppingPlatform(*world.snapshot(), end));
+    CHECK(railStoppingIssue(*world.snapshot(), end) == "Switch off power to the stopping rail");
     world.set(2, 2, 2, brake);
     world.set(1, 2, 2, Blocks::get().stone);
     CHECK(!railHasStoppingPlatform(*world.snapshot(), end));
+    CHECK(railStoppingIssue(*world.snapshot(), end) == "Both exits need two loaded, clear blocks");
+    world.set(1, 2, 2, kAir);
+    world.set(1, 1, 2, kAir);
+    CHECK(railStoppingIssue(*world.snapshot(), end) == "Both exits need solid, dry, safe footing");
+    world.set(1, 1, 2, Blocks::get().stone);
+    auto exitPolicy = std::make_shared<ProtectionPolicy>();
+    exitPolicy->add({"closed exit", {{1,2,2},{1,3,2}}, ProtectionPolicy::Both});
+    world.snapshot()->setProtection(exitPolicy);
+    CHECK(railStoppingIssue(*world.snapshot(), end) == "An exit intersects an entry-protected zone");
+    world.snapshot()->setProtection({});
     world.set(2, 2, 0, flat);
     CHECK(!findRailPath(*world.snapshot(), start, end).error.empty());
     world.set(2, 2, 0, curve);

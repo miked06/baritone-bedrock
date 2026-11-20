@@ -70,24 +70,31 @@ bool railsConnected(const WorldSnapshot& world, BlockPos from, BlockPos to) {
     });
 }
 
-bool railHasStoppingPlatform(const WorldSnapshot& world, BlockPos pos) {
+std::string_view railStoppingIssue(const WorldSnapshot& world, BlockPos pos) {
     const auto* shape = usableShape(world, pos);
-    if (!shape || shape->front().height || shape->back().height) return false;
+    if (!shape) return "Use a loaded rail with two clear blocks above it and no entry protection";
+    if (shape->front().height || shape->back().height) return "The stopping rail must be flat";
     const auto* rail = live(world, pos);
     const auto powered = rail->state("rail_data_bit");
-    if (rail->name != "minecraft:golden_rail" || (powered != "0" && powered != "false")) return false;
+    if (rail->name != "minecraft:golden_rail") return "Install an unpowered powered rail to brake the cart";
+    if (powered != "0" && powered != "false") return "Switch off power to the stopping rail";
 
     const auto policy = world.protection();
     for (auto direction : kHorizontals) {
         if (direction == shape->front().direction || direction == shape->back().direction) continue;
         const auto exit = pos.offset(direction);
-        if (!safeEmpty(live(world, exit)) || !safeEmpty(live(world, exit.above()))) return false;
+        if (!safeEmpty(live(world, exit)) || !safeEmpty(live(world, exit.above())))
+            return "Both exits need two loaded, clear blocks";
         const auto* floor = live(world, exit.below());
-        if (!floor || (!floor->fullCube && !floor->solidTop) || floor->hasFluid() || floor->type == BlockType::Magma ||
-            (policy && !policy->permitsSegment(exit, exit.above()))) return false;
+        if (!floor || (!floor->fullCube && !floor->solidTop) || floor->hasFluid() || floor->type == BlockType::Magma)
+            return "Both exits need solid, dry, safe footing";
+        if (policy && !policy->permitsSegment(exit, exit.above()))
+            return "An exit intersects an entry-protected zone";
     }
-    return true;
+    return {};
 }
+
+bool railHasStoppingPlatform(const WorldSnapshot& world, BlockPos pos) { return railStoppingIssue(world, pos).empty(); }
 
 std::optional<BlockPos> railBelow(const WorldSnapshot& world, Vec3d position) {
     if (!std::isfinite(position.x) || !std::isfinite(position.y) || !std::isfinite(position.z) ||

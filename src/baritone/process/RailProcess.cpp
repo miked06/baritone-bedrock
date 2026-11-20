@@ -16,8 +16,8 @@ void RailProcess::start(BlockPos from, BlockPos to) {
     if (from == to) throw std::invalid_argument("Choose two different rail stations");
     if ((Vec3d::center(from) - player.position()).lengthSq() > 64)
         throw std::invalid_argument("Move within eight blocks of the departure station");
-    if (!railHasStoppingPlatform(*world, to))
-        throw std::invalid_argument("Destination needs a flat unpowered golden rail and clear dismount space on both sides");
+    if (const auto issue = railStoppingIssue(*world, to); !issue.empty())
+        throw std::invalid_argument("Unsafe rail destination: " + std::string(issue));
     auto route = findRailPath(*world, from, to);
     if (!route.error.empty()) throw std::invalid_argument(route.error);
 

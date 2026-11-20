@@ -129,11 +129,43 @@ void registerSchematicCommands(CommandManager& manager, Bot& bot) {
         if (action == "verify" || action == "requirements") {
             if (args.size() == 2 && args[1] == "status") {
                 const auto& survey = bot.schematicSurvey();
+                if (!work.loaded() || survey.revision() != work.revision() || (!survey.active() && !survey.ready())) {
+                    chat::info("Comparison: not started for this placement");
+                    return;
+                }
                 chat::info(std::format("Comparison: {}/{} positions, {}", survey.scanned(), survey.volume(), survey.active() ? "running" : survey.ready() ? "complete" : "not started"));
                 return;
             }
             if (args.size() != 1) throw CommandError("Usage: #schematic verify|requirements [status]");
             bot.startSchematicSurvey(action == "requirements"); return;
+        }
+        if (action == "issues") {
+            if (args.size() > 3) throw CommandError("Usage: #schematic issues [missing|wrong|extra|unknown] [page]");
+            const auto& survey = bot.schematicSurvey();
+            if (!work.loaded() || survey.revision() != work.revision() || (!survey.ready() && !survey.active()))
+                throw CommandError("Run #schematic verify for this placement first");
+            if (survey.active()) throw CommandError("Comparison is still running. Check #schematic verify status");
+            const auto kind = args.size() >= 2 ? lower(args[1]) : "missing";
+            using Difference = baritone::SchematicWorkspace::Difference;
+            const auto& result = survey.result();
+            const auto [difference, total] = [&]() -> std::pair<Difference, uint64_t> {
+                if (kind == "missing") return {Difference::Missing, result.missing};
+                if (kind == "wrong") return {Difference::Wrong, result.wrong};
+                if (kind == "extra") return {Difference::Remove, result.extra};
+                if (kind == "unknown") return {Difference::Unloaded, result.unknown};
+                throw CommandError("Issue type must be missing, wrong, extra or unknown");
+            }();
+            constexpr int pageSize = 8;
+            const auto& locations = result.locations(difference);
+            const int pages = std::max(1, (static_cast<int>(locations.size()) + pageSize - 1) / pageSize);
+            const int page = args.size() == 3 ? parseInt(args[2], "page") : 1;
+            if (page < 1 || page > pages) throw CommandError(std::format("Page must be 1..{}", pages));
+            chat::info(std::format("Last comparison: {} {} blocks, {} locations recorded (page {}/{})",
+                                   total, kind, locations.size(), page, pages));
+            const auto first = static_cast<std::size_t>((page - 1) * pageSize);
+            for (auto i = first; i < std::min(locations.size(), first + pageSize); ++i)
+                chat::info(std::format("{} at {}", kind, locations[i]));
+            return;
         }
         if (action == "repair") {
             if (args.size() != 1) throw CommandError("Usage: #schematic repair");
@@ -191,15 +223,16 @@ void registerSchematicCommands(CommandManager& manager, Bot& bot) {
             chat::info(std::format("Air positions: {}, ignored positions: {}. Multi-block/double-slab placements can need different item counts", counts.air, counts.ignored));
             return;
         }
-        throw CommandError("Actions: list, load, info, move, rotate, mirror, layer, preview, materials, build, clear");
+        throw CommandError("Actions: list, load, info, move, rotate, mirror, layer, preview, materials, verify, issues, build, clear");
     };
     manager.add({{"schematic", "schem", "blueprint"},
-        "schematic <list|load <file> [x y z]|info|move <x y z|here>|rotate <degrees>|mirror <none|x|z>|layer <all|y|yMin yMax>|preview <on|off>|materials [page]|build|clear>",
+        "schematic <list|load <file> [x y z]|info|move <x y z|here>|rotate <degrees>|mirror <none|x|z>|layer <all|y|yMin yMax>|preview <on|off>|materials [page]|verify|issues [missing|wrong|extra|unknown] [page]|build|clear>",
         "Load and preview a schematic, adjust its placement, then build it", run});
     auto bridge = [run, &bot](const Args& args) {
         if (args.empty() || (args.size() == 1 && args.front() == "1")) { startBuild(bot); return; }
         const auto action = lower(args[0]);
-        static const std::vector<std::string> actions{"list", "load", "info", "move", "rotate", "mirror", "layer", "preview", "materials", "build", "clear", "unload"};
+        static const std::vector<std::string> actions{"list", "load", "info", "move", "rotate", "mirror", "layer", "preview",
+            "materials", "verify", "requirements", "issues", "repair", "build", "clear", "unload"};
         if (std::ranges::find(actions, action) != actions.end()) { run(args); return; }
         Args load{"load"}; load.insert(load.end(), args.begin(), args.end()); run(load);
     };

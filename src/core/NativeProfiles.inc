@@ -1,6 +1,4 @@
 // Package, crafting (table, place, discard), anvil (table, preview, take),
 // grindstone (table, preview, take), inventory key, scene pop, empty stack and its table.
-PROFILE("1.26.6301.0", 0xF1B5660, 0x3A4C1D0, 0x3A28260, 0xF49A490, 0xCC9E280, 0xCC9C4A0,
-        0xF498C80, 0xCC59440, 0xCC599E0, 0x657E170, 0x56C380, 0x1293CE90, 0xEFFAE80)
 PROFILE("1.26.6501.0", 0xF1B6660, 0x3A4C250, 0x3A282E0, 0xF49B510, 0xCC9EDC0, 0xCC9CFE0,
         0xF499D00, 0xCC59F80, 0xCC5A520, 0x657E800, 0x56C380, 0x1293DE90, 0xEFFBE80)

@@ -45,6 +45,7 @@ You can also type a setting name directly: `#allowBreak false` is the same as `#
 | `#follow player <name>` | Follow one player. |
 | `#follow entities` / `#follow entity <type>` | Follow entities, or entities of one type (`#follow entity zombie`). |
 | `#rail add <name> [x y z]` / `#rail list` / `#rail remove <name>` | Register, list or remove stations in the current dimension. Use a loaded rail block. |
+| `#rail inspect <name>` / `#rail inspect x y z` | Check whether a rail can brake a cart and provide safe dismount space. |
 | `#rail route <from> <to>` | Check the connected rails and the destination platform. |
 | `#rail go <from> <to>` / `#rail status` | Board a passenger minecart near the departure station and ride to a prepared braking platform. See [rail setup and validation](WINDOWS_NEXT.md#minecart-routes). |
 

@@ -54,8 +54,8 @@ Each Minecraft update moves functions and may change class layouts.
 Windows package `1.26.6501.0` retains the 27 unique signatures and the verified
 instruction bodies for the fixed workstation entries, inventory-key handler,
 scene stack, player/region accessors and core GameMode actions. The fixed image
-addresses changed and are selected by exact package alongside `1.26.6301.0`.
-Both offline dumps pass all nine `profilecheck.py` prerequisites. On 26.65,
+addresses changed. The current build selects only the exact 26.65 package.
+The 26.65 dump passes all nine `profilecheck.py` prerequisites. On 26.65,
 the DLL started in an existing save and `#doctor`, inventory inspection, task,
 storage and portal listings, Survival status and `#calc` succeeded.
 The same save passed a short walk in each direction with breaking and placement
@@ -67,7 +67,7 @@ be validated.
 
 ## Reverse engineering notes (26.63)
 
-Current profile: Windows x64 package **1.26.6301.0**. On 2026-11-07 the previous
+Historical profile: Windows x64 package **1.26.6301.0**. On 2026-11-07 the previous
 DLL unloaded at startup because its exact package guard required 1.26.6005.0.
 Keep that guard: accepting the new number alone would leave stale fixed RVAs.
 

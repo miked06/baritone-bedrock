@@ -1,12 +1,19 @@
-# Windows 1.7.0 additions and validation
+# Windows automation and validation
 
 This expansion follows release 1.6.0. The matrix distinguishes implemented work
 from remaining modules and gameplay validation. Built-in messages
 remain English. No adaptive performance controller is included.
 
+## 1.9.0 release plan
+
+1. Keep the stable Windows package `1.26.6501.0` as the only active profile.
+2. Make verification actionable with paged schematic issue coordinates.
+3. Add a rail stop inspection that explains how to prepare the destination.
+4. Run the core, native and exported viewer regressions before publishing.
+
 ## Scope and remaining work
 
-| Requested addition | Implementation in 1.7.0 | Remaining work |
+| Requested addition | Current implementation | Remaining work |
 |---|---|---|
 | Production objectives | `#produce` coordinates stock acquisition, supported gathering, recursive crafting and delivery, with opt-in smelting and harvesting | Full Survival/native runs of combined jobs |
 | Game recipe catalog | Local Bedrock shaped/shapeless JSON importer, explicit tag mappings, up to 2048 planning outputs | Direct native ingredient extraction, multiple recipes per output and auxiliary item variants |
@@ -251,6 +258,7 @@ check reports the last box position for manual pickup.
 ```text
 #rail add departure x y z
 #rail add arrival x y z
+#rail inspect arrival
 #rail route departure arrival
 #rail go departure arrival
 ```
@@ -262,6 +270,9 @@ Provide powered rails as needed. The arrival rail must be flat and unpowered,
 with solid ground and two blocks of clearance on both sides. Baritone waits for
 the cart to stop on that rail before sending the normal dismount input. Use
 `#stop` to release the controls and `#rail status` to inspect the current phase.
+`#rail inspect x y z` checks the same stopping requirements before you register
+a station. Its result covers the rail and both exits. Use `#rail route` to check
+track connectivity.
 
 On Bedrock 26.65, station commands, planning on a connected three-rail track and
 rejection of an arrival without a braking rail passed in an existing save. The
@@ -299,6 +310,27 @@ inspect the archive before sharing. Limits are 16 entries, two MiB per entry and
 eight MiB total; existing output files are preserved.
 
 ## Validation
+
+### 1.9.0 on Bedrock 26.65
+
+- The offline profile check passed all nine references for `1.26.6501.0`.
+  The same check rejects `1.26.6301.0`.
+- The 152 C++ regressions passed in the normal and AddressSanitizer builds.
+  The five Python importer tests passed.
+- Minecraft returned help for 108 commands and 27 aliases. The 28 read-only
+  probes, navigation preview, schematic and texture import, road and foundation
+  planning, technical audit and HTML/ZIP exports passed. The exported WebGL
+  viewer ran in Chromium.
+- A 12-cell test schematic produced two issue pages. The command handled an
+  empty category and refused an out-of-range page and stale placement report.
+  Rail inspection diagnosed a coordinate without a usable rail and refused an
+  unknown station. Offline tests cover a ready platform, slope, active power,
+  blocked exits, unsafe footing and entry protection.
+
+The existing peaceful save retained its position during the command checks.
+Full native rail and elytra trips and combined Survival jobs remain open.
+
+### 1.8.0 on Bedrock 26.65
 
 The Windows candidate was tested on Bedrock 26.65 on 2026-11-19.
 
@@ -347,9 +379,5 @@ Recorded on 2026-11-07:
   disabled until a map destination exists. No synthetic map was presented as live
   game data, and no gameplay command was submitted during this UI check.
 
-Local ignored evidence: `re/windows-next-build.log`, `re/windows-next-tests.log`,
-`re/windows-next-asan-build.log`, `re/windows-next-asan-tests.log` and
-`re/diagnostic-check/report.zip`. Broader validation of the new modules against
-1.26.6301.0 is still pending after the loading/navigation/inventory port smoke
-checks. No zero-bug, zero-lag or native
-compatibility guarantee follows from these offline/UI checks.
+Historical evidence from the 26.63 audit is retained locally under
+`re/windows-next-*` and `re/diagnostic-check/report.zip`.

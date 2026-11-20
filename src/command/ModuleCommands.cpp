@@ -514,7 +514,7 @@ void registerModuleCommands(CommandManager& manager, Bot& bot) {
         }
         throw CommandError("Usage: #vehicle board boat|horse; #vehicle goto boat|horse x y z; #vehicle dismount");
     }});
-    manager.add({{"rail"}, "rail <add name [x y z]|remove name|list|route from to|go from to|status>", "Register rail stations, inspect connected tracks and ride a passenger minecart", [&bot](const Args& args) {
+    manager.add({{"rail"}, "rail <add name [x y z]|remove name|list|inspect name|inspect x y z|route from to|go from to|status>", "Register rail stations, inspect stopping platforms and ride a passenger minecart", [&bot](const Args& args) {
         auto& trip = bot.baritone().rail();
         if (args == Args{"status"}) { chat::info(trip.displayName()); return; }
         const auto world = bot.baritone().world();
@@ -531,6 +531,20 @@ void registerModuleCommands(CommandManager& manager, Bot& bot) {
                 if (++count == 32) { chat::info("Showing up to 32 stations in this dimension"); break; }
             }
             if (!count) chat::info("No registered rail stations in this dimension");
+            return;
+        }
+        if ((args.size() == 2 || args.size() == 4) && args[0] == "inspect") {
+            baritone::BlockPos position;
+            if (args.size() == 2) {
+                const auto station = named(args[1]);
+                if (station == stations.end()) throw CommandError("Unknown station in this dimension");
+                position = station->pos;
+            } else {
+                const auto here = bot.baritone().playerFeet();
+                position = {parseCoord(args[1], here.x, "x"), parseCoord(args[2], here.y, "y"), parseCoord(args[3], here.z, "z")};
+            }
+            const auto issue = baritone::railStoppingIssue(*world, position);
+            chat::info(std::format("Rail at {}: {}", position, issue.empty() ? "Stopping platform ready" : issue));
             return;
         }
         if ((args.size() == 2 || args.size() == 5) && args[0] == "add") {
@@ -564,12 +578,13 @@ void registerModuleCommands(CommandManager& manager, Bot& bot) {
             } else {
                 const auto route = baritone::findRailPath(*world, from->pos, to->pos);
                 if (!route.error.empty()) throw CommandError(route.error);
+                const auto issue = baritone::railStoppingIssue(*world, to->pos);
                 chat::info(std::format("{} to {}: {} connected rails. {}", from->name, to->name, route.points.size(),
-                    baritone::railHasStoppingPlatform(*world, to->pos) ? "Stopping platform ready" : "A brake rail and clear exits are required to run this trip"));
+                    issue.empty() ? "Stopping platform ready" : issue));
             }
             return;
         }
-        throw CommandError("Usage: #rail add name [x y z] | remove name | list | route from to | go from to | status");
+        throw CommandError("Usage: #rail add name [x y z] | remove name | list | inspect name | inspect x y z | route from to | go from to | status");
     }});
     manager.add({{"trees"}, "trees [count]", "Harvest complete trees in the selection and replant matching saplings", [&bot](const Args& args) {
         if (args.size()>1) throw CommandError("Usage: #trees [count]");

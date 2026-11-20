@@ -44,6 +44,7 @@ The workspace holds one placement. `#schematica` and `#litematica` with no argum
 | `#ghostpack load <folder>` | Import the unpacked local resource pack's PNG textures for the current schematic. |
 | `#ghostpack status\|off` | Show the imported block and image counts, or return to the standard preview. |
 | `#schematic materials [page]` | Count block positions by type in the active placement, plus air/ignored cells. |
+| `#schematic issues [missing\|wrong\|extra\|unknown] [page]` | List coordinates from the last completed comparison, eight per page. |
 | `#schematic build` | Build the previewed origin, rotation, mirror and layer mask. |
 | `#schematic clear` | Stop its build and unload the placement. |
 | `#complete schematic load <prefix>` | Suggest filenames. Quote a suggested filename containing spaces when loading it. |
@@ -57,6 +58,13 @@ Load coordinates are relative to your feet; move coordinates are relative to the
 - **Orange:** the schematic wants air here, but a block exists.
 - **Gray:** the chunk is not loaded, or the position is outside build height; the comparison is unknown.
 - **Blue outline:** the complete placement bounds. Matching and ignored positions have no individual ghost.
+
+Run `#schematic verify` to compare the placement against the loaded world.
+After it finishes, use `#schematic issues wrong` or choose another issue type.
+The report keeps up to 128 coordinates per type and shows the total count.
+It records conditions observed during that comparison. Re-run verification
+after editing the world. Moving or transforming the placement requires a new
+comparison.
 
 The standard ghost uses translucent unit cubes and outlines. Up to 512 differences within 16 blocks of the player are displayed and refreshed about twice per second. Walk around a larger placement to inspect it. Cached chunk approximations are never counted as exact live block matches.
 

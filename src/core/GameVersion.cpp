@@ -18,6 +18,7 @@ constexpr NativeProfile profiles[]{
 #include "core/NativeProfiles.inc"
 #undef PROFILE
 };
+static_assert(std::size(profiles) == 1, "Only the current stable Windows package is supported");
 const NativeProfile* selected = nullptr;
 }
 

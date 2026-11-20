@@ -77,7 +77,8 @@ bool SchematicSurvey::step(const WorldSnapshot& world, std::size_t budget) {
             else { ++result_.wrong; difference = SchematicWorkspace::Difference::Wrong; }
             need(desired, {x, y, z});
         }
-        if (result_.problems.size() < 512) result_.problems.push_back({p, difference});
+        auto& sample = result_.problemSamples[static_cast<std::size_t>(difference)];
+        if (sample.size() < Result::sampleLimit) sample.push_back(p);
     }
     return ready();
 }

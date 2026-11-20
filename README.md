@@ -15,7 +15,7 @@
 <p align="center">
   <a href="https://github.com/miked06/baritone-bedrock/actions/workflows/build.yml"><img alt="Build" src="https://github.com/miked06/baritone-bedrock/actions/workflows/build.yml/badge.svg"></a>
   <a href="COPYING.LESSER"><img alt="License: LGPL-3.0" src="https://img.shields.io/badge/license-LGPL--3.0-blue.svg"></a>
-  <img alt="Minecraft Bedrock 26.65 and 26.63" src="https://img.shields.io/badge/Minecraft%20Bedrock-26.65%20%7C%2026.63-green.svg">
+  <img alt="Minecraft Bedrock 26.65" src="https://img.shields.io/badge/Minecraft%20Bedrock-26.65-green.svg">
   <img alt="Platform: Windows x64" src="https://img.shields.io/badge/platform-Windows%20x64-lightgrey.svg">
   <img alt="C++23" src="https://img.shields.io/badge/C%2B%2B-23-orange.svg">
 </p>
@@ -52,7 +52,7 @@ The [Windows validation matrix](docs/WINDOWS_NEXT.md) records the gameplay
 coverage and remaining work.
 
 > [!IMPORTANT]
-> **Supported game versions: Minecraft Bedrock 26.65 and 26.63 for Windows** (packages `1.26.6501.0` and `1.26.6301.0`). For package `1.26.6005.0` / Bedrock 26.60, use release 1.6.0.
+> **Supported game version: Minecraft Bedrock 26.65 for Windows** (package `1.26.6501.0`).
 > The DLL checks the package version before installing hooks and refuses unsupported builds. Other versions need updated signatures, offsets and calling conventions (see [Updating to a new game version](docs/DEVELOPMENT.md#updating-to-a-new-game-version)).
 
 > [!WARNING]
@@ -78,7 +78,7 @@ coverage and remaining work.
 ### Requirements
 
 - Windows 10 or 11, x64.
-- Minecraft Bedrock **26.65 or 26.63** (the Microsoft Store / Xbox app version).
+- Minecraft Bedrock **26.65** (the Microsoft Store / Xbox app version).
 - A DLL injector (any `LoadLibrary` injector works, for example FateInjector).
 
 ### Install
@@ -147,7 +147,7 @@ The pathfinding core (`src/baritone/`) does not depend on the game at all and is
 
 ## Status
 
-The current build supports 26.65 and 26.63. The earlier 26.52 build was tested on long trips, mining in the overworld and the nether, building schematics, farming, elytra flights and water bucket falls. See the [26.65 port notes](docs/DEVELOPMENT.md#reverse-engineering-notes-2665) and the [Windows validation matrix](docs/WINDOWS_NEXT.md#validation) for current checks. [The parity guide](docs/PARITY.md) describes platform differences, including elytra terrain prediction.
+The current build supports 26.65. See the [26.65 port notes](docs/DEVELOPMENT.md#reverse-engineering-notes-2665) and the [Windows validation matrix](docs/WINDOWS_NEXT.md#validation) for current checks. [The parity guide](docs/PARITY.md) describes platform differences, including elytra terrain prediction.
 
 Found a bug? Please [open an issue](https://github.com/miked06/baritone-bedrock/issues/new/choose) with your `log.txt`.
 
