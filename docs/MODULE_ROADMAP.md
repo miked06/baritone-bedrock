@@ -10,7 +10,7 @@ Each module must have executable behavior, regression coverage and documented na
 | Schematic verifier and repair | Implemented; core tests and live matching/unknown comparisons checked; broader repair fixtures pending |
 | Build material planner | Implemented; core allocation/multi-block tests and live exported-placement comparison checked |
 | Chest and storage logistics | Implemented; native whole-stack deposit/withdrawal accepted and restored; independent native model updates reconciled from original stack snapshots |
-| Automatic crafting and smelting | Implemented; core acceptance/refusal/output tests pass; native Creative recipe discovery/actions/workstation completion checked; furnace input/fuel/output accepted and complete iron-smelting cycle collected; screen-close lifetime crash fixed by queued native UI pop; Survival crafting pending |
+| Automatic crafting and smelting | Implemented; core acceptance/refusal/output tests pass; native Creative recipe discovery/actions/workstation completion checked; furnace input/fuel/output accepted and complete iron-smelting cycle collected; screen-close lifetime crash fixed by queued native UI pop; Survival crafting confirmed live |
 | Persistent tasks and recovery | Implemented; bounded checkpoints, paused recovery and world/dimension checks covered in core tests |
 | Survival assistant | Implemented; eating/retreat/slot-restoration core tests pass; sustained native eating pending |
 | Task queue and workflows | Implemented; live wait/goto sequence checked; storage actions use checkpointed inventory targets |

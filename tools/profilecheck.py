@@ -14,7 +14,8 @@ def native_profiles():
     root = Path(__file__).resolve().parents[1]
     source = (root / 'src/core/NativeProfiles.inc').read_text(encoding='utf-8')
     entries = re.findall(r'^PROFILE\("(\d+\.\d+\.\d+\.\d+)",\s*([^)]*)\)', source, re.M)
-    fields = ('craftingTable', 'craft', 'discard', 'anvilTable', 'anvilPreview', 'anvilTake',
+    fields = ('craftingTable', 'craft', 'discard', 'recipeSelect', 'craftingSlotTap',
+              'anvilTable', 'anvilPreview', 'anvilTake',
               'grindstoneTable', 'grindstonePreview', 'grindstoneTake',
               'inventoryKey', 'scenePop', 'emptyStack', 'itemStackTable')
     profiles = {version: dict(zip(fields, (int(value.strip(), 16) for value in addresses.split(',')), strict=True))
@@ -40,6 +41,7 @@ def check_profile(dump, image_base=None, package=None):
     image = Image(dump)
     rows = []
     entries = [('craftingTable', 16, 'craft'), ('craftingTable', 23, 'discard'),
+               ('craftingTable', 10, 'craftingSlotTap'),
                ('anvilTable', 8, 'anvilPreview'), ('anvilTable', 15, 'anvilTake'),
                ('grindstoneTable', 8, 'grindstonePreview'), ('grindstoneTable', 15, 'grindstoneTake')]
     for controller, index, action in entries:
@@ -51,6 +53,8 @@ def check_profile(dump, image_base=None, package=None):
     rows.append({'check': 'inventory key handler', 'valid': image.bytes(values['inventoryKey'], len(prefix)) == prefix})
     scene_prefix = bytes.fromhex('55 48 83 ec 70 48 8d 6c 24 70')
     rows.append({'check': 'scene stack pop', 'valid': image.bytes(values['scenePop'], len(scene_prefix)) == scene_prefix})
+    select_prefix = bytes.fromhex('55 41 57 41 56 56 57 53 48 81 ec 78 01 00 00 48 8d ac 24 80 00 00 00')
+    rows.append({'check': 'recipe select handler', 'valid': image.bytes(values['recipeSelect'], len(select_prefix)) == select_prefix})
     empty = values['emptyStack']
     rows.append({'check': 'canonical empty stack', 'valid': image.u64(empty) - base == values['itemStackTable'] and
                  image.u64(empty + 8) == 0 and image.u64(empty + 16) == 0 and image.u8(empty + 0x22) == 0})
