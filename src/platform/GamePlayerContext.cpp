@@ -520,11 +520,22 @@ std::vector<baritone::RecipeOption> GamePlayerContext::recipes(std::string_view 
 }
 bool GamePlayerContext::craftRecipe(const baritone::RecipeOption& recipe) {
     if (!containerOpen() || inventoryMovePending()) return false;
-    Craft pending; pending.item=recipe.item; pending.before=countItem(recipe.item); pending.sent=tick_;
-    auto ids=sdk::craftRecipeOnce(*player_,{recipe.collection,recipe.item,recipe.slot,recipe.count});
-    if (ids.empty()) { craftError_="The recipe did not produce a normal crafting request; check ingredients and crafting-grid size"; return false; }
-    for (auto id:ids) pending.responses.emplace(id,-1);
-    craft_=std::move(pending); craftState_=baritone::TransferState::Pending; craftError_.clear(); return true;
+    Craft pending;
+    pending.item = recipe.item;
+    pending.before = countItem(recipe.item);
+    pending.container = player_->containerManager();
+    pending.sent = tick_;
+    const auto step = sdk::prepareCraftRecipe(*player_, {recipe.collection, recipe.item, recipe.slot, recipe.count});
+    if (!step.error.empty()) {
+        craftState_ = baritone::TransferState::Rejected;
+        craftError_ = step.error;
+        return false;
+    }
+    for (int id : step.requests) pending.responses.emplace(id, -1);
+    craft_ = std::move(pending);
+    craftState_ = baritone::TransferState::Pending;
+    craftError_.clear();
+    return true;
 }
 int GamePlayerContext::matchingRepairOutputs(const baritone::HotbarStack& expected) const {
     int count = 0;
@@ -554,6 +565,37 @@ bool GamePlayerContext::takeRepairOutput(const baritone::RepairPreview& expected
     for (int id : ids) pending.responses.emplace(id, -1);
     repair_ = std::move(pending); repairState_ = baritone::TransferState::Pending; repairError_.clear(); return true;
 }
+void GamePlayerContext::advanceCraft() {
+    auto& pending = *craft_;
+    const auto reject = [&](std::string_view error) {
+        craftError_ = error;
+        craftState_ = baritone::TransferState::Rejected;
+        craft_.reset();
+    };
+    const bool refused = std::ranges::any_of(pending.responses, [](const auto& entry) { return entry.second > 0; });
+    if (refused) return reject("Crafting request refused by the server");
+    const bool answered = std::ranges::all_of(pending.responses, [](const auto& entry) { return entry.second == 0; });
+    if (pending.phase == CraftPhase::Store && answered && countItem(pending.item) > pending.before) {
+        craftState_ = baritone::TransferState::Accepted;
+        craft_.reset();
+        slotChangedAt_ = tick_;
+        return;
+    }
+    if (player_->containerManager() != pending.container) return reject("Crafting screen closed before the output was confirmed");
+    if (containerClosing_ && pending.phase == CraftPhase::Prepare) return reject("Crafting was cancelled before taking the output");
+    if (tick_ - pending.sent > 100) return reject("Crafting output/response timed out; inspect inventory before retrying");
+    if (!answered || pending.phase == CraftPhase::Store) return;
+
+    // Wait for the game's inventory prediction to settle before consuming
+    // ingredients or moving the result. Each native tap is sent at most once.
+    const bool prepared = pending.phase == CraftPhase::Prepare;
+    const auto step = prepared ? sdk::takeCraftOutput(*player_, pending.item) : sdk::storeCraftOutput(*player_, pending.item);
+    if (!step.error.empty()) return reject(step.error);
+    pending.phase = prepared ? CraftPhase::Take : CraftPhase::Store;
+    pending.sent = tick_;
+    pending.responses.clear();
+    for (int id : step.requests) pending.responses.emplace(id, -1);
+}
 void GamePlayerContext::advanceContainer() {
     if (repair_) {
         const bool rejected = std::ranges::any_of(repair_->responses, [](const auto& r) { return r.second > 0; });
@@ -566,13 +608,7 @@ void GamePlayerContext::advanceContainer() {
             repairState_ = baritone::TransferState::Accepted; repair_.reset(); slotChangedAt_ = tick_;
         }
     }
-    if (craft_) {
-        const bool refused=std::ranges::any_of(craft_->responses,[](const auto& r) { return r.second>0; });
-        const bool answered=std::ranges::all_of(craft_->responses,[](const auto& r) { return r.second==0; });
-        if (refused || tick_-craft_->sent>100) {
-            craftState_=baritone::TransferState::Rejected; craftError_=refused ? "Crafting request refused by the server" : "Crafting output/response timed out; inspect inventory before retrying"; craft_.reset();
-        } else if (answered && countItem(craft_->item)>craft_->before) { craftState_=baritone::TransferState::Accepted; craft_.reset(); slotChangedAt_=tick_; }
-    }
+    if (craft_) advanceCraft();
     if (containerOpening_) {
         if (player_->containerManager()) { ownedContainer_ = player_->containerManager(); containerOpening_.reset(); }
         else if (tick_ - containerOpening_->second > 100) { containerOpening_.reset(); transferError_ = "Container did not open"; }

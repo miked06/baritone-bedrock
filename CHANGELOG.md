@@ -2,6 +2,20 @@
 
 All notable changes to Baritone Bedrock. Versions follow [semantic versioning](https://semver.org/).
 
+## 1.9.1
+
+Windows x64 patch release for **Minecraft Bedrock 26.65**, package `1.26.6501.0`.
+
+- Use the recipe book to craft in Survival from a crafting table or the
+  personal 2 × 2 grid. Baritone waits for the game's response before moving
+  the crafted item into the inventory.
+- Check that the inventory can hold the ingredients before clearing the grid.
+  Verify that the crafted stack fits before taking it, and report when more
+  space is needed.
+
+Verified in a local Survival world with a full inventory, an existing stack
+that could accept the result, and a recipe change with ingredients in the grid.
+
 ## 1.9.0
 
 Windows x64 release for **Minecraft Bedrock 26.65**, package `1.26.6501.0`.

@@ -480,7 +480,7 @@ void registerModuleCommands(CommandManager& manager, Bot& bot) {
             bot.runInTick([&bot,item] {
                 const auto choices=bot.player().recipes(item);
                 if (choices.empty() || !bot.player().craftRecipe(choices.front())) chat::error(bot.player().craftError().empty() ? "No available recipe or inventory action is pending" : bot.player().craftError());
-                else chat::info("One normal recipe action submitted; #craft state and #inv show its result");
+                else chat::info("Crafting started; #craft state and #inv show its result");
             }); return;
         }
         if ((args.size()==1 || args.size()==2) && args[0]=="list") {

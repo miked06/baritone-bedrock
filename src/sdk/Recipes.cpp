@@ -1,11 +1,11 @@
 #include "sdk/Recipes.h"
-#include "sdk/Containers.h"
 
 #include "core/GameVersion.h"
 #include "memory/Signatures.h"
 #include "core/Log.h"
 #include <Windows.h>
 #include <algorithm>
+#include <array>
 #include <functional>
 #include <memory>
 #include <unordered_map>
@@ -15,6 +15,16 @@ namespace {
 using Models=std::unordered_map<std::string,std::shared_ptr<void>>;
 using Controllers=std::unordered_map<const void*,std::function<void(void*)>>;
 thread_local std::vector<int>* captured=nullptr;
+struct CaptureScope {
+    explicit CaptureScope(std::vector<int>& requests) { captured = &requests; }
+    ~CaptureScope() { captured = nullptr; }
+};
+const Models* containerModels(LocalPlayer& player) {
+    const auto* manager = static_cast<const uint8_t*>(player.containerManager());
+    if (!mem::isReadable(manager, 0xC8 + sizeof(Models))) return nullptr;
+    const auto* models = reinterpret_cast<const Models*>(manager + 0xC8);
+    return models->size() <= 128 ? models : nullptr;
+}
 void* controller(LocalPlayer& player) {
     auto* manager=player.containerManager(); if (!mem::isReadable(manager,0x108)) return nullptr;
     auto* callbacks=reinterpret_cast<const Controllers*>(static_cast<const uint8_t*>(manager)+0x60);
@@ -29,6 +39,11 @@ void* controller(LocalPlayer& player) {
 struct Slot { std::string collection; int index; };
 struct AutoPlace { std::string collection; bool stop=false; };
 static_assert(sizeof(Slot)==40 && sizeof(AutoPlace)==40);
+const ItemStack* takeableStack(const void* control, const Slot& slot) {
+    // The controller returns an ItemInstance containing the ItemStackBase.
+    const auto* stack = &mem::callVirtual<const ItemStack&, const Slot&>(control, 8, slot);
+    return mem::isReadable(stack, 0x80) ? stack : nullptr;
+}
 struct NativeResults {
     uint8_t* first=nullptr; uint8_t* last=nullptr; uint8_t* capacity=nullptr;
     ~NativeResults() {
@@ -67,9 +82,8 @@ WorkstationPreview workstationPreview(LocalPlayer& player) {
     result.method = anvil ? "anvil" : "grindstone";
     result.collection = anvil ? "anvil_result_items" : "grindstone_result_items";
     Slot slot{result.collection, 0};
-    result.output = &mem::callVirtual<const ItemStack&, const Slot&>(control, 8, slot);
-    // getTakeableItemStackBase returns an ItemInstance (0x80), not an ItemStack.
-    if (!mem::isReadable(result.output, 0x80)) return {};
+    result.output = takeableStack(control, slot);
+    if (!result.output) return {};
     result.levels = anvil ? mem::member<int>(control, 0xC8) : 0;
     result.materialCost = anvil ? mem::member<int>(control, 0x1F4) : 1;
     return result;
@@ -83,7 +97,7 @@ std::vector<int> takeWorkstationOutput(LocalPlayer& player, const WorkstationPre
     Slot slot{current.collection, 0};
     const std::vector<AutoPlace> destinations{{"hotbar_items", false}, {"inventory_items", false}};
     NativeResults results;
-    struct CaptureScope { explicit CaptureScope(std::vector<int>& ids) { captured = &ids; } ~CaptureScope() { captured = nullptr; } } scope(ids);
+    CaptureScope scope(ids);
     // Workstation vt15 owns create-item, consume-input and XP requests. A raw
     // transfer from the result preview would omit those operations.
     mem::callVirtual<int, const Slot&, int, const std::vector<AutoPlace>&, NativeResults&>(control, 15, slot, 1, destinations, results);
@@ -92,9 +106,8 @@ std::vector<int> takeWorkstationOutput(LocalPlayer& player, const WorkstationPre
 std::vector<RecipeChoice> visibleRecipes(LocalPlayer& player,std::string_view item) {
     std::vector<RecipeChoice> result;
     std::unordered_set<std::string> seen;
-    auto* manager=player.containerManager(); if (!controller(player) || !mem::isReadable(manager,0x108)) return result;
-    const auto* models=reinterpret_cast<const Models*>(static_cast<const uint8_t*>(manager)+0xC8);
-    if (models->size()>128) return result;
+    const auto* models = containerModels(player);
+    if (!models || !controller(player)) return result;
     for (const auto& [name,model]:*models) {
         if (!name.starts_with("recipe_") || !mem::isReadable(model.get(),0x110)) continue;
         int size=mem::callVirtual<int>(model.get(),4); if (size<0 || size>4096) continue;
@@ -111,57 +124,185 @@ std::vector<RecipeChoice> visibleRecipes(LocalPlayer& player,std::string_view it
     }
     return result;
 }
-// The recipe-book tap thunk (RVA 0x506E6F0) sets screen+0x13B7 and calls the
-// non-virtual CraftingScreenController::_handleRecipeSelect (RVA 0x5029980) with
-// takeOutput=false, which fills the grid. The output-slot tap (manager vt10) then
-// emits the craft request; a real tap leaves the output on the cursor, so the same
-// handler is called again to place it into the inventory.
+namespace {
+constexpr std::ptrdiff_t kRecipeSelectionFlag = 0x13B7;
+constexpr int kInventorySize = 36;
+constexpr int kHotbarSize = 9;
+constexpr std::string_view kNoCraftSpace = "Free inventory space before crafting";
+const Slot kCraftOutput{"crafting_output_items", 0};
+const Slot kCursor{"cursor_items", 0};
+const std::string kCraftInput = "crafting_input_items";
+
+const void* collectionModel(const Models& models, const std::string& name) {
+    const auto found = models.find(name);
+    if (found == models.end() || !mem::isReadable(found->second.get(), 0x110)) return nullptr;
+    return found->second.get();
+}
+
+const ItemStack* modelStack(const void* model, int index) {
+    const auto* stack = &mem::callVirtual<const ItemStack&, int>(model, 8, index);
+    return mem::isReadable(stack, 0x23) ? stack : nullptr;
+}
+
+const ItemStack* craftSlot(const Models& models, const Slot& slot) {
+    const auto* model = collectionModel(models, slot.collection);
+    if (!model || mem::callVirtual<int>(model, 4) != 1) return nullptr;
+    return modelStack(model, slot.index);
+}
+
+bool matchesItem(const ItemStack* stack, std::string_view item) {
+    return stack && !stack->empty() && stack->item()->name() == item;
+}
+
+int craftDestination(const Inventory& inventory, const ItemStack& output) {
+    int empty = -1;
+    for (int i = 0; i < kInventorySize; ++i) {
+        const auto* stack = inventory.getItem(i);
+        if (!stack) continue;
+        if (stack->empty()) {
+            if (empty < 0) empty = i;
+        } else if (stack->mergeCompatible(output) && stack->count() + output.count() <= stack->maxStackSize()) {
+            return i;
+        }
+    }
+    return empty;
+}
+
+bool hasCraftSpace(const Inventory& inventory, std::string_view item) {
+    for (int i = 0; i < kInventorySize; ++i) {
+        const auto* stack = inventory.getItem(i);
+        if (stack && (stack->empty() || (matchesItem(stack, item) && !stack->itemData() &&
+                                        stack->count() < stack->maxStackSize()))) return true;
+    }
+    return false;
+}
+
+bool canReturnCraftGrid(const Models& models, const Inventory& inventory) {
+    const auto* grid = collectionModel(models, kCraftInput);
+    if (!grid) return false;
+    const int size = mem::callVirtual<int>(grid, 4);
+    if (size != 4 && size != 9) return false;
+
+    struct Capacity { const ItemStack* stack = nullptr; int remaining = 0; };
+    std::array<Capacity, kInventorySize> slots{};
+    for (int i = 0; i < kInventorySize; ++i) {
+        const auto* stack = inventory.getItem(i);
+        if (stack) slots[i] = {stack, stack->empty() ? 64 : stack->maxStackSize() - stack->count()};
+    }
+    for (int i = 0; i < size; ++i) {
+        const auto* ingredient = modelStack(grid, i);
+        if (!ingredient) return false;
+        if (ingredient->empty()) continue;
+        int remaining = ingredient->count();
+        for (auto& slot : slots) {
+            if (slot.remaining <= 0 || !slot.stack->mergeCompatible(*ingredient)) continue;
+            const int stored = std::min(remaining, slot.remaining);
+            slot.remaining -= stored;
+            remaining -= stored;
+            if (!remaining) break;
+        }
+        if (!remaining) continue;
+        const auto empty = std::ranges::find_if(slots, [](const Capacity& slot) {
+            return slot.stack && slot.stack->empty();
+        });
+        if (empty == slots.end() || remaining > ingredient->maxStackSize()) return false;
+        *empty = {ingredient, ingredient->maxStackSize() - remaining};
+    }
+    return true;
+}
+
 void* craftingScreenController(void* manager) {
-    if (!manager) return nullptr;
-    constexpr std::ptrdiff_t sceneView=0x40, viewController=0x40, elementSize=32, elementScene=8;
-    auto* client=ClientInstance::get();
-    auto* stack=client?mem::member<void*>(client,0x5E8):nullptr;
-    if (!mem::isReadable(stack,0x40)) return nullptr;
-    auto* begin=mem::member<uint8_t*>(stack,0x18);
-    auto* end=mem::member<uint8_t*>(stack,0x20);
-    if (!begin || !end || end<begin) return nullptr;
-    const auto bytes=static_cast<size_t>(end-begin);
-    if (bytes%elementSize || bytes>elementSize*32) return nullptr;
-    for (auto* element=end;element!=begin;) {
-        element-=elementSize;
-        auto* scene=mem::member<void*>(element,elementScene);
-        if (!mem::isReadable(scene,sceneView+sizeof(void*))) continue;
-        auto* view=mem::member<void*>(scene,sceneView);
-        if (!mem::isReadable(view,viewController+sizeof(void*))) continue;
-        auto* control=mem::member<void*>(view,viewController);
-        if (!mem::isReadable(control,0x12E8)) continue;
-        if (mem::member<void*>(control,0x12E0)==manager) return control;
+    constexpr std::ptrdiff_t sceneView = 0x40, viewController = 0x40, elementSize = 32, elementScene = 8;
+    auto* client = ClientInstance::get();
+    auto* stack = client ? mem::member<void*>(client, 0x5E8) : nullptr;
+    if (!mem::isReadable(stack, 0x40)) return nullptr;
+    const auto begin = mem::member<uintptr_t>(stack, 0x18);
+    const auto end = mem::member<uintptr_t>(stack, 0x20);
+    if (!begin || end <= begin) return nullptr;
+    const auto bytes = end - begin;
+    if (bytes % elementSize || bytes > elementSize * 32 ||
+        !mem::isReadable(reinterpret_cast<const void*>(begin), bytes)) return nullptr;
+    for (auto element = end; element != begin;) {
+        element -= elementSize;
+        auto* scene = mem::member<void*>(reinterpret_cast<const void*>(element), elementScene);
+        if (!mem::isReadable(scene, sceneView + sizeof(void*))) continue;
+        auto* view = mem::member<void*>(scene, sceneView);
+        if (!mem::isReadable(view, viewController + sizeof(void*))) continue;
+        auto* control = mem::member<void*>(view, viewController);
+        if (mem::isReadable(control, kRecipeSelectionFlag + 1) &&
+            mem::member<void*>(control, 0x12E0) == manager) return control;
     }
     return nullptr;
 }
-std::vector<int> craftRecipeOnce(LocalPlayer& player,const RecipeChoice& recipe) {
-    std::vector<int> ids; auto* control=controller(player); if (!control || captured) return ids;
-    auto* screen=craftingScreenController(control); if (!screen) return ids;
-    auto* manager=mem::member<void*>(screen,0x12E0); if (!manager) return ids;
-    const auto base=reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr));
-    using Select=void(*)(void*,std::string const&,int,bool);
-    struct CaptureScope { explicit CaptureScope(std::vector<int>& ids) { captured=&ids; } ~CaptureScope() { captured=nullptr; } } scope(ids);
-    const auto flag=mem::member<uint8_t>(screen,0x13B7); mem::member<uint8_t>(screen,0x13B7)=1;
-    reinterpret_cast<Select>(base+gameversion::profile().recipeSelect)(screen,recipe.collection,recipe.slot,false);
-    Slot output{"crafting_output_items",0}, cursor{"cursor_items",0};
-    mem::callVirtual<bool,const Slot&,const Slot&>(manager,10,cursor,output);
-    const auto cursorRef=containerSlotRef(player,"cursor_items",0);
-    const auto* stack=containerItem(player,cursorRef);
-    if (stack && !stack->empty() && stack->item()->name()==recipe.item) {
-        int target=-1;
-        for (int i=0;i<36 && target<0;++i) {
-            const auto* dest=containerItem(player,inventorySlotRef(i));
-            if (dest && (dest->empty() || (dest->mergeCompatible(*stack) && dest->count()+stack->count()<=dest->maxStackSize()))) target=i;
-        }
-        if (target>=0) mem::callVirtual<bool,const Slot&,const Slot&>(manager,10,Slot{target<9?"hotbar_items":"inventory_items",target<9?target:target-9},cursor);
+
+CraftDispatch craftTap(void* control, const Slot& target, const Slot& source, std::string_view error) {
+    CraftDispatch result;
+    CaptureScope capture(result.requests);
+    mem::callVirtual<bool, const Slot&, const Slot&>(control, 10, target, source);
+    if (result.requests.empty()) result.error = error;
+    return result;
+}
+}
+
+CraftDispatch prepareCraftRecipe(LocalPlayer& player, const RecipeChoice& recipe) {
+    auto* control = controller(player);
+    const auto* models = containerModels(player);
+    auto* inventory = player.supplies()->inventory();
+    if (!control || !models || !inventory || captured) return {{}, "Crafting interface is unavailable"};
+    const auto* cursor = craftSlot(*models, kCursor);
+    const auto* output = takeableStack(control, kCraftOutput);
+    if (!cursor || !output) return {{}, "Crafting cursor or output slot is unavailable"};
+    if (!cursor->empty()) return {{}, "Empty the cursor before crafting"};
+    if (matchesItem(output, recipe.item)) {
+        if (craftDestination(*inventory, *output) < 0) return {{}, kNoCraftSpace};
+        return {};
     }
-    mem::member<uint8_t>(screen,0x13B7)=flag;
-    return ids;
+
+    // The recipe book clears the current grid and can drop its contents if the
+    // inventory cannot take them. Check capacity before invoking that operation.
+    if (!hasCraftSpace(*inventory, recipe.item)) return {{}, kNoCraftSpace};
+    if (!canReturnCraftGrid(*models, *inventory))
+        return {{}, "Empty the crafting grid or free space for its ingredients"};
+    auto* screen = craftingScreenController(control);
+    if (!screen) return {{}, "Crafting screen is unavailable"};
+
+    CraftDispatch result;
+    CaptureScope capture(result.requests);
+    auto& flag = mem::member<uint8_t>(screen, kRecipeSelectionFlag);
+    struct RestoreFlag { uint8_t& flag; uint8_t original; ~RestoreFlag() { flag = original; } } restore{flag, flag};
+    flag = 1;
+    const auto base = reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr));
+    using Select = void(*)(void*, const std::string&, int, bool);
+    // Replay the recipe-book selection without taking its output.
+    reinterpret_cast<Select>(base + gameversion::profile().recipeSelect)(screen, recipe.collection, recipe.slot, false);
+    return result;
+}
+
+CraftDispatch takeCraftOutput(LocalPlayer& player, std::string_view item) {
+    auto* control = controller(player);
+    const auto* models = containerModels(player);
+    auto* inventory = player.supplies()->inventory();
+    if (!control || !models || !inventory || captured) return {{}, "Crafting interface is unavailable"};
+    const auto* cursor = craftSlot(*models, kCursor);
+    if (!cursor || !cursor->empty()) return {{}, "Crafting requires an empty cursor"};
+    const auto* output = takeableStack(control, kCraftOutput);
+    if (!matchesItem(output, item)) return {{}, "The recipe did not produce the requested output; check ingredients and crafting-grid size"};
+    if (craftDestination(*inventory, *output) < 0) return {{}, kNoCraftSpace};
+    return craftTap(control, kCursor, kCraftOutput, "The game did not send a crafting request");
+}
+
+CraftDispatch storeCraftOutput(LocalPlayer& player, std::string_view item) {
+    auto* control = controller(player);
+    const auto* models = containerModels(player);
+    auto* inventory = player.supplies()->inventory();
+    if (!control || !models || !inventory || captured) return {{}, "Crafting interface is unavailable"};
+    const auto* output = craftSlot(*models, kCursor);
+    if (!matchesItem(output, item)) return {{}, "The crafted item is unavailable on the cursor"};
+    const int target = craftDestination(*inventory, *output);
+    if (target < 0) return {{}, "Inventory changed while crafting; place the crafted item from the cursor manually"};
+    const bool hotbar = target < kHotbarSize;
+    return craftTap(control, {hotbar ? "hotbar_items" : "inventory_items", hotbar ? target : target - kHotbarSize},
+                    kCursor, "The game did not send a request to store the crafted item");
 }
 bool discardInventoryStack(LocalPlayer& player,int index,int count) {
     auto* control=controller(player);

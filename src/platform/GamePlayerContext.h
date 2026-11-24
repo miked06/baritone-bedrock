@@ -32,7 +32,8 @@ public:
             inventoryClosedAt_ = 0;
             disconnectRequested_ = false;
             ownedContainer_ = nullptr; containerOpening_.reset(); transfer_.reset(); containerClosing_ = false;
-            craft_.reset(); repair_.reset(); repairState_ = baritone::TransferState::Idle;
+            craft_.reset(); craftState_ = baritone::TransferState::Idle; craftError_.clear();
+            repair_.reset(); repairState_ = baritone::TransferState::Idle;
         }
         player_ = player;
         region_ = region;
@@ -137,7 +138,15 @@ private:
         sdk::TransferSnapshot snapshot;
     };
     std::optional<Transfer> transfer_;
-    struct Craft { std::map<int,int> responses; std::string item; int before=0; uint64_t sent=0; };
+    enum class CraftPhase { Prepare, Take, Store };
+    struct Craft {
+        std::map<int, int> responses;
+        std::string item;
+        void* container = nullptr;
+        int before = 0;
+        uint64_t sent = 0;
+        CraftPhase phase = CraftPhase::Prepare;
+    };
     std::optional<Craft> craft_;
     struct Repair { std::map<int,int> responses; baritone::HotbarStack output; int before = 0; uint64_t sent = 0; };
     std::optional<Repair> repair_;
@@ -148,6 +157,7 @@ private:
     std::string craftError_;
     baritone::TransferState transferState_ = baritone::TransferState::Idle;
     std::string transferError_;
+    void advanceCraft();
     void advanceContainer();
     std::optional<baritone::BlockPos> breaking_;
     uint64_t tick_ = 100;
