@@ -83,8 +83,7 @@ single stacks. It waits for the expected output, collects it, returns remaining
 fuel when possible and closes the screen. On refusal, timeout or interruption,
 inspect the furnace before restarting: already submitted items can remain there.
 The game decides whether the input/fuel combination is valid. An iron-smelting
-cycle has been checked live; broader recipes and Survival crafting remain part
-of gameplay validation.
+cycle and Survival crafting have both been checked live.
 
 ## Persistent tasks and diagnostics
 

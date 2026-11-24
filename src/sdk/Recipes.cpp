@@ -1,4 +1,5 @@
 #include "sdk/Recipes.h"
+#include "sdk/Containers.h"
 
 #include "core/GameVersion.h"
 #include "memory/Signatures.h"
@@ -110,13 +111,56 @@ std::vector<RecipeChoice> visibleRecipes(LocalPlayer& player,std::string_view it
     }
     return result;
 }
+// The recipe-book tap thunk (RVA 0x506E6F0) sets screen+0x13B7 and calls the
+// non-virtual CraftingScreenController::_handleRecipeSelect (RVA 0x5029980) with
+// takeOutput=false, which fills the grid. The output-slot tap (manager vt10) then
+// emits the craft request; a real tap leaves the output on the cursor, so the same
+// handler is called again to place it into the inventory.
+void* craftingScreenController(void* manager) {
+    if (!manager) return nullptr;
+    constexpr std::ptrdiff_t sceneView=0x40, viewController=0x40, elementSize=32, elementScene=8;
+    auto* client=ClientInstance::get();
+    auto* stack=client?mem::member<void*>(client,0x5E8):nullptr;
+    if (!mem::isReadable(stack,0x40)) return nullptr;
+    auto* begin=mem::member<uint8_t*>(stack,0x18);
+    auto* end=mem::member<uint8_t*>(stack,0x20);
+    if (!begin || !end || end<begin) return nullptr;
+    const auto bytes=static_cast<size_t>(end-begin);
+    if (bytes%elementSize || bytes>elementSize*32) return nullptr;
+    for (auto* element=end;element!=begin;) {
+        element-=elementSize;
+        auto* scene=mem::member<void*>(element,elementScene);
+        if (!mem::isReadable(scene,sceneView+sizeof(void*))) continue;
+        auto* view=mem::member<void*>(scene,sceneView);
+        if (!mem::isReadable(view,viewController+sizeof(void*))) continue;
+        auto* control=mem::member<void*>(view,viewController);
+        if (!mem::isReadable(control,0x12E8)) continue;
+        if (mem::member<void*>(control,0x12E0)==manager) return control;
+    }
+    return nullptr;
+}
 std::vector<int> craftRecipeOnce(LocalPlayer& player,const RecipeChoice& recipe) {
     std::vector<int> ids; auto* control=controller(player); if (!control || captured) return ids;
-    Slot slot{recipe.collection,recipe.slot};
-    const std::vector<AutoPlace> destinations{{"hotbar_items",false},{"inventory_items",false}};
-    NativeResults results;
+    auto* screen=craftingScreenController(control); if (!screen) return ids;
+    auto* manager=mem::member<void*>(screen,0x12E0); if (!manager) return ids;
+    const auto base=reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr));
+    using Select=void(*)(void*,std::string const&,int,bool);
     struct CaptureScope { explicit CaptureScope(std::vector<int>& ids) { captured=&ids; } ~CaptureScope() { captured=nullptr; } } scope(ids);
-    mem::callVirtual<int,const Slot&,int,const std::vector<AutoPlace>&,NativeResults&>(control,16,slot,2,destinations,results);
+    const auto flag=mem::member<uint8_t>(screen,0x13B7); mem::member<uint8_t>(screen,0x13B7)=1;
+    reinterpret_cast<Select>(base+gameversion::profile().recipeSelect)(screen,recipe.collection,recipe.slot,false);
+    Slot output{"crafting_output_items",0}, cursor{"cursor_items",0};
+    mem::callVirtual<bool,const Slot&,const Slot&>(manager,10,cursor,output);
+    const auto cursorRef=containerSlotRef(player,"cursor_items",0);
+    const auto* stack=containerItem(player,cursorRef);
+    if (stack && !stack->empty() && stack->item()->name()==recipe.item) {
+        int target=-1;
+        for (int i=0;i<36 && target<0;++i) {
+            const auto* dest=containerItem(player,inventorySlotRef(i));
+            if (dest && (dest->empty() || (dest->mergeCompatible(*stack) && dest->count()+stack->count()<=dest->maxStackSize()))) target=i;
+        }
+        if (target>=0) mem::callVirtual<bool,const Slot&,const Slot&>(manager,10,Slot{target<9?"hotbar_items":"inventory_items",target<9?target:target-9},cursor);
+    }
+    mem::member<uint8_t>(screen,0x13B7)=flag;
     return ids;
 }
 bool discardInventoryStack(LocalPlayer& player,int index,int count) {

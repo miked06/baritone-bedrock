@@ -72,6 +72,7 @@ bool validateNativeProfile() {
     const Entry entries[]{
         {"crafting", p.craftingTable, 16, p.craft},
         {"inventory discard", p.craftingTable, 23, p.discard},
+        {"crafting slot tap", p.craftingTable, 10, p.craftingSlotTap},
         {"anvil preview", p.anvilTable, 8, p.anvilPreview},
         {"anvil output", p.anvilTable, 15, p.anvilTake},
         {"grindstone preview", p.grindstoneTable, 8, p.grindstonePreview},
@@ -87,17 +88,20 @@ bool validateNativeProfile() {
     }
     constexpr uint8_t prefix[]{0x55,0x41,0x56,0x56,0x57,0x53,0x48,0x81,0xEC,0x90,0,0,0};
     constexpr uint8_t scenePrefix[]{0x55,0x48,0x83,0xEC,0x70,0x48,0x8D,0x6C,0x24,0x70};
+    constexpr uint8_t recipeSelectPrefix[]{0x55,0x41,0x57,0x41,0x56,0x56,0x57,0x53,0x48,0x81,0xEC,0x78,0x01,0x00,0x00,0x48,0x8D,0xAC,0x24,0x80,0x00,0x00,0x00};
     const auto* key = reinterpret_cast<const void*>(base + p.inventoryKey);
     const auto* scene = reinterpret_cast<const void*>(base + p.scenePop);
+    const auto* select = reinterpret_cast<const void*>(base + p.recipeSelect);
     const auto* empty = reinterpret_cast<const uintptr_t*>(base + p.emptyStack);
     if (!mem::isReadable(key, sizeof(prefix)) || std::memcmp(key, prefix, sizeof(prefix)) ||
         !mem::isReadable(scene, sizeof(scenePrefix)) || std::memcmp(scene, scenePrefix, sizeof(scenePrefix)) ||
+        !mem::isReadable(select, sizeof(recipeSelectPrefix)) || std::memcmp(select, recipeSelectPrefix, sizeof(recipeSelectPrefix)) ||
         !mem::isReadable(empty, 0x98) || *empty != base + p.itemStackTable || empty[1] || empty[2] ||
         *(reinterpret_cast<const uint8_t*>(empty) + 0x22)) {
-        logger::error("Native profile {} mismatch: inventory handler, scene stack or canonical empty stack", p.package);
+        logger::error("Native profile {} mismatch: inventory handler, scene stack, recipe select or canonical empty stack", p.package);
         return false;
     }
-    logger::info("Native profile {} verified: 6 controller entries, inventory handler, scene stack and canonical empty stack", p.package);
+    logger::info("Native profile {} verified: 7 controller entries, inventory handler, scene stack, recipe select and canonical empty stack", p.package);
     return true;
 }
 }
