@@ -2,7 +2,7 @@
 
 All notable changes to Baritone Bedrock. Versions follow [semantic versioning](https://semver.org/).
 
-## Unreleased
+## 1.10.0
 
 - **Experimental advanced parkour** supports offset jumps, low ceilings, and
   narrow landing surfaces such as end rods.
