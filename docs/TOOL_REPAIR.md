@@ -1,6 +1,6 @@
 # Tool repair (Windows expansion, 1.6.0)
 
-Target: Bedrock 26.60, Windows x64 package `1.26.6005.0`. Repair jobs use normal
+See the [project guide](../README.md#getting-started) for the supported game build. Repair jobs use normal
 workstation/controller actions and server responses. They do not edit durability,
 create XP or manufacture inventory items directly.
 

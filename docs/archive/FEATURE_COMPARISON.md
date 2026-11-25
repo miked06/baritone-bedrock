@@ -2,7 +2,7 @@
 
 Compared on 2026-10-31 against Java **26.3**, commit [`25111daedf1d59e6a8dfb5a3e61885cdb8d953df`](https://github.com/cabaletta/baritone/tree/25111daedf1d59e6a8dfb5a3e61885cdb8d953df). The upstream 26.3 branch was fetched again for this comparison. The default GitHub branch is a different Minecraft target, so it is not used as an interchangeable version number.
 
-Sources are Java's [FEATURES.md](https://github.com/cabaletta/baritone/blob/25111daedf1d59e6a8dfb5a3e61885cdb8d953df/FEATURES.md), [USAGE.md](https://github.com/cabaletta/baritone/blob/25111daedf1d59e6a8dfb5a3e61885cdb8d953df/USAGE.md), registered commands, process/movement implementations, schematic interfaces and settings. Bedrock is this source tree, targeting Windows package `1.26.6005.0` (26.60). The two complete command-name lists are in [COMMAND_INVENTORY.md](COMMAND_INVENTORY.md); user settings are in [SETTINGS.md](SETTINGS.md).
+Sources are Java's [FEATURES.md](https://github.com/cabaletta/baritone/blob/25111daedf1d59e6a8dfb5a3e61885cdb8d953df/FEATURES.md), [USAGE.md](https://github.com/cabaletta/baritone/blob/25111daedf1d59e6a8dfb5a3e61885cdb8d953df/USAGE.md), registered commands, process/movement implementations, schematic interfaces and settings. Bedrock is this source tree, targeting Windows package `1.26.6005.0` (26.60). The two complete command-name lists are in [COMMAND_INVENTORY.md](COMMAND_INVENTORY.md); user settings are in [SETTINGS.md](../SETTINGS.md).
 
 **Implemented** below means there is executable source implementing the feature. **Adapted** means the user workflow or native mechanics differ. It does not mean every scenario has been tested live. A registered command name or a declared setting is not proof of behavioral parity.
 
@@ -70,7 +70,7 @@ Java's feature page also describes **experimental pig control**. Boats and horse
 | Java APIs and loader integrations | C++ goal/process/behavior/schematic interfaces and callbacks | Adapted; no Java binary compatibility |
 | Experimental pig riding | No Bedrock-specific steering validation/integration | Unverified / not claimed supported |
 
-All source paths in this table are below `src/baritone/` unless a native platform component is named. See [JAVA_PARITY_AUDIT.md](JAVA_PARITY_AUDIT.md) for the 1.3 changes and [SCHEMATICS.md](SCHEMATICS.md) for the new workflow.
+All source paths in this table are below `src/baritone/` unless a native platform component is named. See [JAVA_PARITY_AUDIT.md](JAVA_PARITY_AUDIT.md) for the 1.3 changes and [SCHEMATICS.md](../SCHEMATICS.md) for the new workflow.
 
 ## Features specific to this Bedrock port
 
@@ -96,4 +96,4 @@ ctest --test-dir build -C RelWithDebInfo --output-on-failure
 
 The structural audit currently finds 63 Java names/aliases, 95 Bedrock names/aliases and all 245 user-configurable Java setting names. Only the two terrain-prediction settings lack executable references. Behavioral qualifications above take precedence over those counts.
 
-The final local 1.4.0 RelWithDebInfo build succeeded and the regression executable passed **59 tests, 0 failed**; CTest and `git diff --check` passed. The native preview and single-block build validation is detailed in [SCHEMATICS.md](SCHEMATICS.md#validation-on-bedrock-2660). These are targeted checks, not an exhaustive validation of every Java/Bedrock feature in this inventory.
+The final local 1.4.0 RelWithDebInfo build succeeded and the regression executable passed **59 tests, 0 failed**; CTest and `git diff --check` passed. The native preview and single-block build validation is detailed in [SCHEMATICS.md](../SCHEMATICS.md#validation-on-bedrock-2660). These are targeted checks, not an exhaustive validation of every Java/Bedrock feature in this inventory.

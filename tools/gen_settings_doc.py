@@ -57,7 +57,7 @@ def main() -> None:
         "Setting names follow "
         "[Baritone Java 26.3](https://github.com/cabaletta/baritone/blob/26.3/src/api/java/baritone/api/Settings.java). "
         "Platform adaptations and default differences are listed in [PARITY.md](PARITY.md); "
-        "the comparison scope is in [JAVA_PARITY_AUDIT.md](JAVA_PARITY_AUDIT.md).",
+        "the original comparison is in the [Java parity audit](archive/JAVA_PARITY_AUDIT.md).",
         "",
         "Usage in the chat:",
         "",

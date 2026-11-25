@@ -1,15 +1,7 @@
 # Windows automation and validation
 
-This expansion follows release 1.6.0. The matrix distinguishes implemented work
-from remaining modules and gameplay validation. Built-in messages
-remain English. No adaptive performance controller is included.
-
-## 1.9.0 release plan
-
-1. Keep the stable Windows package `1.26.6501.0` as the only active profile.
-2. Make verification actionable with paged schematic issue coordinates.
-3. Add a rail stop inspection that explains how to prepare the destination.
-4. Run the core, native and exported viewer regressions before publishing.
+This guide covers Windows automation commands and records the gameplay checks
+performed for each release. Built-in messages are in English.
 
 ## Scope and remaining work
 

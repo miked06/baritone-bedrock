@@ -72,4 +72,4 @@ build/asan/bin/RelWithDebInfo/baritone_tests.exe
 
 Run from an x64 developer shell, or add that toolset's `bin/Hostx64/x64` directory to `PATH` for the ASan runtime. Run normal and sanitizer suites sequentially: some fixtures use fixed temporary filenames. Only the standalone tests were run with ASan; the injected game DLL was the normal build.
 
-In Minecraft, start a capture with `#perf on`, exercise one feature, then use `#perf off`. Save `log.txt` before reinjecting, because startup replaces it. Wait for **Loaded** after `#schematic load` before issuing placement edits or build commands. The [schematic guide](SCHEMATICS.md) describes format and cancellation limits.
+In Minecraft, start a capture with `#perf on`, exercise one feature, then use `#perf off`. Save `log.txt` before reinjecting, because startup replaces it. Wait for **Loaded** after `#schematic load` before issuing placement edits or build commands. The [schematic guide](../SCHEMATICS.md) describes format and cancellation limits.

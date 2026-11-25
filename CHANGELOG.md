@@ -235,7 +235,7 @@ for commands, supported cases and the detailed validation matrix.
 
 Module expansion for Windows Bedrock package `1.26.6005.0`. Commands and limits are
 documented in [the module guide](docs/MODULES.md); the
-[validation roadmap](docs/MODULE_ROADMAP.md) distinguishes implemented behavior
+[validation roadmap](docs/archive/MODULE_ROADMAP.md) distinguishes implemented behavior
 from completed native gameplay checks.
 
 ### Added
@@ -275,7 +275,7 @@ in the roadmap.
 
 ## 1.4.1
 
-Stability/performance fixes for Minecraft Bedrock 26.60 (`1.26.6005.0`). See [the audit report](docs/STABILITY_AUDIT.md) for the measured scope and remaining gameplay validation.
+Stability/performance fixes for Minecraft Bedrock 26.60 (`1.26.6005.0`). See [the audit report](docs/archive/STABILITY_AUDIT.md) for the measured scope and remaining gameplay validation.
 
 ### Fixed
 
@@ -330,7 +330,7 @@ Put schematic files in `%LOCALAPPDATA%\BaritoneBedrock\schematics\`, then use:
 
 ## 1.3.0
 
-Compared against Baritone Java 26.3 at `25111daedf1d59e6a8dfb5a3e61885cdb8d953df`. See [the feature audit](docs/JAVA_PARITY_AUDIT.md) for scope, verification and remaining differences.
+Compared against Baritone Java 26.3 at `25111daedf1d59e6a8dfb5a3e61885cdb8d953df`. See [the feature audit](docs/archive/JAVA_PARITY_AUDIT.md) for scope, verification and remaining differences.
 
 ### Added
 

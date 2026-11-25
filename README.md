@@ -22,48 +22,21 @@
 
 ---
 
-Baritone Bedrock is a native C++ rewrite of Baritone that runs **inside** the Windows version of Minecraft Bedrock as a single DLL. No resource pack, no behavior pack, no server plugin: inject the DLL and type `#goto 1000 64 -200` in the chat.
-
-The pathfinding engine, movements and processes started as a port of Baritone Java 1.21.11 and have been compared against Java 26.3. See the [feature comparison](docs/FEATURE_COMPARISON.md) for both inventories, the implemented behavior and the remaining platform differences.
-
-The [stability audit](docs/STABILITY_AUDIT.md) records automated coverage, native performance measurements and the gameplay scenarios that still need validation. Use `#perf on` / `#perf off` to measure bot work on your machine.
-
-The 1.5 development version adds storage/workstations, task workflows, protected
-areas, survival assistance, tree/animal farming, quarry planning, portal routes,
-vehicle navigation and an external control panel. See the [module guide](docs/MODULES.md)
-for commands and limits, and the [validation roadmap](docs/MODULE_ROADMAP.md) for
-completed checks and remaining gameplay scenarios.
-
-The 1.6.0 Windows expansion adds production/loadout planning, restocking,
-storage sorting, construction/mining plans, a visual workflow editor, portal
-continuation, tool replacement/repair, conditional undo and a compatibility doctor.
-It also exports a local textured schematic viewer. See the
-[expansion guide and validation matrix](docs/WINDOWS_EXPANSION.md) for commands,
-supported cases and the native scenarios that still need testing.
-The [tool repair guide](docs/TOOL_REPAIR.md) covers bounded anvil/grindstone jobs
-and Mending at an existing XP source, including remaining gameplay validation.
-
-Version 1.7.0 adds production objectives, local recipe imports,
-a multi-furnace workshop, manual building guidance, construction recovery, a panel
-map, road previews, targeted harvest jobs, technical audits, diagnostic ZIP exports
-and workflow templates. Version 1.8.0 adds Bedrock 26.65 support, route previews,
-local in-game schematic textures, shulker withdrawal and experimental rail travel.
-The [Windows validation matrix](docs/WINDOWS_NEXT.md) records the gameplay
-coverage and remaining work.
+Baritone Bedrock runs in Minecraft Bedrock for Windows. Use chat commands to navigate and automate in-game tasks. The optional Windows control panel shows the bot's status and a map of the area around the player.
 
 > [!IMPORTANT]
 > **Supported game version: Minecraft Bedrock 26.65 for Windows** (package `1.26.6501.0`).
 > The DLL checks the package version before installing hooks and refuses unsupported builds. Other versions need updated signatures, offsets and calling conventions (see [Updating to a new game version](docs/DEVELOPMENT.md#updating-to-a-new-game-version)).
 
 > [!WARNING]
-> Using a bot on a multiplayer server may be against its rules and can get you banned. This project is meant for singleplayer worlds and servers that allow it. Use it at your own risk.
+> Using a bot on a multiplayer server may be against its rules and can get you banned. This project is meant for singleplayer worlds and servers that allow it.
 
 ## Features
 
 | | |
 |---|---|
-| 🧭 **Pathfinding** | A* over the real world with Baritone's movements: walk, sprint, ascend, descend, fall, diagonal, pillar, parkour (also diagonally), ladders, swimming, breaking and placing blocks on the way. Long trips are planned in segments, through chunks remembered in a long-distance cache. |
-| ⛏️ **Mining** | `#mine diamond` finds ores (loaded chunks + cache), mines them and picks up the drops. With no ore in sight it goes down to the right level and branch-mines. Ore families (`deepslate_*`, `nether_gold_ore`...) and item names are understood. |
+| 🧭 **Pathfinding** | A* over the real world with Baritone's movements: walk, sprint, ascend, descend, fall, diagonal, pillar, parkour, including experimental offset jumps, low ceilings and narrow landings, ladders, swimming, breaking and placing blocks on the way. Long trips are planned in segments, through chunks remembered in a long-distance cache. |
+| ⛏️ **Mining** | `#mine diamond` finds ores (loaded chunks + cache), mines them and picks up the drops. When no target is known, it branch-mines for underground blocks and searches at the surface for blocks such as logs and sand. `#mine wood` matches natural logs, wood blocks and Nether stems. |
 | 🏗️ **Building** | `#build` loads `.mcstructure`, `.schem` (Sponge), `.litematic` and `.schematic` files, converts Java block names to Bedrock and reproduces block orientation (stairs, logs, slabs, furnaces, chests...). `#sel` builds boxes, walls, spheres and cylinders. |
 | 🌾 **Farming** | `#farm` harvests ripe crops, replants, uses bone meal and picks everything up. |
 | 🪂 **Elytra** | `#elytra` plans a 3D flight path, steers by simulating the elytra physics, fires rockets when needed, swaps a worn elytra and lands safely. |
@@ -79,7 +52,7 @@ coverage and remaining work.
 
 - Windows 10 or 11, x64.
 - Minecraft Bedrock **26.65** (the Microsoft Store / Xbox app version).
-- A DLL injector (any `LoadLibrary` injector works, for example FateInjector).
+- A compatible DLL injector.
 
 ### Install
 
@@ -89,14 +62,12 @@ coverage and remaining work.
 4. Inject `BaritoneBedrock.dll` into `Minecraft.Windows.exe` with your injector.
 5. A console window titled *Baritone Bedrock* opens, and the chat shows `[Baritone] Loaded. Type #help for a list of commands.` once the bot is ready.
 
+For a desktop view of the bot's status and map, run `BaritoneControlPanel.exe` from the same release after the DLL has loaded.
+
 Type commands in the chat, starting with `#`. They are handled locally and never sent to the server. `#unload` removes the bot cleanly.
 
 > [!NOTE]
 > All built-in messages, command help, notifications and diagnostics are in English.
-
-Version 1.3.0 adds state-filtered block searches, interactive click goals/selections, settings profiles, completion suggestions, disconnect on arrival, depth/cached-terrain rendering and elytra cache/diagnostic controls. See the [comparison with Baritone Java 26.3](docs/JAVA_PARITY_AUDIT.md) for the changes, checks and remaining platform differences.
-
-Version 1.4.0 adds the [schematic workspace](docs/SCHEMATICS.md). Use `#schematic load "house.litematic" ~5 ~ ~` to preview, adjust it with `#schematic move/rotate/mirror/layer`, then run `#schematic build`. `#schematica` and `#litematica` now build the loaded Bedrock placement instead of returning an unavailable-mod error. The [two feature lists](docs/FEATURE_COMPARISON.md) and [complete command inventories](docs/COMMAND_INVENTORY.md) distinguish implemented features from adaptations and remaining gaps.
 
 ### First commands
 
@@ -131,6 +102,9 @@ Everything the bot writes is in `%LOCALAPPDATA%\BaritoneBedrock\`:
 |---|---|
 | [Commands](docs/COMMANDS.md) | Every command with its arguments and examples |
 | [Settings](docs/SETTINGS.md) | All settings, their defaults and meaning |
+| [Automation modules](docs/MODULES.md) | Storage, workflows, farming, portals and related tools |
+| [Windows automation](docs/WINDOWS_NEXT.md) | Production, the control panel, rail routes and validation |
+| [Schematics](docs/SCHEMATICS.md) | Loading, previewing and building structures |
 | [Differences with Baritone Java](docs/PARITY.md) | What works the same, what differs on Bedrock and why |
 | [Troubleshooting](docs/TROUBLESHOOTING.md) | Common problems and how to fix them |
 | [Building](docs/BUILDING.md) | Compiling the DLL and running the tests |
@@ -138,18 +112,13 @@ Everything the bot writes is in `%LOCALAPPDATA%\BaritoneBedrock\`:
 | [Development](docs/DEVELOPMENT.md) | Dev tools, reverse engineering notes, updating to a new game version |
 | [Changelog](CHANGELOG.md) | What changed in each version |
 | [Contributing](CONTRIBUTING.md) | How to report bugs and send changes |
+| [Documentation archive](docs/archive/README.md) | Historical audits, comparisons and validation notes |
 
 ## How it works, in short
 
 The DLL hooks a few functions of the game (tick, input, camera, chat, rendering) with [MinHook](https://github.com/TsudaKageyu/minhook), found by byte signatures with [libhat](https://github.com/BasedInc/libhat). Every tick it copies the chunks around the player into a snapshot that the pathfinder reads on its own thread. The bot then plays like a player would: it presses keys, turns the camera, clicks, and uses the game's own functions to break and place blocks — so the server sees normal player actions.
 
 The pathfinding core (`src/baritone/`) does not depend on the game at all and is covered by offline tests on simulated worlds. More in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
-
-## Status
-
-The current build supports 26.65. See the [26.65 port notes](docs/DEVELOPMENT.md#reverse-engineering-notes-2665) and the [Windows validation matrix](docs/WINDOWS_NEXT.md#validation) for current checks. [The parity guide](docs/PARITY.md) describes platform differences, including elytra terrain prediction.
-
-Found a bug? Please [open an issue](https://github.com/miked06/baritone-bedrock/issues/new/choose) with your `log.txt`.
 
 ## Credits
 

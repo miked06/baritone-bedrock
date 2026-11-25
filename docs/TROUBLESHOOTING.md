@@ -4,7 +4,7 @@ First, check `%LOCALAPPDATA%\BaritoneBedrock\log.txt`: every command, error and 
 
 ## The DLL does not load / nothing happens
 
-- **Check your game version.** Only Minecraft Bedrock **26.60** (package `1.26.6005.0`) is supported. The DLL logs the detected package and rejects other builds before reading game objects. Missing or ambiguous signatures also prevent startup. You can see your version at the bottom of Minecraft's main menu.
+- **Check your game version.** The current release supports Minecraft Bedrock **26.65** for Windows (package `1.26.6501.0`). The DLL logs the detected package and rejects unsupported builds. Missing or ambiguous signatures also prevent startup. You can see your game version at the bottom of Minecraft's main menu.
 - **Inject into the right process**: `Minecraft.Windows.exe`.
 - **Antivirus**: DLL injectors and injected DLLs are often flagged. Build the DLL yourself if you prefer (see [BUILDING.md](BUILDING.md)).
 - **Admin rights**: if Minecraft runs as administrator, the injector must too. Running both normally is best.
@@ -17,6 +17,10 @@ Turn off **"Pause game when focus is lost"** in Minecraft's settings. Otherwise 
 
 - Clicking inside the *Baritone Bedrock* console used to freeze the game (Windows' text selection mode blocks the console, and the game waits on it). The console's selection mode is now disabled; if you still see this, press `Esc` in the console.
 - If the game freezes for more than 5 seconds, the watchdog writes the game thread's call stack to `log.txt` (look for `Watchdog`). Please include it in a bug report.
+
+## The frame rate drops over time
+
+Use `#perf on`, reproduce the slowdown, then run `#perf off`. The report includes frame intervals, time spent in the bot and system memory usage. Include the report, game version and Baritone version when reporting the issue. The memory and entity-scan fixes are included from [v1.10.1](../CHANGELOG.md#1101).
 
 ## "No path found"
 

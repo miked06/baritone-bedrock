@@ -130,7 +130,7 @@ Validation: 39 offline core tests, package detection, all eight hooks, player/wo
 
 ## Java feature audit (1.3.0)
 
-The pinned Java reference and reproduction commands are in [JAVA_PARITY_AUDIT.md](JAVA_PARITY_AUDIT.md). `tools/paritycheck.py` checks command registrations/settings and reports settings without executable references; behavioral regressions live in the offline suite.
+The pinned Java reference and reproduction commands are in [JAVA_PARITY_AUDIT.md](archive/JAVA_PARITY_AUDIT.md). `tools/paritycheck.py` checks command registrations/settings and reports settings without executable references; behavioral regressions live in the offline suite.
 
 Native additions verified against package `1.26.6005.0`:
 
@@ -181,7 +181,7 @@ Things that are not obvious and cost time to find:
 
 ## Schematic workspace and shader color (1.4)
 
-The 1.4 schematic/render changes are described in [SCHEMATICS.md](SCHEMATICS.md) and [FEATURE_COMPARISON.md](FEATURE_COMPARISON.md). The preview reads exact live snapshot chunks and produces a bounded difference set; the renderer consumes a copied frame. The workspace passes an already transformed schematic to `BuilderProcess::build(..., false, false)` so file rotations/orientation offsets are not applied twice.
+The 1.4 schematic/render changes are described in [SCHEMATICS.md](SCHEMATICS.md) and [FEATURE_COMPARISON.md](archive/FEATURE_COMPARISON.md). The preview reads exact live snapshot chunks and produces a bounded difference set; the renderer consumes a copied frame. The workspace passes an already transformed schematic to `BuilderProcess::build(..., false, false)` so file rotations/orientation offsets are not applied twice.
 
 For Bedrock 26.60, `ScreenContext` embeds `mce::MeshContext` at `+0x10`. `currentShaderColor` is the pointer at `ScreenContext+0x30`; `+0x38` points to **currentShaderDarkColor**, not the current color. A native `ShaderColor` contains RGBA at `+0` and its upload-dirty byte at `+0x10`. Drawing/restoring a color must set that byte. This layout is corroborated by [MeshContext](https://github.com/LiteLDev/LeviLamina/blob/main/src-client/mc/deps/minecraft_renderer/renderer/MeshContext.h) and [ShaderColor](https://github.com/LiteLDev/LeviLamina/blob/main/src-client/mc/deps/renderer/ShaderColor.h), and by native color-store/dirty instruction pairs in the 26.60 dump (for example RVA `0xA0ADA4`). Native `MeshHelpers::renderMeshImmediately` at `0x5AD5F90` advances the ScreenContext argument by `0x10` before the mesh render call. Prior notes that call `+0x30` fog color or use `+0x38` as the draw color are superseded by this correction.
 

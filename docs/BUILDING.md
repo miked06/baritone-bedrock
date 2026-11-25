@@ -32,6 +32,7 @@ Outputs:
 |---|---|
 | `build\bin\RelWithDebInfo\BaritoneBedrock.dll` | The DLL to inject |
 | `build\bin\RelWithDebInfo\BaritoneBedrock.pdb` | Its symbols (keep it next to the DLL: crash logs use it) |
+| `build\bin\RelWithDebInfo\BaritoneControlPanel.exe` | Optional Windows control panel |
 | `build\bin\RelWithDebInfo\baritone_tests.exe` | The offline tests |
 
 > [!IMPORTANT]
@@ -49,7 +50,7 @@ or `ctest --test-dir build -C RelWithDebInfo`. Every change to the core should k
 
 ## Continuous integration
 
-`.github/workflows/build.yml` builds the DLL and runs the tests on every push and pull request. Pushing a tag `v*` publishes a GitHub release with the DLL and its PDB.
+`.github/workflows/build.yml` builds and tests pushes to `main`, version tags and pull requests. On a successful `v*` tag build, it publishes the DLL, its PDB and the Windows control panel with the corresponding changelog entry.
 
 ## Regenerating the settings documentation
 
