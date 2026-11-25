@@ -1,6 +1,7 @@
 #pragma once
 #include <array>
 #include <cstdint>
+#include <span>
 
 #include "baritone/pathing/movement/CalculationContext.h"
 #include "baritone/utils/BlockPos.h"
@@ -29,7 +30,7 @@ struct Move {
     void (*apply)(const Move& m, CalculationContext& ctx, int x, int y, int z, MoveResult& res);
 };
 
-const std::array<Move, 26>& allMoves();
+std::span<const Move> allMoves();
 
 // Cost functions of each movement, also used to re-check a movement during execution.
 namespace movement_costs {
@@ -47,6 +48,12 @@ void parkour(CalculationContext& ctx, int x, int y, int z, Direction dir, MoveRe
 // Bedrock addition (not in Baritone): a sprint jump along a diagonal (sx, sz = +-1) over a gap,
 // 2 blocks diagonally, 3 with sprinting. Lands at the same height.
 void parkourDiagonal(CalculationContext& ctx, int x, int y, int z, int sx, int sz, MoveResult& res);
+struct ParkourJump {
+    double takeoff;
+    double cost;
+    bool sprint;
+};
+std::optional<ParkourJump> parkourJump(CalculationContext& ctx, const BlockPos& src, const BlockPos& dest);
 }  // namespace movement_costs
 
 }  // namespace baritone

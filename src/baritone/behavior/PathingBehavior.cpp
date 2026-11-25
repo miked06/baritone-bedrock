@@ -140,6 +140,8 @@ BlockPos PathingBehavior::pathStart() {
     if (!liveCalc_) return {};
     ExecContext ctx{player_, *liveCalc_, inventory_, {}};
     BlockPos feet = ctx.playerFeet();
+    if (ctx.calc.allowParkour && ctx.props(feet.below()).parkourSupport != ParkourSupport::None &&
+        player_.onGround()) return feet;
     if (!ctx.canWalkOn(feet.below())) {
         Vec3d pos = player_.position();
         if (player_.onGround()) {

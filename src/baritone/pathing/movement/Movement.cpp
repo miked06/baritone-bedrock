@@ -3,6 +3,8 @@
 #include <algorithm>
 #include <numbers>
 #include <cmath>
+#include <iterator>
+#include <ranges>
 
 #include "baritone/Settings.h"
 #include "baritone/behavior/InventoryBehavior.h"
@@ -23,7 +25,10 @@ BlockPos ExecContext::playerFeet() {
     BlockPos feet{static_cast<int>(std::floor(p.x)), static_cast<int>(std::floor(p.y + 0.1251)),
                   static_cast<int>(std::floor(p.z))};
     // standing on top of a bottom slab counts as the block above
-    if (props(feet).type == T::Slab && !props(feet).doubleSlab) return feet.above();
+    const auto& support = props(feet);
+    if (support.type == T::Slab && !support.doubleSlab) return feet.above();
+    if (support.isHorizontalRod() && std::abs(p.y - (feet.y + support.height)) < 0.02 &&
+        player.velocity().y <= 0.01) return feet.above();
     return feet;
 }
 
@@ -241,6 +246,7 @@ double Movement::calculateCost(CalculationContext& ctx) const {
         case MovementType::Pillar: return movement_costs::pillar(ctx, src_.x, src_.y, src_.z);
         case MovementType::Downward: return movement_costs::downward(ctx, src_.x, src_.y, src_.z);
         case MovementType::Parkour: {
+            if (auto jump = movement_costs::parkourJump(ctx, src_, dest_)) return jump->cost;
             BlockPos d = direction();
             if (d.x != 0 && d.z != 0) {
                 movement_costs::parkourDiagonal(ctx, src_.x, src_.y, src_.z, d.x > 0 ? 1 : -1, d.z > 0 ? 1 : -1, res);
@@ -291,15 +297,18 @@ MovementStatus Movement::update(ExecContext& ctx) {
     if (ctx.isLiquid(ctx.playerFeet()) && ctx.player.position().y < dest_.y + 0.6) {
         state.setInput(Input::Jump, true);  // swim up
     }
-    // player.isInWall: the eyes are inside a solid block, break it (Java Movement.update)
-    {
+    // Escape a solid block around the player's eyes only when the hit can be mined.
+    if (ctx.calc.allowBreak || !ctx.calc.allowBreakAnyway.empty()) {
         Vec3d eyes = ctx.playerHead();
         BlockPos eyeBlock{static_cast<int>(std::floor(eyes.x)), static_cast<int>(std::floor(eyes.y)),
                           static_cast<int>(std::floor(eyes.z))};
         const BlockProps& in = ctx.props(eyeBlock);
         if (helper::isBlockNormalCube(in) && !in.hasFluid()) {
-            if (auto hit = ctx.objectMouseOver()) mh::switchToBestToolFor(ctx, ctx.props(hit->pos));
-            state.setInput(Input::ClickLeft, true);
+            if (auto hit = ctx.objectMouseOver(); hit &&
+                ctx.calc.breakCostMultiplierAt(hit->pos.x, hit->pos.y, hit->pos.z, ctx.props(hit->pos)) < COST_INF) {
+                mh::switchToBestToolFor(ctx, ctx.props(hit->pos));
+                state.setInput(Input::ClickLeft, true);
+            }
         }
     }
     currentState_ = state;
@@ -310,42 +319,37 @@ MovementStatus Movement::update(ExecContext& ctx) {
 
 bool Movement::prepared(ExecContext& ctx, MovementState& state) {
     if (state.status == MovementStatus::Waiting) return true;
-    bool somethingInTheWay = false;
-    // Java pauseMiningForFallingBlocks: wait while a falling block (sand, gravel) is coming down
-    // into a block to break
-    std::vector<Vec3d> falling;
+    const auto obstruction = std::ranges::find_if(positionsToBreak_, [&](const BlockPos& pos) {
+        return !ctx.canWalkThrough(pos);
+    });
+    if (obstruction == positionsToBreak_.end()) return true;
+    const BlockPos& pos = *obstruction;
+    const BlockProps& block = ctx.props(pos);
+    if (ctx.calc.breakCostMultiplierAt(pos.x, pos.y, pos.z, block) >= COST_INF) return false;
+
+    // Reading the native entity list is expensive, so only check while preparing to mine.
     if (Settings::get().pauseMiningForFallingBlocks) {
-        for (const EntityInfo& e : ctx.player.entities())
-            if (e.type == "minecraft:falling_block") falling.push_back(e.position);
-    }
-    for (const BlockPos& pos : positionsToBreak_) {
-        for (const Vec3d& f : falling) {
-            // the entity's 0.98 box against (0, 0, 0, 1, 1.1, 1) at pos
-            if (f.x + 0.49 > pos.x && f.x - 0.49 < pos.x + 1 && f.z + 0.49 > pos.z && f.z - 0.49 < pos.z + 1 &&
-                f.y + 0.98 > pos.y && f.y < pos.y + 1.1)
-                return false;
-        }
-        if (!ctx.canWalkThrough(pos)) {
-            somethingInTheWay = true;
-            mh::switchToBestToolFor(ctx, ctx.props(pos));
-            if (auto reach = mh::reachable(ctx, pos)) {
-                state.setTarget({*reach, true});
-                if (ctx.isLookingAt(pos) || ctx.playerRotations().isReallyCloseTo(*reach)) {
-                    state.setInput(Input::ClickLeft, true);
-                }
-                return false;
+        const auto miningCells = std::ranges::subrange(positionsToBreak_.begin(), std::next(obstruction));
+        for (const Vec3d& f : ctx.player.fallingBlockPositions()) {
+            for (const BlockPos& target : miningCells) {
+                if (f.x + 0.49 > target.x && f.x - 0.49 < target.x + 1 &&
+                    f.z + 0.49 > target.z && f.z - 0.49 < target.z + 1 &&
+                    f.y + 0.98 > target.y && f.y < target.y + 1.1) return false;
             }
-            // can't see any face: break whatever is in the way towards the center
-            state.setTarget({ru::calcRotationFromVec3d(ctx.playerHead(), Vec3d::center(pos), ctx.playerRotations()), true});
-            state.setInput(Input::ClickLeft, true);
-            return false;
         }
     }
-    if (somethingInTheWay) {
-        state.setStatus(MovementStatus::Unreachable);
-        return true;
+    mh::switchToBestToolFor(ctx, block);
+    if (auto reach = mh::reachable(ctx, pos)) {
+        state.setTarget({*reach, true});
+        if (ctx.isLookingAt(pos) || ctx.playerRotations().isReallyCloseTo(*reach)) {
+            state.setInput(Input::ClickLeft, true);
+        }
+        return false;
     }
-    return true;
+    // Aim at the center when no face is visible yet.
+    state.setTarget({ru::calcRotationFromVec3d(ctx.playerHead(), Vec3d::center(pos), ctx.playerRotations()), true});
+    state.setInput(Input::ClickLeft, true);
+    return false;
 }
 
 MovementState& Movement::updateState(ExecContext& ctx, MovementState& state) {
@@ -970,27 +974,44 @@ public:
         stepZ_ = (d.z > 0) - (d.z < 0);
         ascend_ = dest.y > src.y;
         diagonal_ = stepX_ != 0 && stepZ_ != 0;
+        const double distance = std::hypot(d.x, d.z);
+        directionX_ = d.x / distance;
+        directionZ_ = d.z / distance;
     }
 
     bool safeToCancel(ExecContext&) const override { return currentState_.status != MovementStatus::Running; }
+    void reset() override {
+        Movement::reset();
+        planned_ = false;
+        jump_.reset();
+        launched_ = false;
+    }
 
 protected:
     std::unordered_set<BlockPos> calculateValidPositions() const override {
         std::unordered_set<BlockPos> set;
-        for (int i = 0; i <= dist_; ++i)
-            for (int y = 0; y < 2; ++y) {
-                set.insert(src_.offset(stepX_ * i, y, stepZ_ * i));
-                if (diagonal_ && i > 0) {  // the body crosses the corner cells of each step
-                    set.insert(src_.offset(stepX_ * i, y, stepZ_ * (i - 1)));
-                    set.insert(src_.offset(stepX_ * (i - 1), y, stepZ_ * i));
+        const BlockPos d = direction();
+        for (int i = 0; i <= dist_ * 4; ++i) {
+            const double t = static_cast<double>(i) / (dist_ * 4);
+            const double x = src_.x + 0.5 + d.x * t, z = src_.z + 0.5 + d.z * t;
+            for (int bx = static_cast<int>(std::floor(x - 0.3)); bx <= std::floor(x + 0.3); ++bx) {
+                for (int bz = static_cast<int>(std::floor(z - 0.3)); bz <= std::floor(z + 0.3); ++bz) {
+                    for (int y = std::min(src_.y, dest_.y) - 1; y <= src_.y + 1; ++y) set.insert({bx, y, bz});
                 }
             }
+        }
         return set;
     }
 
     MovementState& updateState(ExecContext& ctx, MovementState& state) override {
         Movement::updateState(ctx, state);
         if (state.status != MovementStatus::Running) return state;
+        if (!planned_) {
+            jump_ = movement_costs::parkourJump(ctx.calc, src_, dest_);
+            planned_ = true;
+        }
+        if (jump_) return executeJump(ctx, state);
+
         BlockPos feet = ctx.playerFeet();
         Vec3d pos = ctx.player.position();
         if (feet.y < src_.y) return state.setStatus(MovementStatus::Unreachable);  // we fell
@@ -1023,7 +1044,7 @@ protected:
         }
         if (feet == dest_) {
             if (helper::isClimbable(ctx.props(dest_))) return state.setStatus(MovementStatus::Success);
-            if (pos.y - feet.y < 0.094) state.setStatus(MovementStatus::Success);
+            if (ctx.player.onGround() && pos.y - feet.y < 0.094) state.setStatus(MovementStatus::Success);
         } else if (diagonal_ && ctx.player.onGround() && pos.y - src_.y < 0.0001) {
             // diagonal: run to the corner of the block and jump once the body is past it (the
             // player crosses the corner cells, so the feet block can't tell when to jump)
@@ -1055,9 +1076,69 @@ protected:
     }
 
 private:
+    MovementState& executeJump(ExecContext& ctx, MovementState& state) {
+        const Vec3d pos = ctx.player.position(), velocity = ctx.player.velocity();
+        const BlockProps& source = ctx.props(src_.below()), &landing = ctx.props(dest_.below());
+        const double startY = src_.y - 1 + source.height, landY = dest_.y - 1 + landing.height;
+        const double along = (pos.x - src_.x - 0.5) * directionX_ + (pos.z - src_.z - 0.5) * directionZ_;
+        const double side = (pos.x - src_.x - 0.5) * directionZ_ - (pos.z - src_.z - 0.5) * directionX_;
+        const double speed = velocity.x * directionX_ + velocity.z * directionZ_;
+        const double sideSpeed = velocity.x * directionZ_ - velocity.z * directionX_;
+        const bool grounded = ctx.player.onGround();
+        if (grounded && ctx.playerFeet() == dest_ && std::abs(pos.y - landY) < 0.03)
+            return state.setStatus(MovementStatus::Success);
+        if (pos.y < std::min(startY, landY) - 0.12 || (launched_ && grounded && ctx.playerFeet() != dest_))
+            return state.setStatus(MovementStatus::Unreachable);
+
+        const float yaw = static_cast<float>(std::atan2(-directionX_, directionZ_) * 180 / std::numbers::pi);
+        const auto view = ctx.playerRotations();
+        state.setTarget({Rotation{yaw, view.pitch}, false});
+        if (grounded) {
+            if (std::abs(pos.y - startY) > 0.05) return state.setStatus(MovementStatus::Unreachable);
+            const double alignment = side + sideSpeed;
+            if (std::abs(alignment) > 0.16 && along < jump_->takeoff) {
+                state.setInput(Input::MoveLeft, alignment < 0).setInput(Input::MoveRight, alignment > 0);
+                return state;
+            }
+            state.setInput(Input::MoveForward, true);
+            state.setInput(Input::Sprint, jump_->sprint);
+            const float yawError = std::remainder(view.yaw - yaw, 360.f);
+            const double launchAt = jump_->takeoff - std::clamp(speed * 0.45, 0.0, 0.08);
+            if (std::abs(yawError) < 20 && along >= launchAt) state.setInput(Input::Jump, true);
+            return state;
+        }
+
+        launched_ = true;
+        // The Bedrock motion vector is already integrated with gravity and drag for
+        // the next tick. Predict the remaining displacement without steering input.
+        double y = pos.y, vy = velocity.y, drift = 0, drag = 1;
+        for (int tick = 0; tick < 20; ++tick) {
+            y += vy;
+            drift += drag;
+            if (vy < 0 && y <= landY) break;
+            vy = (vy - 0.08) * 0.98;
+            drag *= 0.91;
+        }
+        const double remaining = (dest_.x + 0.5 - pos.x) * directionX_ +
+                                 (dest_.z + 0.5 - pos.z) * directionZ_;
+        const double error = remaining - speed * drift;
+        const double lateral = side + sideSpeed * drift;
+        const bool narrow = landing.supportHalfX() < 0.4 || landing.supportHalfZ() < 0.4;
+        const double tolerance = narrow ? 0.09 : 0.18;
+        state.setInput(Input::MoveForward, error > tolerance);
+        state.setInput(Input::MoveBack, error < -tolerance);
+        state.setInput(Input::MoveLeft, lateral < -tolerance);
+        state.setInput(Input::MoveRight, lateral > tolerance);
+        state.setInput(Input::Sprint, jump_->sprint && error > tolerance);
+        return state;
+    }
+
     int dist_, stepX_, stepZ_;
+    double directionX_, directionZ_;
     bool ascend_;
     bool diagonal_ = false;  // Bedrock addition: a jump along a diagonal
+    bool planned_ = false, launched_ = false;
+    std::optional<movement_costs::ParkourJump> jump_;
 };
 
 // ===========================================================================

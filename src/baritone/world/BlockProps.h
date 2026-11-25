@@ -58,6 +58,7 @@ enum class BlockType : uint8_t {
 
 enum class Fluid : uint8_t { None, Water, Lava };
 enum class Tool : uint8_t { None, Pickaxe, Axe, Shovel, Hoe, Sword, Shears };
+enum class ParkourSupport : uint8_t { None, RodX, RodY, RodZ, Pane, ShulkerBox };
 
 // Everything the pathfinder needs to know about one block state. Filled by the platform
 // layer (from the game's block registry) or by the tests.
@@ -81,6 +82,22 @@ struct BlockProps {
     bool solidTop = false;  // not a full cube, but the top covers the whole block (soul sand, mud, path...)
     float height = 1.f;     // top of the collision box (1.5 for fences/walls)
     bool pathfindable = false;  // Java isPathfindable(LAND): a mob could walk through it
+    ParkourSupport parkourSupport = ParkourSupport::None;
+
+    // Panes have a center post and may also have arms connecting to adjacent blocks.
+    double supportHalfX() const {
+        if (parkourSupport == ParkourSupport::Pane) return 0.0625;
+        if (parkourSupport == ParkourSupport::RodY || parkourSupport == ParkourSupport::RodZ) return 0.125;
+        return 0.5;
+    }
+    double supportHalfZ() const {
+        if (parkourSupport == ParkourSupport::Pane) return 0.0625;
+        if (parkourSupport == ParkourSupport::RodX || parkourSupport == ParkourSupport::RodY) return 0.125;
+        return 0.5;
+    }
+    bool isHorizontalRod() const {
+        return parkourSupport == ParkourSupport::RodX || parkourSupport == ParkourSupport::RodZ;
+    }
 
     // Fluids. fluidLevel is Bedrock's liquid_depth (= Java's LEVEL): 0 source, 1-7 flowing,
     // 8+ falling.

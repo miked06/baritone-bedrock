@@ -90,8 +90,7 @@ baritone::Rotation GamePlayerContext::rotation() const {
 }
 
 bool GamePlayerContext::onGround() const {
-    // Standing on something: the top of a colliding block under one corner of the
-    // bounding box is at feet level and we're not going up.
+    // A straight edge or a thin post can support the player between the box corners.
     if (velocity().y > 0.01) return false;
     auto snapshot = WorldTracker::get().snapshot();
     if (!snapshot) return false;
@@ -99,16 +98,17 @@ bool GamePlayerContext::onGround() const {
     const sdk::AABB& box = player_->aabbShape()->box;
     double feetY = box.min.y;
     int by = static_cast<int>(std::floor(feetY - 0.01));
-    const double xs[2] = {box.min.x + 0.001, box.max.x - 0.001};
-    const double zs[2] = {box.min.z + 0.001, box.max.z - 0.001};
-    for (double x : xs) {
-        for (double z : zs) {
-            int bx = static_cast<int>(std::floor(x)), bz = static_cast<int>(std::floor(z));
+    constexpr double edge = 0.001;
+    for (int bx = static_cast<int>(std::floor(box.min.x + edge)); bx <= std::floor(box.max.x - edge); ++bx) {
+        for (int bz = static_cast<int>(std::floor(box.min.z + edge)); bz <= std::floor(box.max.z - edge); ++bz) {
             for (int y : {by, by - 1}) {  // fences are 1.5 high
                 const baritone::BlockProps& p = bsi.props(bx, y, bz);
                 if (!p.collides) continue;
-                double top = y + (p.topSlab ? 1.0 : static_cast<double>(p.height));
-                if (std::fabs(feetY - top) < 0.02) return true;
+                const double top = y + (p.topSlab ? 1.0 : static_cast<double>(p.height));
+                if (std::fabs(feetY - top) >= 0.02) continue;
+                const double hx = p.supportHalfX(), hz = p.supportHalfZ();
+                if (box.max.x > bx + 0.5 - hx + edge && box.min.x < bx + 0.5 + hx - edge &&
+                    box.max.z > bz + 0.5 - hz + edge && box.min.z < bz + 0.5 + hz - edge) return true;
             }
         }
     }
@@ -630,6 +630,16 @@ void GamePlayerContext::advanceContainer() {
         if (ownedContainer_ && player_->containerManager() == ownedContainer_) { player_->closeInventory(); inventoryClosedAt_ = tick_; }
         ownedContainer_ = nullptr; containerOpening_.reset(); containerClosing_ = false;
     }
+}
+
+std::vector<Vec3d> GamePlayerContext::fallingBlockPositions() const {
+    std::vector<Vec3d> positions;
+    if (!level_) return positions;
+    for (sdk::Actor* actor : level_->actors()) {
+        if (actor && actor != player_ && actor->identifier() == "minecraft:falling_block" && actor->aabbShape())
+            positions.push_back(toVec(actor->feet()));
+    }
+    return positions;
 }
 
 std::vector<baritone::EntityInfo> GamePlayerContext::entities() const {

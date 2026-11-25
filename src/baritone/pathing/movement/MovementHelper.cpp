@@ -132,6 +132,13 @@ bool fullyPassable(CalculationContext&, int, int, int, const BlockProps& p) {
     return fullyPassableBlockState(p) == Ternary::Yes;
 }
 
+bool canParkourOn(CalculationContext& ctx, const BlockPos& block) {
+    const BlockProps& p = ctx.props(block.x, block.y, block.z);
+    if (!p.collides || p.hasFluid() || p.type == T::Stairs || p.type == T::SoulSand || p.type == T::Magma ||
+        isClimbable(p) || avoidWalkingInto(p) || ctx.isAvoided(p)) return false;
+    return p.parkourSupport != ParkourSupport::None || canWalkOn(ctx, block.x, block.y, block.z, p);
+}
+
 bool canWalkOn(CalculationContext& ctx, int x, int y, int z, const BlockProps& p) {
     Ternary t = canWalkOnBlockState(ctx, p);
     if (t != Ternary::Maybe) return t == Ternary::Yes;

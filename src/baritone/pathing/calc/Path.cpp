@@ -16,20 +16,25 @@ std::optional<MovementSpec> runBackwards(CalculationContext& ctx, const BlockPos
                                          double nodeCost) {
     // Java: the first move whose destination is `dest`, cost min(now, as calculated); a move
     // that became impossible keeps the calculated cost (the executor notices it later)
+    std::optional<MovementSpec> fallback;
+    const bool loaded = ctx.isLoadedLive(dest.x, dest.z);
     MoveResult res;
     for (const Move& move : allMoves()) {
+        if (!move.dynamicXZ && (src.x + move.dx != dest.x || src.z + move.dz != dest.z)) continue;
+        if (!move.dynamicY && src.y + move.dy != dest.y) continue;
         res.reset();
         move.apply(move, ctx, src.x, src.y, src.z, res);
-        int rx = res.x, ry = res.y, rz = res.z;
-        if (res.cost >= costs::COST_INF && !move.dynamicXZ && !move.dynamicY) {
-            rx = src.x + move.dx, ry = src.y + move.dy, rz = src.z + move.dz;  // fixed destination
+        if (res.cost >= costs::COST_INF) {
+            if (!fallback && !move.dynamicXZ && !move.dynamicY && move.type != MovementType::Parkour)
+                fallback = MovementSpec{move.type, src, dest, nodeCost, loaded};
+            continue;
         }
-        if (rx != dest.x || ry != dest.y || rz != dest.z) continue;
+        if (BlockPos{res.x, res.y, res.z} != dest) continue;
         MovementType type = move.type;
-        if (type == MovementType::Descend && ry != src.y - 1) type = MovementType::Fall;
-        return MovementSpec{type, src, dest, std::min(res.cost, nodeCost), ctx.isLoadedLive(dest.x, dest.z)};
+        if (type == MovementType::Descend && res.y != src.y - 1) type = MovementType::Fall;
+        return MovementSpec{type, src, dest, std::min(res.cost, nodeCost), loaded};
     }
-    return std::nullopt;
+    return fallback;
 }
 
 }  // namespace

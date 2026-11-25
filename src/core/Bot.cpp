@@ -752,8 +752,8 @@ void Bot::applyOutput(const baritone::MovementState& out, bool active) {
                       player_.hotbar(player_.selectedSlot()).name,
                       [this] {
                           std::string out;
-                          for (const auto& e : player_.entities())
-                              if (e.type == "minecraft:falling_block") out += std::format("{:.2f},{:.2f},{:.2f};", e.position.x, e.position.y, e.position.z);
+                          for (const auto& p : player_.fallingBlockPositions())
+                              out += std::format("{:.2f},{:.2f},{:.2f};", p.x, p.y, p.z);
                           return out.empty() ? std::string("-") : out;
                       }(),
                       breakDelay_);

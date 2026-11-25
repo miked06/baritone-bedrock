@@ -109,6 +109,7 @@ public:
     void onItemStackResponse(int requestId, int result, const void* response = nullptr);
     int countItem(std::string_view name) const override;
     std::vector<baritone::EntityInfo> entities() const override;
+    std::vector<baritone::Vec3d> fallingBlockPositions() const override;
     void setLevel(sdk::Level* level) { level_ = level; }
     sdk::Level* level() const { return level_; }
 

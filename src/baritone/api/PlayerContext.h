@@ -146,6 +146,12 @@ public:
 
     // Loaded entities except the local player.
     virtual std::vector<EntityInfo> entities() const = 0;
+    virtual std::vector<Vec3d> fallingBlockPositions() const {
+        std::vector<Vec3d> positions;
+        for (const auto& entity : entities())
+            if (entity.type == "minecraft:falling_block") positions.push_back(entity.position);
+        return positions;
+    }
     virtual std::optional<Vec3d> entityPosition(uint64_t id) const {
         for (const auto& entity : entities())
             if (entity.id == id && !entity.dead) return entity.position;

@@ -107,7 +107,7 @@ std::optional<Shape> partialShape(std::string_view n) {
     if (ends(n, "_head") || ends(n, "_skull")) return Shape{0.5f, false};
     if (ends(n, "_lantern")) return Shape{0.5625f, false};
     if (ends(n, "_chain")) return Shape{1.f, false};
-    if (ends(n, "_shulker_box") || n == "undyed_shulker_box") return Shape{1.f, false};
+    if (ends(n, "_shulker_box") || n == "shulker_box") return Shape{1.f, false};
     return std::nullopt;
 }
 
@@ -442,6 +442,18 @@ BlockProps classifyByName(const std::string& fullName, const sdk::nbt::CompoundT
 
     if (auto shape = partialShape(n)) {
         partial(shape->height, shape->solidTop);
+        using S = baritone::ParkourSupport;
+        if (n == "end_rod") {
+            const auto direction = intState(states, "facing_direction", -1);
+            if (direction == 0 || direction == 1) p.parkourSupport = S::RodY;
+            if (direction == 2 || direction == 3) p.parkourSupport = S::RodZ;
+            if (direction == 4 || direction == 5) p.parkourSupport = S::RodX;
+            if (p.isHorizontalRod()) p.height = 0.625f;
+        } else if (ends(n, "_pane") || n == "iron_bars") {
+            p.parkourSupport = S::Pane;
+        } else if (ends(n, "_shulker_box") || n == "shulker_box") {
+            p.parkourSupport = S::ShulkerBox;
+        }
         if (n == "soul_sand") p.type = BlockType::SoulSand;
         else if (n == "farmland") p.type = BlockType::Farmland;
         else if (n == "grass_path" || n == "dirt_path") p.type = BlockType::DirtPath;

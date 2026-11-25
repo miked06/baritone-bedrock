@@ -1,6 +1,7 @@
 #include "baritone/pathing/movement/Moves.h"
 
 #include <algorithm>
+#include <cmath>
 #include <numbers>
 
 #include "baritone/pathing/movement/MovementHelper.h"
@@ -45,6 +46,99 @@ double costFromJumpDistance(int dist) {
 }
 
 }  // namespace
+
+std::optional<ParkourJump> parkourJump(CalculationContext& ctx, const BlockPos& src, const BlockPos& dest) {
+    if (!ctx.allowParkour || dest.y >= ctx.bsi.maxY() || dest.y <= ctx.bsi.minY()) return std::nullopt;
+    if (!ctx.allowJumpAtBuildLimit && src.y >= ctx.bsi.maxY() - 1) return std::nullopt;
+    const BlockPos delta = dest - src;
+    const int distanceSq = delta.x * delta.x + delta.z * delta.z;
+    if (distanceSq == 0 || distanceSq > 13 || std::abs(delta.y) > 1) return std::nullopt;
+    const BlockPos from = src.below(), onto = dest.below();
+    const BlockProps& landing = ctx.props(onto.x, onto.y, onto.z);
+    if (!landing.collides) return std::nullopt;
+    const BlockProps& support = ctx.props(from.x, from.y, from.z);
+    const bool specialSupport = support.parkourSupport != ParkourSupport::None ||
+                                landing.parkourSupport != ParkourSupport::None;
+    if (delta.y < 0 && !specialSupport) return std::nullopt;
+    if (!specialSupport) {
+        // Leave ordinary connected terrain to traverses and diagonals.
+        const int x = src.x + (delta.x > 0) - (delta.x < 0);
+        const int z = src.z + (delta.z > 0) - (delta.z < 0);
+        if (canWalkOn(ctx, x, src.y - 1, z)) return std::nullopt;
+    }
+    if (!canParkourOn(ctx, onto) || !canParkourOn(ctx, from)) return std::nullopt;
+    if (!ctx.isLoadedLive(src.x, src.z) || !ctx.isLoadedLive(dest.x, dest.z)) return std::nullopt;
+
+    const double startY = from.y + support.height, landY = onto.y + landing.height;
+    const double rise = landY - startY;
+    if ((rise > 0.01 && !ctx.allowParkourAscend) || rise > 1.18) return std::nullopt;
+    const double length = std::sqrt(static_cast<double>(distanceSq));
+    const double dx = delta.x / length, dz = delta.z / length;
+    const auto edge = [](double vx, double vz, const BlockProps& block) {
+        double x = vx == 0 ? 10 : block.supportHalfX() / std::abs(vx);
+        double z = vz == 0 ? 10 : block.supportHalfZ() / std::abs(vz);
+        return std::min(x, z);
+    };
+    const double startEdge = edge(dx, dz, support), landingEdge = edge(dx, dz, landing);
+    const bool narrow = startEdge < 0.43 || landingEdge < 0.43;
+    const bool sprint = ctx.canSprint && (length > 2.45 || rise > 0.6);
+    if (!sprint && length > 3.0) return std::nullopt;
+    const double speed = sprint ? 0.32 : 0.245;
+    constexpr double apex = 1.25, apexTick = 5.5;
+    const double flight = apexTick * (1 + std::sqrt(1 - rise / apex));
+    constexpr double radius = 0.299, playerHeight = 1.8, epsilon = 0.002;
+    auto clear = [&](double distance, double by, bool airborne) {
+        const double px = src.x + 0.5 + dx * distance;
+        const double pz = src.z + 0.5 + dz * distance;
+        for (int x = static_cast<int>(std::floor(px - radius)); x <= std::floor(px + radius); ++x) {
+            for (int z = static_cast<int>(std::floor(pz - radius)); z <= std::floor(pz + radius); ++z) {
+                if (!ctx.isLoadedLive(x, z)) return false;
+                const BlockProps& below = ctx.props(x, static_cast<int>(std::floor(by - epsilon)), z);
+                if (airborne && avoidWalkingInto(below) && below.type != T::Water) return false;
+                const int firstY = static_cast<int>(std::floor(by - epsilon)) - 1;
+                const int lastY = static_cast<int>(std::floor(by + playerHeight - epsilon));
+                for (int y = firstY; y <= lastY; ++y) {
+                    const BlockProps& p = ctx.props(x, y, z);
+                    if (avoidWalkingInto(p) || ctx.isAvoided(p)) return false;
+                    if (!p.collides) continue;
+                    const double top = y + p.height;
+                    const double bottom = y + (p.isHorizontalRod() ? 0.375 : p.topSlab ? 0.5 : 0);
+                    if (by + epsilon >= top || by + playerHeight <= bottom + epsilon) continue;
+                    // For panes, check the post at either endpoint and treat connecting arms elsewhere
+                    // as obstacles. The landing post is always centered.
+                    const bool rod = p.parkourSupport == ParkourSupport::RodY || p.isHorizontalRod();
+                    const bool endpointPane = p.parkourSupport == ParkourSupport::Pane &&
+                                              (BlockPos{x, y, z} == from || BlockPos{x, y, z} == onto);
+                    const double hx = rod || endpointPane ? p.supportHalfX() : 0.5;
+                    const double hz = rod || endpointPane ? p.supportHalfZ() : 0.5;
+                    if (std::abs(px - x - 0.5) < hx + radius && std::abs(pz - z - 0.5) < hz + radius) return false;
+                }
+            }
+        }
+        return true;
+    };
+    const double takeoffs[] = {std::min(0.25, startEdge), startEdge - 0.03, startEdge + 0.12};
+    for (double takeoff : takeoffs) {
+        // Land inside the platform, allowing a small fore/aft margin on wide supports.
+        const double nearCenter = length - (narrow ? 0.05 : 0.20);
+        if (takeoff < 0 || nearCenter - takeoff > flight * speed) continue;
+        if (!clear(0, startY, false) || !clear(takeoff * 0.5, startY, false) || !clear(takeoff, startY, false)) continue;
+        bool open = true;
+        constexpr int samples = 16;
+        for (int i = 1; i <= samples; ++i) {
+            const double t = static_cast<double>(i) / samples;
+            const double arc = flight * t / apexTick - 1;
+            if (!clear(std::lerp(takeoff, nearCenter, t), startY + apex * (1 - arc * arc), true)) {
+                open = false;
+                break;
+            }
+        }
+        if (open && clear(length, landY, false)) {
+            return ParkourJump{takeoff, flight + takeoff / 0.20 + ctx.jumpPenalty, sprint};
+        }
+    }
+    return std::nullopt;
+}
 
 double traverse(CalculationContext& ctx, int x, int y, int z, int destX, int destZ) {
     const BlockProps& pb0 = ctx.props(destX, y + 1, destZ);
@@ -583,11 +677,17 @@ void applyParkourDiagonal(const Move& m, CalculationContext& ctx, int x, int y, 
     parkourDiagonal(ctx, x, y, z, m.dx > 0 ? 1 : -1, m.dz > 0 ? 1 : -1, res);
 }
 
+void applyParkourJump(const Move& m, CalculationContext& ctx, int x, int y, int z, MoveResult& res) {
+    const BlockPos src{x, y, z};
+    const BlockPos dest = src.offset(m.dx, m.dy, m.dz);
+    if (auto jump = parkourJump(ctx, src, dest)) res = {dest.x, dest.y, dest.z, jump->cost};
+}
+
 constexpr Direction N = Direction::North, S = Direction::South, E = Direction::East, W = Direction::West;
 
 }  // namespace
 
-const std::array<Move, 26>& allMoves() {
+std::span<const Move> allMoves() {
     using MT = MovementType;
     static const std::array<Move, 26> moves{{
         {"DOWNWARD", MT::Downward, 0, -1, 0, false, false, Direction::Down, applyDownward},
@@ -617,7 +717,20 @@ const std::array<Move, 26>& allMoves() {
         {"PARKOUR_SOUTHEAST", MT::Parkour, 3, 0, 3, true, true, S, applyParkourDiagonal},
         {"PARKOUR_SOUTHWEST", MT::Parkour, -3, 0, 3, true, true, S, applyParkourDiagonal},
     }};
-    return moves;
+    static const std::vector<Move> withParkour = [] {
+        std::vector<Move> result(moves.begin(), moves.end());
+        for (int dx = -3; dx <= 3; ++dx) {
+            for (int dz = -3; dz <= 3; ++dz) {
+                const int distance = dx * dx + dz * dz;
+                if (distance == 0 || distance > 13) continue;
+                for (int dy = -1; dy <= 1; ++dy) {
+                    result.push_back({"PARKOUR_JUMP", MT::Parkour, dx, dy, dz, false, false, N, applyParkourJump});
+                }
+            }
+        }
+        return result;
+    }();
+    return withParkour;
 }
 
 }  // namespace baritone

@@ -2,6 +2,13 @@
 
 All notable changes to Baritone Bedrock. Versions follow [semantic versioning](https://semver.org/).
 
+## Unreleased
+
+- **Experimental advanced parkour** supports offset jumps, low ceilings, and
+  narrow landing surfaces such as end rods.
+- Skip falling-block entity scans while moving through clear terrain to reduce
+  frame-time spikes.
+
 ## 1.9.1
 
 Windows x64 patch release for **Minecraft Bedrock 26.65**, package `1.26.6501.0`.

@@ -28,6 +28,7 @@ bool canWalkOn(CalculationContext& ctx, int x, int y, int z, const BlockProps& p
 inline bool canWalkOn(CalculationContext& ctx, int x, int y, int z) {
     return canWalkOn(ctx, x, y, z, ctx.props(x, y, z));
 }
+bool canParkourOn(CalculationContext& ctx, const BlockPos& block);
 
 bool isReplaceable(CalculationContext& ctx, int x, int y, int z, const BlockProps& p);
 bool avoidWalkingInto(const BlockProps& p);

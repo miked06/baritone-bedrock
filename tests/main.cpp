@@ -279,6 +279,36 @@ TEST(bridge_over_gap) {
     CHECK_MSG(r.type == PathResultType::SuccessToGoal, describe(r));
 }
 
+TEST(clear_movement_skips_falling_block_scan) {
+    SettingsGuard guard;
+    Settings::get().pauseMiningForFallingBlocks = true;
+    const Blocks& b = Blocks::get();
+    TestWorld w;
+    w.fill(0, 0, 0, 1, 0, 0, b.stone);
+    struct Player : test::TestPlayer {
+        mutable int entityQueries = 0;
+        std::vector<EntityInfo> entities() const override {
+            ++entityQueries;
+            return nearby;
+        }
+    } player;
+    InventoryBehavior inventory(player);
+    CalculationContext calc(w.snapshot(), {}, false);
+    ExecContext ctx{player, calc, inventory, {0, 1, 0}};
+    auto move = Movement::create({MovementType::Traverse, {0, 1, 0}, {1, 1, 0}, 5, true});
+    CHECK(move->update(ctx) == MovementStatus::Running);
+    CHECK(player.entityQueries == 0);
+
+    w.set(1, 1, 0, b.stone);
+    EntityInfo falling;
+    falling.type = "minecraft:falling_block";
+    falling.position = {1.5, 2, 0.5};
+    player.nearby.push_back(falling);
+    CHECK(move->update(ctx) == MovementStatus::Prepping);
+    CHECK(player.entityQueries == 1);
+    CHECK(!move->state().input(Input::ClickLeft));
+}
+
 TEST(parkour_gap) {
     SettingsGuard guard;
     Settings::get().allowParkour = true;
@@ -320,7 +350,73 @@ TEST(parkour_diagonal) {
     wall.fill(3, 0, 3, 3, 0, 3, b.stone);
     wall.fill(2, 1, 1, 2, 3, 1, b.stone);
     auto rw = findPath(wall, {1, 1, 1}, std::make_shared<GoalBlock>(3, 1, 3));
-    CHECK_MSG(rw.type != PathResultType::SuccessToGoal || !uses(rw, MovementType::Parkour), describe(rw));
+    CalculationContext wallContext(wall.snapshot(), {}, true);
+    CHECK(!movement_costs::parkourJump(wallContext, {1, 1, 1}, {3, 1, 3}));
+    for (const auto& m : rw.path ? rw.path->movements() : std::vector<MovementSpec>{})
+        CHECK_MSG(!(m.type == MovementType::Parkour && m.src == BlockPos{1, 1, 1}), describe(rw));
+}
+
+TEST(parkour_on_offset_rods) {
+    SettingsGuard guard;
+    Settings::get().allowParkour = true;
+    Settings::get().allowParkourAscend = true;
+    Settings::get().allowBreak = false;
+    Settings::get().allowPlace = false;
+    const Blocks& b = Blocks::get();
+    BlockProps rod;
+    rod.name = "minecraft:end_rod";
+    rod.height = 0.625f;
+    rod.parkourSupport = ParkourSupport::RodX;
+    const StateId horizontal = BlockRegistry::get().add(rod);
+    rod.height = 1.0f;
+    rod.parkourSupport = ParkourSupport::RodY;
+    const StateId vertical = BlockRegistry::get().add(rod);
+    TestWorld w;
+    w.set(0, 0, 0, b.stone);
+    w.set(2, 1, 1, horizontal);
+    w.set(4, 1, 1, vertical);
+    const BlockPos start{0, 1, 0}, first{2, 2, 1}, finish{4, 2, 1};
+    auto r = findPath(w, start, std::make_shared<GoalBlock>(finish));
+    CHECK_MSG(r.type == PathResultType::SuccessToGoal, describe(r));
+    CHECK(r.path->positions() == std::vector<BlockPos>({start, first, finish}));
+    for (const auto& spec : r.path->movements()) CHECK(spec.type == MovementType::Parkour);
+
+    test::TestPlayer player;
+    InventoryBehavior inventory(player);
+    CalculationContext calc(w.snapshot(), {}, false);
+    ExecContext ctx{player, calc, inventory, start};
+    auto move = Movement::create(r.path->movements().front());
+    player.feet = {2.5, 1.625, 1.5};
+    player.grounded = false;
+    CHECK(move->update(ctx) == MovementStatus::Running);
+    player.grounded = true;
+    CHECK(ctx.playerFeet() == first);
+    CHECK(move->update(ctx) == MovementStatus::Success);
+}
+
+TEST(parkour_checks_ceiling_along_the_jump) {
+    SettingsGuard guard;
+    Settings::get().allowParkour = true;
+    Settings::get().allowParkourAscend = true;
+    Settings::get().allowBreak = false;
+    Settings::get().allowPlace = false;
+    const Blocks& b = Blocks::get();
+    BlockProps slab;
+    slab.name = "minecraft:stone_slab";
+    slab.type = BlockType::Slab;
+    slab.topSlab = slab.solidTop = true;
+    TestWorld w;
+    w.set(0, 0, 0, b.stone);
+    w.set(0, 3, 0, BlockRegistry::get().add(std::move(slab)));
+    w.set(2, 1, 0, b.stone);
+    const BlockPos start{0, 1, 0}, finish{2, 2, 0};
+    auto r = findPath(w, start, std::make_shared<GoalBlock>(finish));
+    CHECK_MSG(r.type == PathResultType::SuccessToGoal, describe(r));
+    CHECK(uses(r, MovementType::Parkour));
+
+    w.set(1, 3, 0, b.stone);
+    auto blocked = findPath(w, start, std::make_shared<GoalBlock>(finish));
+    CHECK_MSG(blocked.type != PathResultType::SuccessToGoal, describe(blocked));
 }
 
 TEST(avoid_lava) {
