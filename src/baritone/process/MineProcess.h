@@ -28,6 +28,7 @@ public:
 private:
     std::optional<PathingCommand> updateGoal();
     int branchY() const;
+    bool undergroundTarget() const;
     bool addNearby();
     static bool isNextToAir(CalculationContext& ctx, const BlockPos& pos);
     void warnIfNoPickaxe();

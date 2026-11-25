@@ -52,6 +52,19 @@ std::vector<std::string> report() {
         lines.push_back(std::format("Minecraft process: {:.1f} MiB working set, {:.1f} MiB private, {:.1f} MiB peak working set",
                                     memory.WorkingSetSize / mib, memory.PrivateUsage / mib, memory.PeakWorkingSetSize / mib));
     }
+    // A full machine makes Windows page the game out: frames slow down whatever the bot does.
+    MEMORYSTATUSEX system{};
+    system.dwLength = sizeof(system);
+    if (GlobalMemoryStatusEx(&system)) {
+        constexpr double gib = 1024.0 * 1024.0 * 1024.0;
+        const double freeRam = system.ullAvailPhys / gib, totalRam = system.ullTotalPhys / gib;
+        const double commitUsed = (system.ullTotalPageFile - system.ullAvailPageFile) / gib, commitLimit = system.ullTotalPageFile / gib;
+        lines.push_back(std::format("System: {:.1f} GiB of {:.1f} GiB RAM free, commit {:.1f}/{:.1f} GiB", freeRam, totalRam,
+                                    commitUsed, commitLimit));
+        if (system.ullAvailPhys < system.ullTotalPhys / 10 || system.ullAvailPageFile < system.ullTotalPageFile / 20)
+            lines.push_back("Warning: Windows is low on memory. The game slows down while it pages to disk; close other "
+                            "programs or lower the render distance.");
+    }
 
     for (std::size_t i = 0; i < samples.size(); ++i) {
         std::vector<double> sorted;
@@ -71,6 +84,13 @@ std::vector<std::string> report() {
         lines.push_back(std::format("{}: n={} mean={:.3f} p95={:.3f} p99={:.3f} max={:.3f}", names[i], total,
             sum / sorted.size(), percentile(0.95), percentile(0.99), sorted.back()));
     }
+    bool none;
+    {
+        std::lock_guard lock(mutex);
+        none = std::ranges::all_of(samples, [](const Samples& bucket) { return bucket.size == 0; });
+    }
+    if (!enabled() && none)
+        lines.push_back("No timing samples: type #perf on, play until it slows down, then #perf");
     return lines;
 }
 }

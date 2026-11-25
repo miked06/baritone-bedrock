@@ -32,6 +32,7 @@ private:
     std::unordered_set<std::string> names_;
     std::unordered_set<std::string> drops_;
     std::vector<BlockSelector> selectors_;
+    std::vector<std::string> display_;  // what the player typed, for messages (empty: the selectors)
 };
 
 // Finds the closest blocks matching a filter in the loaded chunks (Baritone's

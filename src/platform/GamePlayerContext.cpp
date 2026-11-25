@@ -643,6 +643,16 @@ std::vector<Vec3d> GamePlayerContext::fallingBlockPositions() const {
 }
 
 std::vector<baritone::EntityInfo> GamePlayerContext::entities() const {
+    std::lock_guard lock(entityCacheMutex_);
+    if (entityCacheTick_ != tick_ || entityCacheLevel_ != level_) {
+        entityCache_ = readEntities();
+        entityCacheTick_ = tick_;
+        entityCacheLevel_ = level_;
+    }
+    return entityCache_;
+}
+
+std::vector<baritone::EntityInfo> GamePlayerContext::readEntities() const {
     std::vector<baritone::EntityInfo> out;
     if (!level_) return out;
     for (sdk::Actor* actor : level_->actors()) {
