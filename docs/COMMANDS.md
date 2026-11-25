@@ -78,11 +78,13 @@ withdraws supplies and recovers it in Survival. See [portable shulker setup](WIN
 - An ore includes its deepslate variant: `diamond_ore` also mines `deepslate_diamond_ore`.
 - An item name means its ores: `diamond`, `iron`, `gold`, `coal`, `lapis`, `redstone`, `emerald`, `copper`, `quartz`, `netherite` (ancient debris).
 - In the nether, `gold` also mines `nether_gold_ore`. Java names like `nether_quartz_ore` work too.
+- `wood` (or `log`, `logs`, `tree`) means every natural log, bark block and nether stem: `oak_log`, `spruce_log`... `crimson_stem`. `leaves` and `planks` work the same way. Bedrock no longer has single `wood`, `log` or `leaves` blocks.
 
-When no ore is known, the bot goes down to a mining level and branch-mines: `legitMineYLevel` (-59, diamonds) by default, or the best level of the ore (iron 16, gold -16, lapis 0, coal/copper/emerald 48; in the nether 15, quartz and nether gold 30). In survival you need a good enough pickaxe in your hotbar; in creative everything breaks at once.
+When nothing matching is known and the blocks are found on the surface (logs, sand, flowers...), the bot walks away from where it started on the surface while it keeps scanning the chunks that come into range. When no ore is known, the bot goes down to a mining level and branch-mines: `legitMineYLevel` (-59, diamonds) by default, or the best level of the ore (iron 16, gold -16, lapis 0, coal/copper/emerald 48; in the nether 15, quartz and nether gold 30). In survival you need a good enough pickaxe in your hotbar; in creative everything breaks at once.
 
 ```text
 #mine 64 diamond
+#mine 32 wood
 #mine iron coal
 #mine ancient_debris
 ```

@@ -2,6 +2,33 @@
 
 All notable changes to Baritone Bedrock. Versions follow [semantic versioning](https://semver.org/).
 
+## Unreleased
+
+- `#mine wood` (also `log`, `logs`, `tree`) now mines every natural log, bark
+  block and nether stem. It used to look for the old `minecraft:wood` block,
+  which no longer exists in Bedrock, find nothing and dig a branch mine at
+  Y=-59. `leaves` and `planks` are understood the same way.
+- When no matching block is known, `#mine` only digs down to branch mine for
+  underground blocks (ores, deepslate, stone...). Surface blocks such as logs
+  or sand are searched by walking away on the surface instead.
+- A species name means its logs: `#mine oak`, `#mine oak wood` and
+  `#mine birch log` mine only that species instead of looking for blocks
+  named `oak` and `wood`.
+- Read the level's entity list once per game tick. Mining, survival and
+  pathing asked for it several times per tick, and each read checked the
+  memory of every dropped item. The cost grew with the items left behind by
+  mining until the game slowed down after a few minutes.
+- **Fix the game slowing down over time.** Every check of a game pointer asked
+  Windows `VirtualQuery`, which measures the whole memory region around the
+  address. In Minecraft's multi-gigabyte heap one call took milliseconds and
+  got slower as the game used more memory: profiled in game, these checks were
+  78% of the bot's tick (armor, hunger and inventory reads every tick), up to
+  55 ms per tick while mining. Pointers are now checked by reading them under
+  a structured exception handler, which restores guard pages it touches.
+- `#perf` also reports free RAM and the commit charge, and warns when Windows
+  is low on memory: the game then slows down while it pages, whatever the bot
+  does. Without samples it explains that `#perf on` starts the capture.
+
 ## 1.10.0
 
 - **Experimental advanced parkour** supports offset jumps, low ceilings, and

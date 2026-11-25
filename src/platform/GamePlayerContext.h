@@ -1,4 +1,5 @@
 #pragma once
+#include <mutex>
 #include <optional>
 #include <map>
 #include <vector>
@@ -163,6 +164,15 @@ private:
     std::optional<baritone::BlockPos> breaking_;
     uint64_t tick_ = 100;
     uint64_t slotChangedAt_ = 0;
+
+    // The entity list of the current tick. Reading it walks every actor of the level with
+    // several memory checks per item, and processes ask for it several times per tick:
+    // with the drops left behind by mining, that grew into seconds of work per minute.
+    std::vector<baritone::EntityInfo> readEntities() const;
+    mutable std::mutex entityCacheMutex_;
+    mutable std::vector<baritone::EntityInfo> entityCache_;
+    mutable uint64_t entityCacheTick_ = 0;  // tick_ starts at 100: 0 is never current
+    mutable const void* entityCacheLevel_ = nullptr;
 
     // Inventory moves sent to the server, applied to the client's slots once accepted
     struct Move {

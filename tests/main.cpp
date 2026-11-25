@@ -1008,6 +1008,61 @@ TEST(mine_filter_ore_families) {
     CHECK(stone.names().size() == 1 && stone.matchesName("minecraft:stone"));
 }
 
+TEST(mine_filter_wood_means_every_log) {
+    // Bedrock has no "minecraft:wood" block any more: "#mine wood" used to find nothing and
+    // branch mine at Y=-59 instead of cutting trees.
+    BlockFilter wood({"wood"});
+    CHECK(wood.matchesName("minecraft:oak_log"));
+    CHECK(wood.matchesName("minecraft:spruce_log"));
+    CHECK(wood.matchesName("minecraft:cherry_log"));
+    CHECK(wood.matchesName("minecraft:pale_oak_log"));
+    CHECK(wood.matchesName("minecraft:crimson_stem"));
+    CHECK(wood.matchesName("minecraft:birch_wood"));
+    CHECK(!wood.matchesName("minecraft:wood"));
+    CHECK(!wood.matchesName("minecraft:stripped_oak_log"));
+    CHECK(wood.dropNames().contains("minecraft:jungle_log"));
+    CHECK_MSG(wood.toString() == "wood", wood.toString());
+    CHECK(BlockFilter({"logs"}).matchesName("minecraft:dark_oak_log"));
+    CHECK(BlockFilter({"leaves"}).matchesName("minecraft:mangrove_leaves"));
+    CHECK(BlockFilter({"planks"}).matchesName("minecraft:bamboo_planks"));
+    // states carry over to the whole family, specific names stay specific
+    CHECK(BlockFilter({"log[pillar_axis=y]"}).toString() == "log[pillar_axis=y]");
+    BlockFilter oak({"oak_log"});
+    CHECK(oak.names().size() == 1 && oak.toString() == "minecraft:oak_log");
+    CHECK(BlockFilter({"diamond"}).toString().contains("minecraft:deepslate_diamond_ore"));
+    // "#mine 32 oak wood": one species, not "oak" + every log
+    BlockFilter oakWood({"oak", "wood"});
+    CHECK(oakWood.matchesName("minecraft:oak_log"));
+    CHECK(!oakWood.matchesName("minecraft:spruce_log"));
+    CHECK_MSG(oakWood.toString() == "oak", oakWood.toString());
+    CHECK(BlockFilter({"Birch", "log"}).matchesName("minecraft:birch_log"));
+    CHECK(BlockFilter({"crimson", "stem"}).matchesName("minecraft:crimson_stem"));
+    BlockFilter two({"oak", "birch"});
+    CHECK(two.matchesName("minecraft:oak_log") && two.matchesName("minecraft:birch_log"));
+}
+
+TEST(mine_surface_block_explores_instead_of_digging_down) {
+    SettingsGuard guard;
+    Settings::get().exploreForBlocks = true;
+    Settings::get().legitMine = false;
+    TestWorld world(1);
+    world.floor(0, Blocks::get().stone);
+    test::TestPlayer player;
+    Baritone bot(player, [](const std::string&, bool) {});
+    bot.tick(world.snapshot());
+    auto goalOf = [&](const char* block) {
+        bot.mine().mine(0, BlockFilter({block}));
+        auto command = bot.mine().onTick(false, true);
+        std::string goal = command && command->goal ? command->goal->toString() : "none";
+        bot.mine().onLostControl();
+        return goal;
+    };
+    const std::string wood = goalOf("wood");
+    CHECK_MSG(wood.starts_with("GoalRunAway"), wood);
+    const std::string diamond = goalOf("diamond");
+    CHECK_MSG(diamond.starts_with("GoalYLevel"), diamond);  // ores still go down to their level
+}
+
 TEST(mine_branch_goal_digs_down) {
     // creative (everything breaks at once), no ore known: down to the mining level, then tunnels
     const Blocks& b = Blocks::get();
@@ -3203,6 +3258,13 @@ TEST(performance_random_terrain) {
 }
 
 }  // namespace
+
+
+std::string memoryProbeSelfTest();  // MemoryProbeTest.cpp: needs Windows.h, kept out of this file
+TEST(memory_probe_rejects_unmapped_and_keeps_guard_pages) {
+    const std::string failure = memoryProbeSelfTest();
+    CHECK_MSG(failure.empty(), failure);
+}
 
 int main(int argc, char** argv) {
     std::string filter;

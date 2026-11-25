@@ -260,6 +260,17 @@ int MineProcess::branchY() const {
     return y;
 }
 
+// Whether the wanted blocks are found underground, where a branch mine makes sense. Logs,
+// sand, flowers... are on the surface: digging down to Y=-59 only makes tunnels.
+bool MineProcess::undergroundTarget() const {
+    return std::ranges::any_of(filter_->names(), [](const std::string& n) {
+        return n.ends_with("_ore") || n == "minecraft:ancient_debris" || n.starts_with("minecraft:deepslate") ||
+               n.starts_with("minecraft:cobbled_deepslate") || n == "minecraft:stone" || n == "minecraft:tuff" ||
+               n == "minecraft:calcite" || n.contains("amethyst") || n == "minecraft:obsidian" ||
+               n == "minecraft:mob_spawner" || n == "minecraft:dripstone_block" || n == "minecraft:pointed_dripstone";
+    });
+}
+
 std::optional<PathingCommand> MineProcess::updateGoal() {
     CalculationContext& ctx = *baritone_.liveContext();
     if (!knownOreLocations_.empty()) {
@@ -278,8 +289,18 @@ std::optional<PathingCommand> MineProcess::updateGoal() {
     // nothing known: go down to the mining level, then branch mine away from where we got there
     // (Baritone's branchPointRunaway keeping legitMineYLevel; first going straight to the level
     // makes the bot dig down instead of wandering on the surface)
-    int y = branchY();
     BlockPos feet = baritone_.playerFeet();
+    if (!undergroundTarget()) {
+        // surface blocks: walk away from where the search started (at any height, so the bot
+        // stays on the ground) while the rescans look at the chunks that come into range
+        if (!branchPoint_) {
+            branchPoint_ = feet;
+            baritone_.logDirect(std::format("No known {} nearby: exploring the surface", filter_->toString()), false);
+        }
+        return PathingCommand{std::make_shared<GoalRunAway>(1, std::nullopt, std::vector<BlockPos>{*branchPoint_}, true),
+                              PathingCommandType::RevalidateGoalAndPath};
+    }
+    int y = branchY();
     if (!branchPoint_) {
         if (std::abs(feet.y - y) > 1) {
             if (!announcedDescent_) {

@@ -80,6 +80,53 @@ static std::vector<std::string> oreFamily(const std::string& n) {
     return out;
 }
 
+// Generic words for a group of blocks. Bedrock split its legacy "log", "log2", "wood",
+// "leaves" and "planks" blocks into one block per species, so "#mine wood" would otherwise
+// look for a block that no longer exists (and branch mine forever instead of cutting trees).
+static const std::vector<std::string>* blockFamily(const std::string& n) {
+    static const std::vector<std::string> species{"oak",      "spruce", "birch",  "jungle", "acacia",
+                                                  "dark_oak", "mangrove", "cherry", "pale_oak"};
+    static const std::vector<std::string> logs = [] {
+        std::vector<std::string> out;
+        for (const std::string& s : species) out.push_back("minecraft:" + s + "_log");
+        for (const std::string& s : species) out.push_back("minecraft:" + s + "_wood");
+        for (const char* s : {"crimson_stem", "warped_stem", "crimson_hyphae", "warped_hyphae"})
+            out.push_back(std::string("minecraft:") + s);
+        return out;
+    }();
+    static const std::vector<std::string> leaves = [] {
+        std::vector<std::string> out;
+        for (const std::string& s : species) out.push_back("minecraft:" + s + "_leaves");
+        out.push_back("minecraft:azalea_leaves");
+        out.push_back("minecraft:azalea_leaves_flowered");
+        return out;
+    }();
+    static const std::vector<std::string> planks = [] {
+        std::vector<std::string> out;
+        for (const std::string& s : species) out.push_back("minecraft:" + s + "_planks");
+        for (const char* s : {"crimson_planks", "warped_planks", "bamboo_planks"}) out.push_back(std::string("minecraft:") + s);
+        return out;
+    }();
+    // one species: "oak" (or "#mine oak wood", merged by the constructor) means its logs
+    static const std::unordered_map<std::string, std::vector<std::string>> speciesLogs = [] {
+        std::unordered_map<std::string, std::vector<std::string>> out;
+        for (const std::string& s : species) out["minecraft:" + s] = {"minecraft:" + s + "_log", "minecraft:" + s + "_wood"};
+        out["minecraft:crimson"] = {"minecraft:crimson_stem", "minecraft:crimson_hyphae"};
+        out["minecraft:warped"] = {"minecraft:warped_stem", "minecraft:warped_hyphae"};
+        return out;
+    }();
+    if (auto it = speciesLogs.find(n); it != speciesLogs.end()) return &it->second;
+    static const std::unordered_map<std::string, const std::vector<std::string>*> families{
+        {"minecraft:wood", &logs},   {"minecraft:woods", &logs},  {"minecraft:log", &logs},
+        {"minecraft:logs", &logs},   {"minecraft:log2", &logs},   {"minecraft:tree", &logs},
+        {"minecraft:trees", &logs},  {"minecraft:stem", &logs},   {"minecraft:stems", &logs},
+        {"minecraft:leaves", &leaves}, {"minecraft:leaves2", &leaves}, {"minecraft:leaf", &leaves},
+        {"minecraft:planks", &planks}, {"minecraft:plank", &planks},
+    };
+    auto it = families.find(n);
+    return it == families.end() ? nullptr : it->second;
+}
+
 BlockFilter::BlockFilter(const std::vector<std::string>& names) {
     auto add = [this](const std::string& block, const BlockSelector& selector) {
         names_.insert(block);
@@ -95,19 +142,44 @@ BlockFilter::BlockFilter(const std::vector<std::string>& names) {
         {"minecraft:cobweb", "minecraft:web"},                     {"minecraft:spawner", "minecraft:mob_spawner"},
         {"minecraft:nether_portal", "minecraft:portal"},           {"minecraft:sugar_cane", "minecraft:reeds"},
     };
-    for (const std::string& raw : names) {
+    // "#mine oak wood" arrives as two words: "oak" then "wood" means oak logs, not every log
+    std::vector<std::string> merged;
+    for (std::size_t i = 0; i < names.size(); ++i) {
+        merged.push_back(names[i]);
+        if (i + 1 >= names.size() || names[i].find_first_of("[:") != std::string::npos) continue;
+        const std::string next = normalize(names[i + 1]);
+        const bool woodWord = next == "minecraft:wood" || next == "minecraft:log" || next == "minecraft:logs" ||
+                              next == "minecraft:stem" || next == "minecraft:stems";
+        const auto* group = blockFamily(normalize(names[i]));
+        if (woodWord && group && group->size() == 2) ++i;  // a species: its own logs only
+    }
+    for (const std::string& raw : merged) {
         const BlockSelector selector = BlockSelector::parse(raw);
         std::string n = selector.name;
         if (auto it = javaNames.find(n); it != javaNames.end()) n = it->second;
+        if (const auto* group = blockFamily(n)) {
+            for (const std::string& block : *group) add(block, selector);
+            BlockSelector label = selector;
+            label.name = n.substr(n.find(':') + 1);  // "wood", not 22 block names in every message
+            display_.push_back(label.toString());
+            continue;
+        }
+        const std::size_t first = selectors_.size();
         std::vector<std::string> family = oreFamily(n);
         for (const std::string& ore : family) add(ore, selector);
         if (family.empty() || dropTable().contains(n)) add(n, selector);  // an item name alone is not a block
+        for (std::size_t i = first; i < selectors_.size(); ++i) display_.push_back(selectors_[i].toString());
     }
 }
 
 std::string BlockFilter::toString() const {
     std::string out;
     std::unordered_set<std::string> printed;
+    if (!display_.empty()) {
+        for (const std::string& text : display_)
+            if (printed.insert(text).second) out += (out.empty() ? "" : ", ") + text;
+        return out;
+    }
     for (const BlockSelector& selector : selectors_) {
         const std::string text = selector.toString();
         if (printed.insert(text).second) out += (out.empty() ? "" : ", ") + text;
