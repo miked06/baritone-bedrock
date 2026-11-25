@@ -2,7 +2,7 @@
 
 All notable changes to Baritone Bedrock. Versions follow [semantic versioning](https://semver.org/).
 
-## Unreleased
+## 1.10.1
 
 - `#mine wood` (also `log`, `logs`, `tree`) now mines every natural log, bark
   block and nether stem. It used to look for the old `minecraft:wood` block,
