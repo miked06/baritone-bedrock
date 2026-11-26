@@ -9,6 +9,7 @@
 #include "baritone/Settings.h"
 #include "baritone/behavior/InventoryBehavior.h"
 #include "baritone/pathing/movement/MovementHelper.h"
+#include "baritone/pathing/movement/CornerJump.h"
 
 namespace baritone {
 
@@ -245,6 +246,8 @@ double Movement::calculateCost(CalculationContext& ctx) const {
             return res.y == dest_.y ? res.cost : COST_INF;
         case MovementType::Pillar: return movement_costs::pillar(ctx, src_.x, src_.y, src_.z);
         case MovementType::Downward: return movement_costs::downward(ctx, src_.x, src_.y, src_.z);
+        case MovementType::ParkourCorner: return COST_INF;
+        case MovementType::ParkourShulker: return movement_costs::shulkerClimb(ctx, src_, dest_);
         case MovementType::Parkour: {
             if (auto jump = movement_costs::parkourJump(ctx, src_, dest_)) return jump->cost;
             BlockPos d = direction();
@@ -1143,6 +1146,202 @@ private:
 
 // ===========================================================================
 
+class MovementParkourCorner : public Movement {
+public:
+    MovementParkourCorner(BlockPos src, BlockPos dest) : Movement(MovementType::ParkourCorner, src, dest, {}, std::nullopt) {}
+
+    double calculateCost(CalculationContext& calc) const override {
+        if (!movement_costs::isCornerJump(calc, src_, dest_)) return COST_INF;
+        if (!route_) route_ = movement_costs::planCornerJump(calc, src_, dest_);
+        return route_ ? 16.0 + route_->inputs.size() + calc.jumpPenalty : COST_INF;
+    }
+
+    bool safeToCancel(ExecContext& ctx) const override { return !playing_ || ctx.player.onGround(); }
+
+    void reset() override {
+        Movement::reset();
+        playing_ = false;
+        route_.reset();
+        tick_ = 0;
+    }
+
+protected:
+    std::unordered_set<BlockPos> calculateValidPositions() const override {
+        std::unordered_set<BlockPos> positions;
+        for (int x = std::min(src_.x, dest_.x) - 1; x <= std::max(src_.x, dest_.x) + 1; ++x)
+            for (int z = std::min(src_.z, dest_.z) - 1; z <= std::max(src_.z, dest_.z) + 1; ++z)
+                for (int y = std::min(src_.y, dest_.y); y <= src_.y + 1; ++y) positions.insert({x,y,z});
+        return positions;
+    }
+
+    MovementState& updateState(ExecContext& ctx, MovementState& state) override {
+        Movement::updateState(ctx, state);
+        if (state.status != MovementStatus::Running) return state;
+        const Vec3d pos = ctx.player.position(), velocity = ctx.player.velocity();
+        if (pos.y < std::min(src_.y, dest_.y) - 0.08) return state.setStatus(MovementStatus::Unreachable);
+        const auto view = ctx.playerRotations();
+        auto pointAt = [&](float yaw) { state.setTarget({Rotation{yaw, 0}, false}); };
+        auto centerOn = [&](Vec3d target) {
+            const double dx = target.x - pos.x - velocity.x * 1.9, dz = target.z - pos.z - velocity.z * 1.9;
+            const float yaw = static_cast<float>(std::atan2(-dx, dz) * 180 / std::numbers::pi);
+            pointAt(yaw);
+            if (std::hypot(dx, dz) > 0.028 && std::abs(std::remainder(view.yaw - yaw, 360.f)) < 14) {
+                state.setInput(Input::Sneak, true).setInput(Input::MoveForward, true);
+            }
+        };
+
+        if (!route_ && calculateCost(ctx.calc) >= COST_INF) return state.setStatus(MovementStatus::Unreachable);
+        if (!playing_) {
+            if (!ctx.player.onGround()) return state;
+            if (std::hypot(pos.x - route_->start.x, pos.z - route_->start.z) > 0.045 ||
+                std::hypot(velocity.x, velocity.z) > 0.018) {
+                centerOn(route_->start);
+                return state;
+            }
+            const float yaw = route_->inputs.front().yaw;
+            pointAt(yaw);
+            if (std::abs(std::remainder(view.yaw - yaw, 360.f)) > 2) return state;
+            auto actual = movement_costs::planCornerJump(ctx.calc, src_, dest_, pos);
+            if (!actual) return state.setStatus(MovementStatus::Unreachable);
+            if (std::abs(std::remainder(view.yaw - actual->inputs.front().yaw, 360.f)) > 2) {
+                route_ = std::move(actual);
+                return state;
+            }
+            route_ = std::move(actual);
+            playing_ = true;
+        }
+        if (tick_ < route_->inputs.size()) {
+            const auto& input = route_->inputs[tick_];
+            pointAt(route_->inputs[std::min(tick_ + 1, route_->inputs.size() - 1)].yaw);
+            state.setInput(Input::MoveForward, input.forward);
+            state.setInput(Input::Sprint, input.forward);
+            state.setInput(Input::Jump, input.jump);
+            ++tick_;
+            return state;
+        }
+        if (ctx.player.onGround()) {
+            if (ctx.playerFeet() == dest_) return state.setStatus(MovementStatus::Success);
+            centerOn(Vec3d::center(dest_));
+        }
+        return state;
+    }
+
+private:
+    mutable std::optional<movement_costs::CornerJump> route_;
+    bool playing_ = false;
+    std::size_t tick_ = 0;
+};
+
+class MovementParkourShulker : public Movement {
+public:
+    MovementParkourShulker(BlockPos src, BlockPos dest) : Movement(MovementType::ParkourShulker, src, dest, {}, std::nullopt) {}
+
+    bool safeToCancel(ExecContext&) const override { return phase_ == Phase::Align; }
+    void reset() override {
+        Movement::reset();
+        phase_ = Phase::Align;
+        phaseTicks_ = 0;
+    }
+
+protected:
+    std::unordered_set<BlockPos> calculateValidPositions() const override {
+        std::unordered_set<BlockPos> positions;
+        for (int y = src_.y; y <= dest_.y + 1; ++y) {
+            positions.insert({src_.x, y, src_.z});
+            positions.insert({dest_.x, y, dest_.z});
+        }
+        return positions;
+    }
+
+    MovementState& updateState(ExecContext& ctx, MovementState& state) override {
+        Movement::updateState(ctx, state);
+        if (state.status != MovementStatus::Running) return state;
+        auto& player = ctx.player;
+        const Vec3d p = player.position(), v = player.velocity();
+        const BlockPos lower{dest_.x, src_.y, dest_.z};
+        const BlockPos upper = lower.above();
+        const auto d = dest_ - src_;
+        const float heading = yawTo(d.x, d.z);
+        auto advance = [&](Phase phase) { phase_ = phase; phaseTicks_ = 0; };
+        auto abort = [&]() -> MovementState& {
+            if (player.ownedContainerReady()) player.closeOwnedContainer();
+            return state.setStatus(MovementStatus::Unreachable);
+        };
+        if (++phaseTicks_ > (phase_ == Phase::Align ? 85 : 24) ||
+            p.y < src_.y - 0.1 || calculateCost(ctx.calc) >= COST_INF) return abort();
+        state.setTarget({Rotation{heading, 0}, false});
+        switch (phase_) {
+            case Phase::Align: {
+                const double x = src_.x + 0.5 - d.x * 0.255;
+                const double z = src_.z + 0.5 - d.z * 0.255;
+                if (!player.onGround()) return state;
+                if (std::hypot(p.x - x, p.z - z) > 0.10 || std::hypot(v.x, v.z) > 0.02) {
+                    const double dx = x - p.x - v.x * 1.9, dz = z - p.z - v.z * 1.9;
+                    const float yaw = yawTo(dx, dz);
+                    state.setTarget({Rotation{yaw, 0}, false});
+                    if (std::hypot(dx, dz) > 0.03 && std::abs(std::remainder(player.rotation().yaw - yaw, 360.f)) < 12)
+                        state.setInput(Input::MoveForward, true).setInput(Input::Sneak, true);
+                    return state;
+                }
+                if (player.containerOpen()) return abort();
+                if (std::abs(std::remainder(player.rotation().yaw - heading, 360.f)) <= 3 &&
+                    player.openContainerAt(lower)) advance(Phase::LowerOpen);
+                break;
+            }
+            case Phase::LowerOpen:
+                if (phaseTicks_ >= 12 && player.ownedContainerReady()) {
+                    player.closeOwnedContainer();
+                    advance(Phase::LowerClosing);
+                }
+                break;
+            case Phase::LowerClosing:
+                if (player.containerOpen()) break;
+                state.setInput(Input::Jump, true);
+                advance(Phase::DoubleJump);
+                break;
+            case Phase::DoubleJump:
+                if (d.y == 2 && p.y > dest_.y + 0.02) {
+                    advance(Phase::FinalJump);
+                    state.setInput(Input::MoveForward, ctx.playerFeet() != dest_);
+                    break;
+                }
+                if (p.y > src_.y + 2.10 && v.y > 0 && player.openContainerAt(upper)) {
+                    advance(Phase::UpperOpen);
+                    break;
+                }
+                state.setInput(Input::Jump, true).setInput(Input::MoveForward, true);
+                break;
+            case Phase::UpperOpen:
+                if (phaseTicks_ >= 7 && player.ownedContainerReady() && p.y <= src_.y + 2.06) {
+                    if (p.y < src_.y + 1.84) return abort();
+                    player.closeOwnedContainer();
+                    advance(Phase::UpperClosing);
+                }
+                break;
+            case Phase::UpperClosing:
+                if (player.containerOpen()) break;
+                advance(Phase::FinalJump);
+                [[fallthrough]];
+            case Phase::FinalJump:
+                if (ctx.playerFeet() == dest_ && player.onGround() && std::abs(p.y - dest_.y) < 0.035)
+                    return state.setStatus(MovementStatus::Success);
+                if (p.y < src_.y + 1.80) return abort();
+                state.setInput(Input::Jump, p.y < dest_.y - 0.04);
+                state.setInput(Input::MoveForward, ctx.playerFeet() != dest_);
+                break;
+        }
+        return state;
+    }
+
+private:
+    static float yawTo(double x, double z) {
+        return static_cast<float>(std::atan2(-x, z) * 180 / std::numbers::pi);
+    }
+    enum class Phase { Align, LowerOpen, LowerClosing, DoubleJump, UpperOpen, UpperClosing, FinalJump };
+    Phase phase_ = Phase::Align;
+    int phaseTicks_ = 0;
+};
+
 std::unique_ptr<Movement> Movement::create(const MovementSpec& spec) {
     std::unique_ptr<Movement> m;
     switch (spec.type) {
@@ -1154,6 +1353,8 @@ std::unique_ptr<Movement> Movement::create(const MovementSpec& spec) {
         case MovementType::Pillar: m = std::make_unique<MovementPillar>(spec.src, spec.dest); break;
         case MovementType::Downward: m = std::make_unique<MovementDownward>(spec.src, spec.dest); break;
         case MovementType::Parkour: m = std::make_unique<MovementParkour>(spec.src, spec.dest); break;
+        case MovementType::ParkourCorner: m = std::make_unique<MovementParkourCorner>(spec.src, spec.dest); break;
+        case MovementType::ParkourShulker: m = std::make_unique<MovementParkourShulker>(spec.src, spec.dest); break;
     }
     m->overrideCost(spec.cost);
     m->calculatedWhileLoaded = spec.calculatedWhileLoaded;

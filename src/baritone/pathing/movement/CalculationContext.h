@@ -63,6 +63,7 @@ public:
     double waterWalkSpeed, breakBlockAdditionalCost, jumpPenalty, walkOnWaterOnePenalty;
     double avoidBreakingMultiplier;
     std::unordered_set<std::string> blocksToAvoid, blocksToDisallowBreaking, blocksToAvoidBreaking;
+    std::vector<std::pair<BlockPos, BlockPos>> failedShulkerClimbs;
     int frostWalker = 0;
 
     // Set by the process in control (e.g. the builder must not break what it built).

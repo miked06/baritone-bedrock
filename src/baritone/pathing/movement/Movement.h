@@ -112,7 +112,7 @@ public:
 
     double getCost() const { return cost_; }
     void overrideCost(double cost) { cost_ = cost; }
-    double calculateCost(CalculationContext& ctx) const;
+    virtual double calculateCost(CalculationContext& ctx) const;
     double recalculateCost(CalculationContext& ctx) {
         cost_ = calculateCost(ctx);
         return cost_;

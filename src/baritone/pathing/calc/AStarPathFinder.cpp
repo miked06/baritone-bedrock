@@ -115,7 +115,7 @@ PathCalculationResult AStarPathFinder::calculate(long primaryTimeoutMs, long fai
                 int newZ = current->z + move.dz;
                 if (((newX >> 4) != (current->x >> 4) || (newZ >> 4) != (current->z >> 4)) && !ctx.isLoaded(newX, newZ)) {
                     // only check other chunks; unloaded = edge of what we know
-                    if (move.type != MovementType::Parkour) numEmptyChunk++;
+                    if (!isParkour(move.type)) numEmptyChunk++;
                     continue;
                 }
                 int newY = current->y + move.dy;

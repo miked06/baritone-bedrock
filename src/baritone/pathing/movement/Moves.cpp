@@ -5,6 +5,7 @@
 #include <numbers>
 
 #include "baritone/pathing/movement/MovementHelper.h"
+#include "baritone/pathing/movement/CornerJump.h"
 
 namespace baritone {
 
@@ -138,6 +139,27 @@ std::optional<ParkourJump> parkourJump(CalculationContext& ctx, const BlockPos& 
         }
     }
     return std::nullopt;
+}
+
+double shulkerClimb(CalculationContext& ctx, BlockPos src, BlockPos dest) {
+    const auto delta = dest - src;
+    if (!ctx.allowParkour || !ctx.allowParkourAscend || (delta.y != 2 && delta.y != 3) ||
+        std::abs(delta.x) + std::abs(delta.z) != 1 || !ctx.isLoadedLive(dest.x, dest.z) ||
+        std::ranges::find(ctx.failedShulkerClimbs, std::pair{src, dest}) != ctx.failedShulkerClimbs.end())
+        return COST_INF;
+    const BlockPos lower{dest.x, src.y, dest.z};
+    const auto isBox = [&](BlockPos p) {
+        return ctx.props(p.x, p.y, p.z).parkourSupport == ParkourSupport::ShulkerBox && ctx.permitsModify(p);
+    };
+    if (!isBox(lower) || (delta.y == 3 && !isBox(lower.above())) ||
+        !ctx.props(dest.x, dest.y - 1, dest.z).fullCube ||
+        !ctx.props(src.x, src.y - 1, src.z).fullCube) return COST_INF;
+    // The lids extend into the launch column. It needs room for three consecutive jumps.
+    for (int y = src.y; y <= dest.y + 2; ++y)
+        if (!fullyPassable(ctx, src.x, y, src.z) || ctx.isAvoided(ctx.props(src.x, y, src.z))) return COST_INF;
+    for (int y = dest.y; y <= dest.y + 2; ++y)
+        if (!fullyPassable(ctx, dest.x, y, dest.z) || ctx.isAvoided(ctx.props(dest.x, y, dest.z))) return COST_INF;
+    return (delta.y == 3 ? 64 : 42) + delta.y * ctx.jumpPenalty;
 }
 
 double traverse(CalculationContext& ctx, int x, int y, int z, int destX, int destZ) {
@@ -683,6 +705,19 @@ void applyParkourJump(const Move& m, CalculationContext& ctx, int x, int y, int 
     if (auto jump = parkourJump(ctx, src, dest)) res = {dest.x, dest.y, dest.z, jump->cost};
 }
 
+void applyCornerJump(const Move& m, CalculationContext& ctx, int x, int y, int z, MoveResult& res) {
+    const BlockPos src{x, y, z};
+    const BlockPos dest = src.offset(m.dx, m.dy, m.dz);
+    if (auto plan = planCornerJump(ctx, src, dest))
+        res = {dest.x, dest.y, dest.z, 16.0 + plan->inputs.size() + ctx.jumpPenalty};
+}
+
+void applyShulkerClimb(const Move& m, CalculationContext& ctx, int x, int y, int z, MoveResult& res) {
+    const BlockPos src{x, y, z};
+    const BlockPos dest = src.offset(m.dx, m.dy, m.dz);
+    res = {dest.x, dest.y, dest.z, shulkerClimb(ctx, src, dest)};
+}
+
 constexpr Direction N = Direction::North, S = Direction::South, E = Direction::East, W = Direction::West;
 
 }  // namespace
@@ -719,10 +754,21 @@ std::span<const Move> allMoves() {
     }};
     static const std::vector<Move> withParkour = [] {
         std::vector<Move> result(moves.begin(), moves.end());
+        for (auto dir : kHorizontals) {
+            const auto step = offsetOf(dir);
+            result.push_back({"PARKOUR_CORNER", MT::ParkourCorner, 2 * step.x, 0, 2 * step.z, false, false, dir, applyCornerJump});
+            result.push_back({"PARKOUR_CORNER", MT::ParkourCorner, 3 * step.x, 0, 3 * step.z, false, false, dir, applyCornerJump});
+            result.push_back({"PARKOUR_SHULKER", MT::ParkourShulker, step.x, 2, step.z, false, false, dir, applyShulkerClimb});
+            result.push_back({"PARKOUR_SHULKER", MT::ParkourShulker, step.x, 3, step.z, false, false, dir, applyShulkerClimb});
+        }
         for (int dx = -3; dx <= 3; ++dx) {
             for (int dz = -3; dz <= 3; ++dz) {
                 const int distance = dx * dx + dz * dz;
                 if (distance == 0 || distance > 13) continue;
+                if (distance == 10)
+                    result.push_back({"PARKOUR_CORNER", MT::ParkourCorner, dx, -1, dz, false, false, N, applyCornerJump});
+                if (distance == 8)
+                    result.push_back({"PARKOUR_CORNER", MT::ParkourCorner, dx, -2, dz, false, false, N, applyCornerJump});
                 for (int dy = -1; dy <= 1; ++dy) {
                     result.push_back({"PARKOUR_JUMP", MT::Parkour, dx, dy, dz, false, false, N, applyParkourJump});
                 }

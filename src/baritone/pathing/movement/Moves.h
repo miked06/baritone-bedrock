@@ -17,7 +17,11 @@ struct MoveResult {
     }
 };
 
-enum class MovementType : uint8_t { Traverse, Ascend, Descend, Fall, Diagonal, Pillar, Downward, Parkour };
+enum class MovementType : uint8_t { Traverse, Ascend, Descend, Fall, Diagonal, Pillar, Downward, Parkour, ParkourCorner, ParkourShulker };
+
+inline bool isParkour(MovementType type) {
+    return type == MovementType::Parkour || type == MovementType::ParkourCorner || type == MovementType::ParkourShulker;
+}
 
 // Every move the A* tries from a node (Baritone's Moves enum).
 struct Move {
@@ -54,6 +58,7 @@ struct ParkourJump {
     bool sprint;
 };
 std::optional<ParkourJump> parkourJump(CalculationContext& ctx, const BlockPos& src, const BlockPos& dest);
+double shulkerClimb(CalculationContext& ctx, BlockPos src, BlockPos dest);
 }  // namespace movement_costs
 
 }  // namespace baritone

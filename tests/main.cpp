@@ -356,6 +356,80 @@ TEST(parkour_diagonal) {
         CHECK_MSG(!(m.type == MovementType::Parkour && m.src == BlockPos{1, 1, 1}), describe(rw));
 }
 
+TEST(parkour_routes_around_a_corner) {
+    SettingsGuard guard;
+    Settings::get().allowParkour = true;
+    Settings::get().allowSprint = true;
+    Settings::get().allowBreak = false;
+    Settings::get().allowPlace = false;
+    const auto stone = Blocks::get().stone;
+    TestWorld w;
+    w.fill(0, 0, 0, 2, 0, 0, stone);
+    w.fill(1, 1, 0, 1, 3, 0, stone);
+    w.fill(-1, 0, -1, 3, 3, -1, stone);
+    const BlockPos start{0, 1, 0}, finish{2, 1, 0};
+    auto route = findPath(w, start, std::make_shared<GoalBlock>(finish));
+    CHECK_MSG(route.type == PathResultType::SuccessToGoal, describe(route));
+    CHECK_MSG(uses(route, MovementType::ParkourCorner), describe(route));
+
+    w.fill(-1, 0, 1, 3, 3, 1, stone);
+    route = findPath(w, start, std::make_shared<GoalBlock>(finish));
+    CHECK(route.type != PathResultType::SuccessToGoal);
+}
+
+TEST(parkour_turns_to_land_on_a_lower_platform) {
+    SettingsGuard guard;
+    Settings::get().allowParkour = true;
+    Settings::get().allowSprint = true;
+    Settings::get().allowBreak = false;
+    Settings::get().allowPlace = false;
+    const auto stone = Blocks::get().stone;
+    TestWorld w;
+    w.set(0, 0, 0, stone);
+    w.set(3, -1, 1, stone);
+    w.fill(-1, -1, -1, 4, 4, -1, stone);
+    w.fill(2, 1, 1, 2, 4, 1, stone);
+    const BlockPos start{0, 1, 0}, finish{3, 0, 1};
+    const auto route = findPath(w, start, std::make_shared<GoalBlock>(finish));
+    CHECK_MSG(route.type == PathResultType::SuccessToGoal, describe(route));
+    CHECK_MSG(uses(route, MovementType::ParkourCorner), describe(route));
+}
+
+TEST(parkour_plans_between_shulker_platforms) {
+    SettingsGuard guard;
+    Settings::get().allowParkour = true;
+    Settings::get().allowParkourAscend = true;
+    Settings::get().allowBreak = false;
+    Settings::get().allowPlace = false;
+    const auto stone = Blocks::get().stone;
+    BlockProps box;
+    box.name = "minecraft:black_shulker_box";
+    box.parkourSupport = ParkourSupport::ShulkerBox;
+    const auto shulker = BlockRegistry::get().add(box);
+    TestWorld w;
+    w.set(0, 0, 0, stone);
+    w.set(1, 1, 0, shulker);
+    w.set(1, 2, 0, shulker);
+    w.set(1, 3, 0, stone);
+    const BlockPos start{0, 1, 0}, finish{1, 4, 0};
+    auto route = findPath(w, start, std::make_shared<GoalBlock>(finish));
+    CHECK_MSG(route.type == PathResultType::SuccessToGoal, describe(route));
+    CHECK_MSG(uses(route, MovementType::ParkourShulker), describe(route));
+
+    w.set(2, 0, 0, stone);
+    CalculationContext ctx(w.snapshot(), {}, true);
+    ctx.failedShulkerClimbs.emplace_back(start, finish);
+    CHECK(movement_costs::shulkerClimb(ctx, start, finish) >= costs::COST_INF);
+    CHECK(movement_costs::shulkerClimb(ctx, {2, 1, 0}, finish) < costs::COST_INF);
+
+    w.set(1, 2, 0, stone);
+    w.set(1, 3, 0, kAir);
+    const BlockPos shorterFinish{1, 3, 0};
+    route = findPath(w, start, std::make_shared<GoalBlock>(shorterFinish));
+    CHECK_MSG(route.type == PathResultType::SuccessToGoal, describe(route));
+    CHECK_MSG(uses(route, MovementType::ParkourShulker), describe(route));
+}
+
 TEST(parkour_on_offset_rods) {
     SettingsGuard guard;
     Settings::get().allowParkour = true;

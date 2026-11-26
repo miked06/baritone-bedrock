@@ -100,6 +100,7 @@ private:
     std::thread calcThread_;
     GoalPtr goal_;
     BlockPos expectedSegmentStart_;
+    std::vector<std::pair<BlockPos, BlockPos>> failedShulkerClimbs_;
 
     bool safeToCancel_ = true;
     bool pauseRequested_ = false;

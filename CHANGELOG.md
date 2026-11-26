@@ -2,6 +2,16 @@
 
 All notable changes to Baritone Bedrock. Versions follow [semantic versioning](https://semver.org/).
 
+## 1.10.2
+
+- Experimental advanced parkour now plans curved jumps around obstacles,
+  including landings on lower platforms beneath overhangs.
+- Baritone can use the lids of one or two stacked shulker boxes to climb onto a
+  platform. If an approach fails, it can replan from another side.
+- Tested in Survival on Dean's Terrible Towers with breaking and placing disabled.
+  Baritone reached `-50 -31 -34` using `#goto`. The remaining climb through
+  offset shulker boxes and the finish at `-42 82 -37` are still unverified.
+
 ## 1.10.1
 
 - `#mine wood` (also `log`, `logs`, `tree`) now mines every natural log, bark

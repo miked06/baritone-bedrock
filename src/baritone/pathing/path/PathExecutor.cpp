@@ -249,6 +249,8 @@ bool PathExecutor::onTick(ExecContext& ctx) {
 
     MovementStatus movementStatus = movement->update(ctx);
     if (movementStatus == MovementStatus::Unreachable || movementStatus == MovementStatus::Failed) {
+        if (movement->type() == MovementType::ParkourShulker)
+            failedShulkerClimb_ = std::pair{movement->src(), movement->dest()};
         cancel(std::format("movement {} -> {} is not possible", movement->src(), movement->dest()));
         return true;
     }

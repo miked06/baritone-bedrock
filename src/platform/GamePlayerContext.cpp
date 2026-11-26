@@ -473,6 +473,16 @@ bool GamePlayerContext::openContainerAt(BlockPos pos) {
     baritone::BlockStateInterface blocks(world);
     auto aim = baritone::rotation_utils::calcRotationFromVec3d(eyePosition(), target, rotation());
     auto hit = baritone::rayTrace(blocks, eyePosition(), aim, blockReachDistance());
+    if ((!hit || hit->pos != pos) && name.ends_with("shulker_box")) {
+        // A block stacked on the box can hide its center while its side is still visible.
+        for (auto face : baritone::kHorizontals) {
+            const auto offset = baritone::offsetOf(face);
+            const auto side = target + baritone::Vec3d{offset.x * 0.49, 0, offset.z * 0.49};
+            aim = baritone::rotation_utils::calcRotationFromVec3d(eyePosition(), side, rotation());
+            hit = baritone::rayTrace(blocks, eyePosition(), aim, blockReachDistance());
+            if (hit && hit->pos == pos) break;
+        }
+    }
     if (!hit || hit->pos != pos) return false;
     player_->gameMode()->buildBlock(toSdk(pos), static_cast<sdk::Face>(hit->face));
     containerOpening_ = std::pair{pos, tick_}; containerClosing_ = false; transferError_.clear();

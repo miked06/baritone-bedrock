@@ -82,6 +82,7 @@ std::optional<double> PathingBehavior::ticksRemainingInSegment() const {
 
 void PathingBehavior::secretInternalSetGoal(GoalPtr goal) {
     std::lock_guard lock(planLock_);
+    if (goal != goal_ && (!goal || !goal_ || !goal->sameAs(*goal_))) failedShulkerClimbs_.clear();
     goal_ = std::move(goal);
 }
 
@@ -216,6 +217,7 @@ void PathingBehavior::findPathInNewThread(const BlockPos& start, bool talkAboutI
         if (pos && !world_->isLoaded(pos->x >> 4, pos->z >> 4)) transformed = std::make_shared<GoalXZ>(pos->x, pos->z);
     }
     auto context = std::make_unique<CalculationContext>(world_, inventory_.abilities(), true);
+    context->failedShulkerClimbs = failedShulkerClimbs_;
     if (customizer_) customizer_(*context);
     Favoring favoring(current_ ? current_->path() : nullptr, context->backtrackCostFavoringCoefficient);
     if (s.avoidance) {  // Java Avoidance.create
@@ -291,6 +293,7 @@ void PathingBehavior::beginTick(std::shared_ptr<const WorldSnapshot> world) {
     }
     liveCalc_ = std::make_unique<CalculationContext>(world_, inventory_.abilities(), false);
     std::lock_guard plan(planLock_);
+    liveCalc_->failedShulkerClimbs = failedShulkerClimbs_;
     expectedSegmentStart_ = pathStart();
 }
 
@@ -344,6 +347,14 @@ void PathingBehavior::tickPath() {
     producedOutput_ = true;
 
     if (current_->failed() || current_->finished()) {
+        if (const auto& climb = current_->failedShulkerClimb(); climb &&
+            std::ranges::find(failedShulkerClimbs_, *climb) == failedShulkerClimbs_.end()) {
+            // A box can look usable from either side in the block snapshot, but its lid only opens one way.
+            failedShulkerClimbs_.push_back(*climb);
+            next_.reset();
+            std::lock_guard calc(calcLock_);
+            if (inProgress_) inProgress_->cancel();
+        }
         if (current_->failed() && current_->failReason() && Settings::get().chatDebug) {
             notify_("Segment cancelled: " + *current_->failReason(), true);
         }
@@ -399,7 +410,7 @@ std::string PathingBehavior::debugState() const {
     if (!current_) return "idle";
     Movement* m = current_->currentMovement();
     if (!m) return "done";
-    static constexpr const char* types[] = {"Traverse", "Ascend", "Descend", "Fall", "Diagonal", "Pillar", "Downward", "Parkour"};
+    static constexpr const char* types[] = {"Traverse", "Ascend", "Descend", "Fall", "Diagonal", "Pillar", "Downward", "Parkour", "ParkourCorner", "ParkourShulker"};
     static constexpr const char* statuses[] = {"Prepping", "Waiting", "Running", "Success", "Unreachable", "Failed", "Canceled"};
     return std::format("{} {} -> {} {}", types[static_cast<int>(m->type())], m->src(), m->dest(),
                        statuses[static_cast<int>(m->state().status)]);

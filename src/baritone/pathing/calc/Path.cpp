@@ -25,7 +25,7 @@ std::optional<MovementSpec> runBackwards(CalculationContext& ctx, const BlockPos
         res.reset();
         move.apply(move, ctx, src.x, src.y, src.z, res);
         if (res.cost >= costs::COST_INF) {
-            if (!fallback && !move.dynamicXZ && !move.dynamicY && move.type != MovementType::Parkour)
+            if (!fallback && !move.dynamicXZ && !move.dynamicY && !isParkour(move.type))
                 fallback = MovementSpec{move.type, src, dest, nodeCost, loaded};
             continue;
         }

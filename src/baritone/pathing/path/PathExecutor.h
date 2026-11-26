@@ -21,6 +21,7 @@ public:
     bool finished() const { return pathPosition_ >= path_->length(); }
     bool failed() const { return failed_; }
     std::optional<std::string> failReason() const { return failReason_; }
+    const auto& failedShulkerClimb() const { return failedShulkerClimb_; }
     Movement* currentMovement() const {
         return pathPosition_ < movements_.size() ? movements_[pathPosition_].get() : nullptr;
     }
@@ -63,6 +64,7 @@ private:
     bool failed_ = false;
     bool sprintNextTick_ = false;
     std::optional<std::string> failReason_;
+    std::optional<std::pair<BlockPos, BlockPos>> failedShulkerClimb_;
     MovementState output_;
     std::vector<BlockPos> toBreak_, toPlace_, toWalkInto_;
     int depth_ = 0;  // re-entrant onTick calls in one tick
