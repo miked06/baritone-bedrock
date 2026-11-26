@@ -176,8 +176,11 @@ bool PathExecutor::onTick(ExecContext& ctx) {
         return true;
     }
     if (!movement->validPositions().contains(whereAmI)) {
-        for (std::size_t i = 0; i < pathPosition_ && i < movements_.size(); ++i) {
-            // lagged back: go back to that movement
+        for (std::size_t i = std::min(pathPosition_, movements_.size()); i-- > 0;) {
+            // lagged back: go back to that movement. Bedrock addition: the most recent one that
+            // holds us (Baritone takes the first): on a parkour path the jump zones of earlier
+            // movements overlap the cells of later ones, and going back to one of them restarts a
+            // jump from the wrong place (in game: a ladder hop from the top of the pillar above it).
             if (movements_[i]->validPositions().contains(whereAmI)) {
                 std::size_t previous = pathPosition_;
                 pathPosition_ = i;

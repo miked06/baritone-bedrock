@@ -96,7 +96,7 @@ bool PathingBehavior::secretInternalSetGoalAndPath(GoalPtr goal) {
     }
     if (current_) return false;
     std::lock_guard calc(calcLock_);
-    if (inProgress_) return false;
+    if (inProgress_ || waitingToLand()) return false;
     findPathInNewThread(expectedSegmentStart_, true);
     return true;
 }
@@ -292,6 +292,13 @@ void PathingBehavior::beginTick(std::shared_ptr<const WorldSnapshot> world) {
         return;
     }
     liveCalc_ = std::make_unique<CalculationContext>(world_, inventory_.abilities(), false);
+    {
+        ExecContext ctx{player_, *liveCalc_, inventory_, {}};
+        const BlockProps& at = ctx.props(ctx.playerFeet());
+        const bool airborne = player_.valid() && !player_.onGround() && !player_.isInWater() && !at.hasFluid() &&
+                              !helper::isClimbable(at);
+        airborneTicks_ = airborne ? airborneTicks_ + 1 : 0;
+    }
     std::lock_guard plan(planLock_);
     liveCalc_->failedShulkerClimbs = failedShulkerClimbs_;
     expectedSegmentStart_ = pathStart();
@@ -381,6 +388,7 @@ void PathingBehavior::tickPath() {
         }
         std::lock_guard calc(calcLock_);
         if (inProgress_) return;  // the next segment is still being calculated
+        if (waitingToLand()) return;  // e.g. a failed jump: plan again from where we land
         findPathInNewThread(expectedSegmentStart_, true);
         return;
     }
@@ -410,7 +418,7 @@ std::string PathingBehavior::debugState() const {
     if (!current_) return "idle";
     Movement* m = current_->currentMovement();
     if (!m) return "done";
-    static constexpr const char* types[] = {"Traverse", "Ascend", "Descend", "Fall", "Diagonal", "Pillar", "Downward", "Parkour", "ParkourCorner", "ParkourShulker"};
+    static constexpr const char* types[] = {"Traverse", "Ascend", "Descend", "Fall", "Diagonal", "Pillar", "Downward", "Parkour", "ParkourCorner", "ParkourShulker", "EdgeWalk", "LadderHop", "LadderShimmy", "MomentumJump"};
     static constexpr const char* statuses[] = {"Prepping", "Waiting", "Running", "Success", "Unreachable", "Failed", "Canceled"};
     return std::format("{} {} -> {} {}", types[static_cast<int>(m->type())], m->src(), m->dest(),
                        statuses[static_cast<int>(m->state().status)]);

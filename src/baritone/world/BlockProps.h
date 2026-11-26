@@ -58,7 +58,8 @@ enum class BlockType : uint8_t {
 
 enum class Fluid : uint8_t { None, Water, Lava };
 enum class Tool : uint8_t { None, Pickaxe, Axe, Shovel, Hoe, Sword, Shears };
-enum class ParkourSupport : uint8_t { None, RodX, RodY, RodZ, Pane, ShulkerBox };
+// Candle: one candle (2x2 pixels); Candles: two to four, about 6x6 pixels around the center.
+enum class ParkourSupport : uint8_t { None, RodX, RodY, RodZ, Pane, ShulkerBox, Candle, Candles };
 
 // Everything the pathfinder needs to know about one block state. Filled by the platform
 // layer (from the game's block registry) or by the tests.
@@ -86,17 +87,37 @@ struct BlockProps {
 
     // Panes have a center post and may also have arms connecting to adjacent blocks.
     double supportHalfX() const {
-        if (parkourSupport == ParkourSupport::Pane) return 0.0625;
+        if (parkourSupport == ParkourSupport::Pane || parkourSupport == ParkourSupport::Candle) return 0.0625;
+        if (parkourSupport == ParkourSupport::Candles) return 0.1875;
         if (parkourSupport == ParkourSupport::RodY || parkourSupport == ParkourSupport::RodZ) return 0.125;
         return 0.5;
     }
     double supportHalfZ() const {
-        if (parkourSupport == ParkourSupport::Pane) return 0.0625;
+        if (parkourSupport == ParkourSupport::Pane || parkourSupport == ParkourSupport::Candle) return 0.0625;
+        if (parkourSupport == ParkourSupport::Candles) return 0.1875;
         if (parkourSupport == ParkourSupport::RodX || parkourSupport == ParkourSupport::RodY) return 0.125;
         return 0.5;
     }
     bool isHorizontalRod() const {
         return parkourSupport == ParkourSupport::RodX || parkourSupport == ParkourSupport::RodZ;
+    }
+    bool isCandle() const { return parkourSupport == ParkourSupport::Candle || parkourSupport == ParkourSupport::Candles; }
+    // A collision box much smaller than the block, centered on it: the player can pass next
+    // to it, or stand on it, without touching the rest of the cell.
+    bool hasSmallFootprint() const {
+        return parkourSupport == ParkourSupport::RodY || isHorizontalRod() || isCandle();
+    }
+    // Half size of the collision box around the block's center, for the jumps that check the
+    // player's box against it. A honey block is 1/16 smaller on every side: a player can run
+    // along it without touching it (and slides down it when touching it). Ladders and panes
+    // have their own shapes (see parkourJump).
+    double collisionHalfX() const {
+        if (hasSmallFootprint()) return supportHalfX();
+        return type == BlockType::Honey ? 0.4375 : 0.5;
+    }
+    double collisionHalfZ() const {
+        if (hasSmallFootprint()) return supportHalfZ();
+        return type == BlockType::Honey ? 0.4375 : 0.5;
     }
 
     // Fluids. fluidLevel is Bedrock's liquid_depth (= Java's LEVEL): 0 source, 1-7 flowing,

@@ -149,6 +149,8 @@ void WorldTracker::scanChunk(int cx, int cz, bool refresh) {
     sdk::BlockPos pos;
     const sdk::Block* lastBlock = nullptr;
     StateId lastId = baritone::kAir;
+    bool lastShulker = false;
+    const auto& registry = baritone::BlockRegistry::get();
     for (int lx = 0; lx < 16; ++lx) {
         pos.x = (cx << 4) | lx;
         for (int lz = 0; lz < 16; ++lz) {
@@ -159,8 +161,15 @@ void WorldTracker::scanChunk(int cx, int cz, bool refresh) {
                 if (block != lastBlock) {  // long runs of the same block (air, stone)
                     lastBlock = block;
                     lastId = idOf(block);
+                    lastShulker = registry.props(lastId).parkourSupport == baritone::ParkourSupport::ShulkerBox;
                 }
                 if (lastId != baritone::kAir) chunk->set(lx, y, lz, lastId);
+                if (lastShulker) {
+                    // the side its lid opens to is in the block entity, not in the block state
+                    const auto* actor = static_cast<const uint8_t*>(region_->getBlockEntity(pos));
+                    const auto* facing = actor ? actor + offsets::ShulkerBoxBlockActor_facing : nullptr;
+                    if (facing && mem::isReadable(facing, 1) && *facing <= 5) chunk->setFacing(lx, y, lz, *facing);
+                }
             }
         }
     }

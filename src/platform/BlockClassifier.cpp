@@ -100,14 +100,17 @@ std::optional<Shape> partialShape(std::string_view n) {
     };
     if (auto it = exact.find(n); it != exact.end()) return it->second;
     if (ends(n, "_carpet") || n == "carpet") return Shape{0.0625f, true};
-    if (ends(n, "_candle") || n == "candle" || has(n, "candle_cake")) return Shape{0.4375f, false};
+    // candles are 6 pixels tall; a candle cake has the collision of the cake
+    if (has(n, "candle_cake")) return Shape{0.5f, false};
+    if (ends(n, "_candle") || n == "candle") return Shape{0.375f, false};
     if (ends(n, "_bed")) return Shape{0.5625f, true};
     if (ends(n, "_pane") || ends(n, "_bars")) return Shape{1.f, false};
     if (has(n, "amethyst_bud")) return Shape{0.3125f, false};
     if (ends(n, "_head") || ends(n, "_skull")) return Shape{0.5f, false};
     if (ends(n, "_lantern")) return Shape{0.5625f, false};
     if (ends(n, "_chain")) return Shape{1.f, false};
-    if (ends(n, "_shulker_box") || n == "shulker_box") return Shape{1.f, false};
+    // closed, a shulker box is a full cube to stand on (never placed against: that opens it)
+    if (ends(n, "_shulker_box") || n == "shulker_box") return Shape{1.f, true};
     return std::nullopt;
 }
 
@@ -453,6 +456,9 @@ BlockProps classifyByName(const std::string& fullName, const sdk::nbt::CompoundT
             p.parkourSupport = S::Pane;
         } else if (ends(n, "_shulker_box") || n == "shulker_box") {
             p.parkourSupport = S::ShulkerBox;
+        } else if (ends(n, "_candle") || n == "candle") {
+            // "candles" is the number of candles minus one
+            p.parkourSupport = intState(states, "candles", 0) > 0 ? S::Candles : S::Candle;
         }
         if (n == "soul_sand") p.type = BlockType::SoulSand;
         else if (n == "farmland") p.type = BlockType::Farmland;

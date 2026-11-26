@@ -1,5 +1,7 @@
 // Offline tests of the pathfinding core. Run: build/bin/RelWithDebInfo/baritone_tests.exe
 #include <chrono>
+#include <cstdlib>
+#include <sstream>
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
@@ -14,12 +16,14 @@
 
 #include "TestWorld.h"
 #include "TestPlayer.h"
+#include "SimPlayer.h"
 #include "baritone/Settings.h"
 #include "baritone/Baritone.h"
 #include "baritone/selection/ClickSelection.h"
 #include "baritone/behavior/InventoryBehavior.h"
 #include "baritone/pathing/calc/AStarPathFinder.h"
 #include "baritone/pathing/calc/PathPreview.h"
+#include "baritone/pathing/movement/CornerJump.h"
 #include "baritone/pathing/RailPath.h"
 #include "baritone/pathing/goals/Goal.h"
 #include "baritone/cache/CachedWorld.h"
@@ -34,6 +38,7 @@
 #include "baritone/schematic/SchematicWorkspace.h"
 #include "baritone/schematic/SchematicCatalog.h"
 #include "baritone/api/TransferReconciliation.h"
+#include "baritone/world/TerrainDump.h"
 #include "baritone/world/PortalGraph.h"
 #include "baritone/world/PortalJourney.h"
 #include "baritone/schematic/QuarryPlan.h"
@@ -491,6 +496,373 @@ TEST(parkour_checks_ceiling_along_the_jump) {
     w.set(1, 3, 0, b.stone);
     auto blocked = findPath(w, start, std::make_shared<GoalBlock>(finish));
     CHECK_MSG(blocked.type != PathResultType::SuccessToGoal, describe(blocked));
+}
+
+StateId testCandle(bool several = false) {
+    BlockProps candle;
+    candle.name = "minecraft:green_candle";
+    candle.height = 0.375f;
+    candle.hardness = 0.1f;
+    candle.parkourSupport = several ? ParkourSupport::Candles : ParkourSupport::Candle;
+    candle.states = {{"candles", several ? "3" : "0"}, {"lit", "0"}};
+    return BlockRegistry::get().add(std::move(candle));
+}
+
+TEST(parkour_sprints_under_a_candle_three_blocks_up) {
+    // Dean's Terrible Towers: a 3 block gap with candles 3 blocks above the jump. The head
+    // bumps them at the top of the jump, which only costs about one tick of flight.
+    SettingsGuard guard;
+    Settings::get().allowParkour = true;
+    Settings::get().allowParkourAscend = true;
+    Settings::get().allowBreak = false;
+    Settings::get().allowPlace = false;
+    const Blocks& b = Blocks::get();
+    TestWorld w;
+    w.set(0, 0, 0, b.stone);
+    w.set(4, 0, 0, b.stone);
+    w.set(2, 4, 0, testCandle());
+    const BlockPos start{0, 1, 0}, finish{4, 1, 0};
+    auto r = findPath(w, start, std::make_shared<GoalBlock>(finish));
+    CHECK_MSG(r.type == PathResultType::SuccessToGoal, describe(r));
+    CHECK_MSG(uses(r, MovementType::Parkour), describe(r));
+
+    // climbing a block needs the whole jump height: not under a ceiling
+    TestWorld climb;
+    climb.set(0, 0, 0, b.stone);
+    climb.set(3, 1, 0, b.stone);
+    CalculationContext open(climb.snapshot(), {}, true);
+    MoveResult res;
+    movement_costs::parkour(open, 0, 1, 0, Direction::East, res);
+    CHECK_MSG(res.cost < costs::COST_INF && res.y == 2, std::format("{} {}", res.cost, res.y));
+    climb.set(2, 4, 0, b.stone);
+    CalculationContext low(climb.snapshot(), {}, true);
+    res.reset();
+    movement_costs::parkour(low, 0, 1, 0, Direction::East, res);
+    CHECK_MSG(res.cost >= costs::COST_INF, std::format("{} {}", res.cost, res.y));
+}
+
+TEST(parkour_lands_on_candles) {
+    SettingsGuard guard;
+    Settings::get().allowParkour = true;
+    Settings::get().allowParkourAscend = true;
+    Settings::get().allowBreak = false;
+    Settings::get().allowPlace = false;
+    const Blocks& b = Blocks::get();
+    TestWorld w;
+    w.set(0, 0, 0, b.stone);
+    w.set(0, 0, 2, testCandle());
+    w.set(0, 0, 4, testCandle(true));
+    w.set(0, 0, 6, b.stone);
+    const BlockPos start{0, 1, 0}, finish{0, 1, 6};
+    auto r = findPath(w, start, std::make_shared<GoalBlock>(finish));
+    CHECK_MSG(r.type == PathResultType::SuccessToGoal, describe(r));
+    CHECK_MSG(r.path && r.path->positions() == std::vector<BlockPos>({start, {0, 1, 2}, {0, 1, 4}, finish}), describe(r));
+
+    // Baritone's grid jump assumes full blocks: never from a candle (0.625 lower than a block)
+    CalculationContext ctx(w.snapshot(), {}, true);
+    MoveResult res;
+    movement_costs::parkour(ctx, 0, 1, 2, Direction::South, res);
+    CHECK_MSG(res.cost >= costs::COST_INF, std::format("{} -> {} {} {}", res.cost, res.x, res.y, res.z));
+
+    // standing on a candle is the block above it, like a slab
+    test::TestPlayer player;
+    InventoryBehavior inventory(player);
+    CalculationContext calc(w.snapshot(), {}, false);
+    ExecContext exec{player, calc, inventory, start};
+    player.feet = {0.5, 0.375, 2.5};
+    player.grounded = true;
+    CHECK_MSG(exec.playerFeet() == (BlockPos{0, 1, 2}), std::format("{}", exec.playerFeet()));
+}
+
+TEST(parkour_hops_under_a_low_ceiling) {
+    // a one block gap with a block at head height above it: a normal jump bumps 0.2 up
+    SettingsGuard guard;
+    Settings::get().allowParkour = true;
+    Settings::get().allowSprint = true;
+    Settings::get().allowBreak = false;
+    Settings::get().allowPlace = false;
+    const Blocks& b = Blocks::get();
+    TestWorld w;
+    w.fill(0, 0, -2, 0, 0, 2, b.stone);
+    w.fill(2, 0, -2, 2, 0, 2, b.stone);
+    w.set(1, 3, 0, b.stone);
+    const BlockPos start{0, 1, 0}, finish{2, 1, 0};
+    CalculationContext ctx(w.snapshot(), {}, true);
+    MoveResult res;
+    movement_costs::parkour(ctx, 0, 1, 0, Direction::East, res);
+    CHECK(res.cost >= costs::COST_INF);  // Baritone's jump needs the head room
+    CHECK(movement_costs::isCornerJump(ctx, start, finish));
+    CHECK(movement_costs::planCornerJump(ctx, start, finish).has_value());
+    auto r = findPath(w, start, std::make_shared<GoalBlock>(finish));
+    CHECK_MSG(r.type == PathResultType::SuccessToGoal, describe(r));
+}
+
+TEST(terrain_dump_round_trip) {
+    const Blocks& b = Blocks::get();
+    TestWorld w;
+    w.set(1, 2, 3, b.stone);
+    const StateId candle = testCandle(true);
+    w.set(-2, 5, 4, candle);
+    const std::string text = writeTerrainDump(*w.snapshot(), {-4, 0, 0}, {4, 8, 8}, {0.5, 1, 0.5});
+    std::istringstream in(text);
+    const TerrainDump dump = readTerrainDump(in);
+    CHECK(dump.blocks.size() == 2);
+    CHECK(dump.player.y == 1);
+    auto world = buildTerrainWorld(dump);
+    const auto loaded = world->chunk(-1, 0);
+    CHECK(loaded != nullptr);
+    if (!loaded) return;
+    const BlockProps& back = BlockRegistry::get().props(loaded->get(-2 & 15, 5, 4));
+    CHECK(back.name == "minecraft:green_candle" && back.parkourSupport == ParkourSupport::Candles);
+    CHECK(std::abs(back.height - 0.375f) < 1e-6 && back.state("candles") == "3");
+    CHECK(BlockRegistry::get().props(world->chunk(0, 0)->get(1, 2, 3)).name == "minecraft:stone");
+    std::istringstream broken("BBTERRAIN 2\n");
+    bool threw = false;
+    try { readTerrainDump(broken); } catch (const std::runtime_error&) { threw = true; }
+    CHECK(threw);
+}
+
+TEST(path_waits_for_landing_before_replanning) {
+    // A failed jump replanned from mid-air finds nothing and gave up the whole #goto.
+    SettingsGuard guard;
+    const Blocks& b = Blocks::get();
+    TestWorld w;
+    w.floor(0, b.stone);
+    test::TestPlayer player;
+    player.feet = {0.5, 4, 0.5};
+    player.grounded = false;
+    Baritone bot(player, [](const std::string&, bool) {});
+    bot.tick(w.snapshot());
+    bot.tick(w.snapshot());
+    CHECK(!bot.pathing().secretInternalSetGoalAndPath(std::make_shared<GoalBlock>(8, 1, 0)));
+    CHECK(!bot.pathing().hasInProgress() && !bot.pathing().isPathing());
+    player.feet = {0.5, 1, 0.5};
+    player.grounded = true;
+    bot.tick(w.snapshot());
+    CHECK(bot.pathing().secretInternalSetGoalAndPath(std::make_shared<GoalBlock>(8, 1, 0)));
+    bot.cancelEverything();
+}
+
+StateId testLadder(const char* facing) {
+    BlockProps ladder;
+    ladder.name = "minecraft:ladder";
+    ladder.type = BlockType::Ladder;
+    ladder.pathfindable = true;
+    ladder.height = 1.f;
+    ladder.hardness = 0.4f;
+    ladder.states = {{"facing_direction", facing}};
+    return BlockRegistry::get().add(std::move(ladder));
+}
+
+TEST(parkour_jumps_into_a_hanging_ladder) {
+    // Dean's Terrible Towers: a ladder hangs on a wall, its bottom 2 blocks above the floor
+    // in front of it. Jump in (the feet reach its cell at the top of the jump), climb, step off.
+    SettingsGuard guard;
+    Settings::get().allowParkour = true;
+    Settings::get().allowBreak = false;
+    Settings::get().allowPlace = false;
+    const Blocks& b = Blocks::get();
+    const StateId ladder = testLadder("2");  // faces north: hangs on the block south of it
+    TestWorld w;
+    w.set(0, 0, 0, b.stone);           // the floor in front, 2 blocks away
+    w.fill(0, 2, 3, 0, 3, 3, b.stone);  // the block the ladder hangs on
+    w.set(0, 2, 2, ladder);
+    w.set(0, 3, 2, ladder);
+    const BlockPos start{0, 1, 0}, finish{0, 4, 3};
+    CalculationContext ctx(w.snapshot(), {}, true);
+    MoveResult res;
+    movement_costs::ladderJump(ctx, 0, 1, 0, Direction::South, res);
+    CHECK_MSG(res.cost < costs::COST_INF && res.x == 0 && res.y == 2 && res.z == 2,
+              std::format("{} -> {} {} {}", res.cost, res.x, res.y, res.z));
+    auto r = findPath(w, start, std::make_shared<GoalBlock>(finish));
+    CHECK_MSG(r.type == PathResultType::SuccessToGoal, describe(r));
+    CHECK_MSG(uses(r, MovementType::Pillar), describe(r));
+
+    // without the block behind, nothing stops us in the ladder's cell
+    w.fill(0, 2, 3, 0, 3, 3, kAir);
+    CalculationContext open(w.snapshot(), {}, true);
+    res.reset();
+    movement_costs::ladderJump(open, 0, 1, 0, Direction::South, res);
+    CHECK(res.cost >= costs::COST_INF);
+
+    // a ladder starting at head height: jump straight up into it
+    TestWorld under;
+    under.set(0, 0, 0, b.stone);
+    under.fill(0, 2, 1, 0, 4, 1, b.stone);
+    under.fill(0, 2, 0, 0, 4, 0, ladder);
+    CalculationContext low(under.snapshot(), {}, true);
+    CHECK(movement_costs::pillar(low, 0, 1, 0) < costs::COST_INF);
+}
+
+TEST(parkour_jumps_under_a_ladder_plate) {
+    // a ladder at head height is a thin plate on a wall: the head passes beside it
+    SettingsGuard guard;
+    Settings::get().allowParkour = true;
+    Settings::get().allowParkourAscend = true;
+    Settings::get().allowBreak = false;
+    Settings::get().allowPlace = false;
+    const Blocks& b = Blocks::get();
+    TestWorld w;
+    w.set(0, 0, 0, b.stone);
+    w.set(0, 1, -2, b.stone);
+    w.set(0, 3, 0, testLadder("3"));  // above the start, hanging on the block north of it
+    w.set(0, 3, 1, b.stone);
+    CalculationContext ctx(w.snapshot(), {}, true);
+    MoveResult res;
+    movement_costs::parkour(ctx, 0, 1, 0, Direction::North, res);
+    CHECK_MSG(res.cost < costs::COST_INF && res.y == 2 && res.z == -2, std::format("{} {} {}", res.cost, res.y, res.z));
+}
+
+TEST(edge_walk_passes_beside_honey) {
+    // Dean's Terrible Towers: a wall of honey on the floor. Honey is 1/16 smaller than its
+    // cell: sneak along the edge of the floor, the body over the void beside it.
+    SettingsGuard guard;
+    Settings::get().allowParkour = true;
+    Settings::get().allowBreak = false;
+    Settings::get().allowPlace = false;
+    const Blocks& b = Blocks::get();
+    BlockProps honeyProps;
+    honeyProps.name = "minecraft:honey_block";
+    honeyProps.type = BlockType::Honey;
+    honeyProps.height = 0.9375f;
+    const StateId honey = BlockRegistry::get().add(std::move(honeyProps));
+    TestWorld w;
+    w.fill(0, 0, 0, 4, 0, 0, b.stone);
+    w.fill(0, 0, 1, 4, 3, 1, b.stone);  // a wall on the other side
+    w.fill(1, 1, 0, 3, 2, 0, honey);
+    const BlockPos start{0, 1, 0}, finish{4, 1, 0};
+    CalculationContext ctx(w.snapshot(), {}, true);
+    auto walk = movement_costs::edgeWalk(ctx, start, finish);
+    CHECK_MSG(walk && walk->side == -1, walk ? std::format("side {}", walk->side) : std::string("none"));
+    auto r = findPath(w, start, std::make_shared<GoalBlock>(finish));
+    CHECK_MSG(r.type == PathResultType::SuccessToGoal, describe(r));
+    CHECK_MSG(uses(r, MovementType::EdgeWalk), describe(r));
+
+    // stone leaves no room beside it
+    w.fill(1, 1, 0, 3, 2, 0, b.stone);
+    CalculationContext full(w.snapshot(), {}, true);
+    CHECK(!movement_costs::edgeWalk(full, start, finish));
+    // nothing in the way: just walk
+    w.fill(1, 1, 0, 3, 2, 0, kAir);
+    CalculationContext empty(w.snapshot(), {}, true);
+    CHECK(!movement_costs::edgeWalk(empty, start, finish));
+}
+
+TEST(loose_tripwire_is_not_avoided) {
+    // parkour maps stretch strings on the way; only a tripwire held by hooks triggers something
+    SettingsGuard guard;
+    Settings::get().allowBreak = false;
+    BlockProps loose;
+    loose.name = "minecraft:trip_wire";
+    loose.collides = false;
+    loose.pathfindable = true;
+    loose.states = {{"attached_bit", "0"}, {"suspended_bit", "1"}};
+    BlockProps armed = loose;
+    armed.states = {{"attached_bit", "1"}, {"suspended_bit", "1"}};
+    const StateId looseId = BlockRegistry::get().add(loose), armedId = BlockRegistry::get().add(armed);
+    const Blocks& b = Blocks::get();
+    TestWorld w;
+    w.fill(0, 0, -1, 4, 0, 1, b.stone);
+    w.fill(0, 1, 1, 4, 3, 1, b.stone);
+    w.fill(0, 1, -1, 4, 3, -1, b.stone);  // a corridor
+    w.set(2, 1, 0, looseId);
+    CalculationContext ctx(w.snapshot(), {}, true);
+    CHECK(!ctx.isAvoided(BlockRegistry::get().props(looseId)));
+    CHECK(ctx.isAvoided(BlockRegistry::get().props(armedId)));
+    auto r = findPath(w, {0, 1, 0}, std::make_shared<GoalBlock>(4, 1, 0));
+    CHECK_MSG(r.type == PathResultType::SuccessToGoal, describe(r));
+    CHECK(movement_costs::traverse(ctx, 1, 1, 0, 2, 0) < costs::COST_INF);
+    w.set(2, 1, 0, armedId);
+    CalculationContext armedCtx(w.snapshot(), {}, true);
+    CHECK(movement_costs::traverse(armedCtx, 1, 1, 0, 2, 0) >= costs::COST_INF);
+}
+
+TEST(shulker_climb_uses_the_side_the_lid_opens_to) {
+    // the opening lid is the step: only from the side it opens to (Bedrock facing in the block entity)
+    SettingsGuard guard;
+    Settings::get().allowParkour = true;
+    Settings::get().allowParkourAscend = true;
+    Settings::get().allowBreak = false;
+    Settings::get().allowPlace = false;
+    const auto stone = Blocks::get().stone;
+    BlockProps box;
+    box.name = "minecraft:black_shulker_box";
+    box.parkourSupport = ParkourSupport::ShulkerBox;
+    box.solidTop = true;
+    const auto shulker = BlockRegistry::get().add(box);
+    TestWorld w;
+    w.set(0, 0, 0, stone);
+    w.set(2, 0, 0, stone);
+    w.set(1, 1, 0, shulker);
+    w.set(1, 2, 0, stone);
+    const BlockPos east{2, 1, 0}, west{0, 1, 0}, finish{1, 3, 0};
+    CalculationContext unknown(w.snapshot(), {}, true);
+    CHECK(movement_costs::shulkerClimb(unknown, east, finish) < costs::COST_INF);
+    CHECK(movement_costs::shulkerClimb(unknown, west, finish) < costs::COST_INF);
+    w.snapshot()->mutableChunk(0, 0)->setFacing(1, 1, 0, 5);  // opens to the east
+    CalculationContext known(w.snapshot(), {}, true);
+    CHECK(movement_costs::shulkerClimb(known, east, finish) < costs::COST_INF);
+    CHECK(movement_costs::shulkerClimb(known, west, finish) >= costs::COST_INF);
+    // and the dump keeps it
+    const std::string text = writeTerrainDump(*w.snapshot(), {-1, 0, -1}, {3, 3, 1}, {0.5, 1, 0.5});
+    std::istringstream in(text);
+    const TerrainDump dump = readTerrainDump(in);
+    CHECK(dump.facings.size() == 1 && dump.facings[0].second == 5);
+}
+
+TEST(ladder_hops_up_a_zigzag_and_around_a_corner) {
+    // Dean's Terrible Towers: single ladders 2 blocks apart and 2 up on one wall. Climb one, stand
+    // on its thin top, jump into the next.
+    SettingsGuard guard;
+    Settings::get().allowParkour = true;
+    Settings::get().allowBreak = false;
+    Settings::get().allowPlace = false;
+    const Blocks& b = Blocks::get();
+    const StateId north = testLadder("2");  // hangs on the block south of it
+    TestWorld w;
+    w.set(0, 0, 0, b.stone);
+    w.fill(-1, 0, 1, 3, 7, 1, b.stone);  // the wall
+    w.set(0, 2, 0, north);               // starts at head height
+    w.set(2, 4, 0, north);
+    const BlockPos start{0, 1, 0}, finish{2, 5, 0};
+    CalculationContext ctx(w.snapshot(), {}, true);
+    CHECK(movement_costs::ladderHop(ctx, {0, 3, 0}, {2, 4, 0}) < costs::COST_INF);
+    CHECK(movement_costs::ladderHop(ctx, {0, 2, 0}, {2, 4, 0}) >= costs::COST_INF);  // not from inside a ladder
+    auto r = findPath(w, start, std::make_shared<GoalBlock>(finish));
+    CHECK_MSG(r.type == PathResultType::SuccessToGoal, describe(r));
+    CHECK_MSG(uses(r, MovementType::LadderHop), describe(r));
+
+    // around the corner of the pillar they hang on (screenshot of the south and west faces)
+    TestWorld corner;
+    corner.set(1, 0, 2, b.stone);
+    corner.fill(1, 0, 1, 1, 6, 1, b.stone);  // the pillar
+    corner.set(1, 2, 2, testLadder("3"));    // south face
+    corner.set(0, 3, 1, testLadder("4"));    // west face, one up
+    CalculationContext cornerCtx(corner.snapshot(), {}, true);
+    CHECK(movement_costs::ladderHop(cornerCtx, {1, 3, 2}, {0, 3, 1}) < costs::COST_INF);
+    auto around = findPath(corner, {1, 1, 2}, std::make_shared<GoalBlock>(0, 4, 1));
+    CHECK_MSG(around.type == PathResultType::SuccessToGoal, describe(around));
+    CHECK_MSG(uses(around, MovementType::LadderHop), describe(around));
+}
+
+TEST(ladder_shimmy_along_a_row_under_a_ceiling) {
+    // a row of ladders on a wall right under a ceiling: no room to stand on them, hang and move
+    SettingsGuard guard;
+    Settings::get().allowParkour = true;
+    Settings::get().allowBreak = false;
+    Settings::get().allowPlace = false;
+    const Blocks& b = Blocks::get();
+    const StateId east = testLadder("5");  // hangs on the block west of it
+    TestWorld w;
+    w.fill(-1, 0, 0, -1, 6, 4, b.stone);  // the wall
+    w.fill(0, 5, 0, 2, 5, 4, b.stone);    // the ceiling
+    for (int z = 0; z <= 4; ++z) w.set(0, 3, z, east);
+    CalculationContext ctx(w.snapshot(), {}, true);
+    CHECK(movement_costs::ladderShimmy(ctx, {0, 3, 0}, {0, 3, 1}) < costs::COST_INF);
+    CHECK(movement_costs::ladderShimmy(ctx, {0, 3, 0}, {-1, 3, 0}) >= costs::COST_INF);  // into the wall
+    auto r = findPath(w, {0, 3, 0}, std::make_shared<GoalBlock>(0, 3, 4));
+    CHECK_MSG(r.type == PathResultType::SuccessToGoal, describe(r));
+    CHECK_MSG(uses(r, MovementType::LadderShimmy), describe(r));
 }
 
 TEST(avoid_lava) {
@@ -3333,6 +3705,270 @@ TEST(performance_random_terrain) {
 
 }  // namespace
 
+
+// Dev tool, skipped unless BARITONE_TERRAIN names a #terrain dump file: replays a path
+// problem found in game. BARITONE_GOAL="x y z" (default: none, only lists the moves from
+// the start). Example (PowerShell):
+//   $env:BARITONE_TERRAIN="...	errain_56_-33_8.txt"; $env:BARITONE_GOAL="60 -22 4"; baritone_tests.exe
+TEST(dev_replay_terrain_dump) {
+    const char* file = std::getenv("BARITONE_TERRAIN");
+    if (!file || !*file) return;
+    std::ifstream in(file);
+    CHECK_MSG(in.good(), std::string("cannot open ") + file);
+    if (!in) return;
+    const TerrainDump dump = readTerrainDump(in);
+    auto world = buildTerrainWorld(dump);
+    SettingsGuard guard;
+    Settings::get().allowBreak = false;
+    Settings::get().allowPlace = false;
+    BlockPos start{static_cast<int>(std::floor(dump.player.x)), static_cast<int>(std::floor(dump.player.y + 0.01)),
+                   static_cast<int>(std::floor(dump.player.z))};
+    if (const char* from = std::getenv("BARITONE_START"); from && *from) std::istringstream(from) >> start.x >> start.y >> start.z;
+    std::printf("      %zu states, %zu blocks, start %s\n", dump.states.size(), dump.blocks.size(), std::format("{}", start).c_str());
+    CalculationContext probe(world, PlayerAbilities{}, false);
+    MoveResult res;
+    for (const auto& move : allMoves()) {
+        res.reset();
+        move.apply(move, probe, start.x, start.y, start.z, res);
+        if (res.cost < costs::COST_INF)
+            std::printf("        %s -> %d %d %d cost %.2f\n", move.name, res.x, res.y, res.z, res.cost);
+    }
+    // BARITONE_SWEEP="x0 x1 z0 z1": which standing places above the start can be reached
+    if (const char* sweep = std::getenv("BARITONE_SWEEP"); sweep && *sweep) {
+        int x0, x1, z0, z1;
+        std::istringstream(sweep) >> x0 >> x1 >> z0 >> z1;
+        for (int y = start.y + 1; y <= dump.max.y - 2; ++y)
+            for (int x = x0; x <= x1; ++x)
+                for (int z = z0; z <= z1; ++z) {
+                    if (!probe.props(x, y - 1, z).collides || probe.props(x, y, z).collides || probe.props(x, y + 1, z).collides) continue;
+                    AStarPathFinder finder(start, std::make_shared<GoalBlock>(x, y, z),
+                                           std::make_unique<CalculationContext>(world, PlayerAbilities{}, true), Favoring{});
+                    const auto result = finder.calculate(300, 600);
+                    std::printf("        %s %d %d %d on %s\n", result.type == PathResultType::SuccessToGoal ? "R" : "-", x, y, z,
+                                probe.props(x, y - 1, z).name.c_str());
+                }
+        return;
+    }
+    const char* goalText = std::getenv("BARITONE_GOAL");
+    if (!goalText || !*goalText) return;
+    BlockPos goal;
+    std::istringstream(goalText) >> goal.x >> goal.y >> goal.z;
+    AStarPathFinder finder(start, std::make_shared<GoalBlock>(goal), std::make_unique<CalculationContext>(world, PlayerAbilities{}, true),
+                           Favoring{});
+    auto result = finder.calculate(4000, 8000);
+    std::printf("      result %d, %d nodes: %s\n", static_cast<int>(result.type), result.nodes, describe(result).c_str());
+}
+// Runs a #goto with the simulated player: the bot plans, the simulation applies its keys.
+struct SimRun {
+    bool arrived = false, fell = false;
+    int ticks = 0;
+    Vec3d end;
+    std::vector<std::string> messages;
+    std::vector<Vec3d> trace;          // feet after each tick
+    std::vector<std::string> inputs;   // the bot's keys and yaw at each tick
+    std::string describe() const {
+        std::string out = std::format("{} after {} ticks at {:.2f} {:.2f} {:.2f}", arrived ? "arrived" : fell ? "fell" : "stopped",
+                                      ticks, end.x, end.y, end.z);
+        for (const auto& m : messages) out += "\n          " + m;
+        return out;
+    }
+};
+
+SimRun simulateGoto(std::shared_ptr<const WorldSnapshot> world, Vec3d start, BlockPos goal, int maxTicks = 3000) {
+    SettingsGuard guard;
+    Settings::get().chatDebug = true;
+    test::SimPlayer player(world);
+    player.feet = start;
+    player.grounded = true;
+    SimRun run;
+    Baritone bot(player, [&](const std::string& message, bool) { run.messages.push_back(std::format("[{}] {}", player.ticks, message)); });
+    bot.tick(world);
+    bot.customGoal().setGoalAndPath(std::make_shared<GoalBlock>(goal));
+    const bool goalInLadder = BlockStateInterface(world).props(goal.x, goal.y, goal.z).type == BlockType::Ladder;
+    for (int tick = 0; tick < maxTicks; ++tick) {
+        // the path is calculated on its own thread: give it the time it would have in game
+        for (int wait = 0; wait < 200 && bot.pathing().hasInProgress() && !bot.pathing().isPathing(); ++wait)
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        bot.tick(world);
+        const MovementState& out = bot.controls();
+        std::string keys;
+        static constexpr const char* names[] = {"F", "B", "L", "R", "click", "use", "J", "S", "Spr"};
+        for (int i = 0; i < static_cast<int>(Input::Count); ++i)
+            if (out.inputs.test(i)) keys += std::string(names[i]) + " ";
+        if (out.target.rotation) keys += std::format("yaw {:.0f} ", out.target.rotation->yaw);
+        keys += bot.pathing().debugState();
+        run.inputs.push_back(keys);
+        player.step(out);
+        // a goal in a ladder that only holds us while the bot sneaks counts once the feet are in it
+        if (std::ranges::any_of(run.messages, [](const std::string& m) { return m.contains("Arrived!"); }) ||
+            goalInLadder && BlockPos{static_cast<int>(std::floor(player.feet.x)), static_cast<int>(std::floor(player.feet.y + 0.1251)),
+                     static_cast<int>(std::floor(player.feet.z))} == goal) {
+            run.arrived = true;
+            break;
+        }
+        if (player.feet.y < start.y - 12 && player.feet.y < goal.y - 12) {
+            run.fell = true;
+            break;
+        }
+        if (!bot.customGoal().isActive()) break;
+    }
+    run.ticks = player.ticks;
+    run.end = player.feet;
+    run.trace = player.trace;
+    bot.cancelEverything();
+    return run;
+}
+
+// Dev tool, skipped unless BARITONE_SIMULATE is set: plays BARITONE_GOAL from BARITONE_START
+// (or the dump's player) on the BARITONE_TERRAIN dump with the simulated player.
+TEST(dev_simulate_terrain_dump) {
+    const char* file = std::getenv("BARITONE_TERRAIN");
+    const char* enabled = std::getenv("BARITONE_SIMULATE");
+    const char* goalText = std::getenv("BARITONE_GOAL");
+    if (!file || !*file || !enabled || !*enabled || !goalText || !*goalText) return;
+    std::ifstream in(file);
+    const TerrainDump dump = readTerrainDump(in);
+    auto world = buildTerrainWorld(dump);
+    Vec3d start = dump.player;
+    if (const char* from = std::getenv("BARITONE_START"); from && *from) {
+        BlockPos p;
+        std::istringstream(from) >> p.x >> p.y >> p.z;
+        start = {p.x + 0.5, static_cast<double>(p.y), p.z + 0.5};
+    }
+    BlockPos goal;
+    std::istringstream(goalText) >> goal.x >> goal.y >> goal.z;
+    SettingsGuard guard;
+    Settings::get().allowBreak = false;
+    Settings::get().allowPlace = false;
+    const SimRun run = simulateGoto(world, start, goal, 6000);
+    std::printf("      %s\n", run.describe().c_str());
+    if (const char* trace = std::getenv("BARITONE_TRACE"); trace && *trace) {
+        int from = 0, count = 120;
+        std::istringstream(trace) >> from >> count;
+        for (std::size_t i = from; i < run.trace.size() && i < static_cast<std::size_t>(from + count); ++i)
+            std::printf("        t%zu %.3f %.3f %.3f %s\n", i + 1, run.trace[i].x, run.trace[i].y, run.trace[i].z, run.inputs[i].c_str());
+    }
+}
+
+TEST(momentum_jump_clears_a_four_block_gap) {
+    // Dean's Terrible Towers: a 4 block gap at the end of a one block wide strip. A sprint jump
+    // from the ground falls just short; a hop on the run-up first gives the speed for it.
+    SettingsGuard guard;
+    Settings::get().allowParkour = true;
+    Settings::get().allowBreak = false;
+    Settings::get().allowPlace = false;
+    const Blocks& b = Blocks::get();
+    TestWorld w;
+    w.fill(0, 0, 0, 0, 0, 6, b.stone);  // run-up z 0..5, takeoff block z 6
+    w.set(0, 0, 11, b.stone);           // 4 blocks of air, then the landing block
+    CalculationContext ctx(w.snapshot(), {}, true);
+    const auto jump = movement_costs::momentumJump(ctx, {0, 1, 6}, {0, 1, 11});
+    CHECK(jump && jump->runUp == 6);
+    auto r = findPath(w, {0, 1, 3}, std::make_shared<GoalBlock>(0, 1, 11));
+    CHECK_MSG(r.type == PathResultType::SuccessToGoal, describe(r));
+    CHECK_MSG(uses(r, MovementType::MomentumJump), describe(r));
+    const SimRun run = simulateGoto(w.snapshot(), {0.5, 1, 3.5}, {0, 1, 11});
+    CHECK_MSG(run.arrived, run.describe());
+
+    // the hop needs room: a ceiling over the run-up, or a run-up of 4 blocks, and there is no jump
+    TestWorld low = w;
+    low.set(0, 4, 3, b.stone);
+    CalculationContext lowCtx(low.snapshot(), {}, true);
+    CHECK(!movement_costs::momentumJump(lowCtx, {0, 1, 6}, {0, 1, 11}));
+    TestWorld shortRun;
+    shortRun.fill(0, 0, 2, 0, 0, 6, b.stone);
+    shortRun.set(0, 0, 11, b.stone);
+    CalculationContext shortCtx(shortRun.snapshot(), {}, true);
+    CHECK(!movement_costs::momentumJump(shortCtx, {0, 1, 6}, {0, 1, 11}));
+}
+
+TEST(simulated_climb_up_a_ladder_zigzag_on_one_wall) {
+    // single ladders 2 apart and 2 up on one wall: climb one, take off from the outer edge of
+    // its top (the body has to pass beside the next one's plate) and jump into the next
+    SettingsGuard guard;
+    Settings::get().allowParkour = true;
+    Settings::get().allowBreak = false;
+    Settings::get().allowPlace = false;
+    const Blocks& b = Blocks::get();
+    const StateId north = testLadder("2");  // hangs on the block south of it
+    TestWorld w;
+    w.fill(-1, 0, -2, 3, 0, 0, b.stone);  // the floor
+    w.fill(-1, 0, 1, 3, 12, 1, b.stone);  // the wall
+    w.set(0, 1, 0, north);
+    w.set(2, 3, 0, north);
+    w.set(0, 5, 0, north);
+    w.set(2, 7, 0, north);
+    const SimRun run = simulateGoto(w.snapshot(), {0.5, 1, -0.5}, {2, 8, 0});
+    CHECK_MSG(run.arrived, run.describe());
+    CHECK_MSG(run.end.y > 7.9, run.describe());
+}
+
+TEST(simulated_jump_from_a_ladder_top_onto_its_block) {
+    // the end of the spiral: from the top of a ladder onto the block it hangs on. Above the
+    // ladder's cell the Bedrock client takes the jump for a climb: take off from the end of
+    // the plate, the feet past the cell
+    SettingsGuard guard;
+    Settings::get().allowParkour = true;
+    Settings::get().allowBreak = false;
+    Settings::get().allowPlace = false;
+    const Blocks& b = Blocks::get();
+    TestWorld w;
+    w.fill(-2, 0, -2, 2, 0, 2, b.stone);  // the floor
+    w.fill(1, 1, 0, 1, 3, 0, b.stone);    // the pillar, its top at 4
+    w.set(0, 1, 0, testLadder("4"));      // hangs on the block east of it
+    w.set(0, 2, 0, testLadder("4"));
+    const SimRun run = simulateGoto(w.snapshot(), {-1.5, 1, 0.5}, {1, 4, 0});
+    CHECK_MSG(run.arrived, run.describe());
+    CHECK_MSG(run.end.y > 3.9, run.describe());
+}
+
+TEST(parkour_jumps_down_over_a_gap) {
+    // Dean's Terrible Towers (60 6 12 -> 58 5 12): a one block gap with the landing a block
+    // lower. Walking off the edge falls into the gap, and Baritone has no jump that goes down.
+    SettingsGuard guard;
+    Settings::get().allowParkour = true;
+    Settings::get().allowBreak = false;
+    Settings::get().allowPlace = false;
+    const Blocks& b = Blocks::get();
+    TestWorld w;
+    w.fill(-2, 0, 0, 0, 0, 0, b.stone);  // the upper ledge, its edge at x 1
+    w.fill(2, -1, 0, 4, -1, 0, b.stone);  // the lower one past a gap
+    auto r = findPath(w, {-1, 1, 0}, std::make_shared<GoalBlock>(3, 0, 0));
+    CHECK_MSG(r.type == PathResultType::SuccessToGoal, describe(r));
+    CHECK_MSG(uses(r, MovementType::Parkour), describe(r));
+    const SimRun run = simulateGoto(w.snapshot(), {-0.5, 1, 0.5}, {3, 0, 0});
+    CHECK_MSG(run.arrived, run.describe());
+
+    // a step down onto the next block is a descend, not a jump
+    TestWorld steps;
+    steps.fill(-2, 0, 0, 0, 0, 0, b.stone);
+    steps.fill(1, -1, 0, 4, -1, 0, b.stone);
+    CalculationContext ctx(steps.snapshot(), {}, true);
+    CHECK(!movement_costs::parkourJump(ctx, {0, 1, 0}, {2, 0, 0}));
+}
+
+TEST(simulated_climb_up_a_staircase_of_ladders) {
+    // Dean's Terrible Towers near 58 18 7: single ladders on one wall, each one along and one up.
+    // The next one's plate stands beside the top of each: no jump from there (the takeoff could
+    // not leave the ladder's cell). Climb from inside and step across at the top.
+    SettingsGuard guard;
+    Settings::get().allowParkour = true;
+    Settings::get().allowBreak = false;
+    Settings::get().allowPlace = false;
+    const Blocks& b = Blocks::get();
+    const StateId north = testLadder("3");  // hangs on the block north of it
+    TestWorld w;
+    w.fill(-2, 0, -1, 5, 6, -1, b.stone);  // the wall
+    w.set(3, 1, 0, north);
+    w.set(2, 2, 0, north);
+    w.set(1, 3, 0, north);
+    w.fill(-2, 3, 0, 0, 3, 0, b.stone);  // a ledge to finish on, past the last one
+    CalculationContext ctx(w.snapshot(), {}, true);
+    CHECK(movement_costs::ladderHop(ctx, {3, 2, 0}, {1, 3, 0}) >= costs::COST_INF);  // plate in the way
+    CHECK(movement_costs::ladderShimmy(ctx, {3, 1, 0}, {2, 2, 0}) < costs::COST_INF);
+    const SimRun run = simulateGoto(w.snapshot(), {3.5, 2, 0.5}, {-1, 4, 0});  // from the first top
+    CHECK_MSG(run.arrived, run.describe());
+}
 
 std::string memoryProbeSelfTest();  // MemoryProbeTest.cpp: needs Windows.h, kept out of this file
 TEST(memory_probe_rejects_unmapped_and_keeps_guard_pages) {

@@ -7,6 +7,7 @@
 #include <ranges>
 
 #include "baritone/Settings.h"
+#include "baritone/utils/DebugLog.h"
 #include "baritone/behavior/InventoryBehavior.h"
 #include "baritone/pathing/movement/MovementHelper.h"
 #include "baritone/pathing/movement/CornerJump.h"
@@ -16,6 +17,89 @@ namespace baritone {
 using namespace costs;
 using T = BlockType;
 namespace ru = rotation_utils;
+
+namespace {
+// In the ladder we jumped to: its column, at its height or already higher (the jump can carry
+// the feet into the cell above, and pushing into the wall keeps climbing).
+bool holdingLadder(ExecContext& ctx, const BlockPos& dest) {
+    const BlockPos feet = ctx.playerFeet();
+    return feet.x == dest.x && feet.z == dest.z && feet.y >= dest.y && feet.y <= dest.y + 2 &&
+           helper::isClimbable(ctx.props(feet)) && helper::isClimbable(ctx.props(dest));
+}
+
+// Bedrock addition: getting ready to jump from the thin top of a ladder (LadderHop, and an
+// Ascend from it). Takes off from the end of the plate on the destination's side, the feet past
+// the ladder's cell: with the feet above it, the Bedrock client takes the jump for a climb (0.2
+// up, no boost) while the server jumps, and corrects us in mid-air. Towards a ladder further from
+// the wall, or up into one on the same wall (the body has to pass beside its plate), from the
+// outer corner of the plate. Sneaking stops us at its end. The client also ignores the sneaking
+// there and gets to the end long before the server: keep pushing until the server is there too,
+// then stand still while a correction of the steps arrives (and the sprint jump does not start
+// as the sneaking stops).
+class LadderTakeoff {
+public:
+    void reset() {
+        settled_ = pushed_ = stuck_ = 0;
+        lastPos_.reset();
+    }
+
+    // false while getting there (the state holds the inputs); true: jump now
+    bool ready(ExecContext& ctx, MovementState& state, const BlockPos& src, const BlockPos& dest, float jumpYaw) {
+        const auto wall = helper::ladderWall(ctx.props(src.below()));
+        if (!wall) return true;
+        const Vec3d pos = ctx.player.position();
+        const BlockPos d = dest - src;
+        double tx = d.x - (d.x * wall->x + d.z * wall->z) * wall->x;
+        double tz = d.z - (d.x * wall->x + d.z * wall->z) * wall->z;
+        if (std::hypot(tx, tz) < 1e-3) {  // straight out from (or into) the wall: either end
+            tx = -wall->z;
+            tz = wall->x;
+        }
+        const double along = std::hypot(tx, tz);
+        const double offset = ((pos.x - src.x - 0.5) * tx + (pos.z - src.z - 0.5) * tz) / along;
+        const double towardsWall = (pos.x - src.x - 0.5) * wall->x + (pos.z - src.z - 0.5) * wall->z;
+        const auto destWall = helper::ladderWall(ctx.props(dest));
+        const bool besidePlate = dest.y > src.y && destWall && *destWall == *wall;
+        const bool awayFromWall = besidePlate || d.x * wall->x + d.z * wall->z < 0;
+        const bool reached = offset >= 0.6 && (!awayFromWall || towardsWall <= 0.08);
+        const bool moved = lastPos_ && std::hypot(pos.x - lastPos_->x, pos.z - lastPos_->z) >= 0.003;
+        lastPos_ = pos;
+        const float wallYaw = static_cast<float>(std::atan2(-wall->x, wall->z) * 180 / std::numbers::pi);
+        const bool facingWall = std::abs(std::remainder(ctx.playerRotations().yaw - wallYaw, 360.f)) <= 10;
+        // stopped short of it (something along the wall): as far as it goes, until we move again
+        if (moved) stuck_ = 0;
+        else if (!reached && facingWall && pushed_ == 0) ++stuck_;
+        if (reached || stuck_ >= 10) ++pushed_;
+        else if (pushed_ > 0 && pushed_ < kPushTicks) pushed_ = 0;  // pulled back
+        if (pushed_ < kPushTicks) {
+            settled_ = 0;
+            state.setTarget({Rotation{wallYaw, ctx.playerRotations().pitch}, false});
+            state.setInput(Input::Sneak, true);
+            // turned to the wall first: the keys move us relative to where we look
+            if (!facingWall) return false;
+            // only sideways (and away from the wall when needed): pushing into the wall on a
+            // ladder top climbs it in Bedrock
+            if (awayFromWall) state.setInput(Input::MoveBack, true);
+            // the destination side, seen facing the wall: right is (-wall.z, wall.x)
+            const double right = -wall->z * tx + wall->x * tz;
+            state.setInput(right > 0 ? Input::MoveRight : Input::MoveLeft, true);
+            return false;
+        }
+        if (!reached && stuck_ < 10) {  // corrected back by the server: again
+            pushed_ = 0;
+            return false;
+        }
+        settled_ = moved ? 0 : settled_ + 1;
+        return settled_ >= kSettleTicks && std::abs(std::remainder(ctx.playerRotations().yaw - jumpYaw, 360.f)) <= 15;
+    }
+
+private:
+    static constexpr int kSettleTicks = 12;  // the server corrects a gap over 0.3 that lasts 500 ms
+    static constexpr int kPushTicks = 16;    // the server sneaks the length of the plate meanwhile
+    int settled_ = 0, pushed_ = 0, stuck_ = 0;
+    std::optional<Vec3d> lastPos_;
+};
+}  // namespace
 
 // ===========================================================================
 // ExecContext
@@ -28,7 +112,8 @@ BlockPos ExecContext::playerFeet() {
     // standing on top of a bottom slab counts as the block above
     const auto& support = props(feet);
     if (support.type == T::Slab && !support.doubleSlab) return feet.above();
-    if (support.isHorizontalRod() && std::abs(p.y - (feet.y + support.height)) < 0.02 &&
+    // on top of a horizontal end rod or a candle: the node is the block above, as for slabs
+    if ((support.isHorizontalRod() || support.isCandle()) && std::abs(p.y - (feet.y + support.height)) < 0.02 &&
         player.velocity().y <= 0.01) return feet.above();
     return feet;
 }
@@ -56,8 +141,20 @@ bool ExecContext::canWalkOn(const BlockPos& p) {
 
 namespace movement_helper {
 
+// Where to stand in a block: its middle, or against the wall when it is the thin top of a
+// ladder (3 pixels against the block it hangs on: from the middle we would fall through).
+Vec3d standPoint(ExecContext& ctx, const BlockPos& pos) {
+    Vec3d point = Vec3d::center(pos);
+    if (helper::isClimbable(ctx.props(pos))) return point;
+    if (auto wall = helper::ladderWall(ctx.props(pos.below()))) {
+        point.x += wall->x * 0.12;
+        point.z += wall->z * 0.12;
+    }
+    return point;
+}
+
 void moveTowards(ExecContext& ctx, MovementState& state, const BlockPos& pos) {
-    Rotation r = ru::calcRotationFromVec3d(ctx.playerHead(), Vec3d::center(pos), ctx.playerRotations())
+    Rotation r = ru::calcRotationFromVec3d(ctx.playerHead(), standPoint(ctx, pos), ctx.playerRotations())
                      .withPitch(ctx.playerRotations().pitch);
     state.setTarget({r, false}).setInput(Input::MoveForward, true);
 }
@@ -99,7 +196,7 @@ void moveTowardsWithoutRotation(ExecContext& ctx, MovementState& state, float id
 }
 
 void moveTowardsWithSlightRotation(ExecContext& ctx, MovementState& state, const BlockPos& dest) {
-    float idealYaw = ru::calcRotationFromVec3d(ctx.playerHead(), Vec3d::center(dest), ctx.playerRotations()).yaw;
+    float idealYaw = ru::calcRotationFromVec3d(ctx.playerHead(), standPoint(ctx, dest), ctx.playerRotations()).yaw;
     float yaw = ctx.playerRotations().yaw;
     float distance = std::fmod(Rotation::yawDistanceFromOffset(yaw, idealYaw), 45.f);
     float newYaw = distance > 0.f ? (distance > 22.5f ? distance - 45.f : distance)
@@ -248,6 +345,16 @@ double Movement::calculateCost(CalculationContext& ctx) const {
         case MovementType::Downward: return movement_costs::downward(ctx, src_.x, src_.y, src_.z);
         case MovementType::ParkourCorner: return COST_INF;
         case MovementType::ParkourShulker: return movement_costs::shulkerClimb(ctx, src_, dest_);
+        case MovementType::LadderHop: return movement_costs::ladderHop(ctx, src_, dest_);
+        case MovementType::LadderShimmy: return movement_costs::ladderShimmy(ctx, src_, dest_);
+        case MovementType::MomentumJump: {
+            auto jump = movement_costs::momentumJump(ctx, src_, dest_);
+            return jump ? jump->cost : COST_INF;
+        }
+        case MovementType::EdgeWalk: {
+            auto walk = movement_costs::edgeWalk(ctx, src_, dest_);
+            return walk ? walk->cost : COST_INF;
+        }
         case MovementType::Parkour: {
             if (auto jump = movement_costs::parkourJump(ctx, src_, dest_)) return jump->cost;
             BlockPos d = direction();
@@ -258,6 +365,9 @@ double Movement::calculateCost(CalculationContext& ctx) const {
             Direction dir = d.x > 0 ? Direction::East : d.x < 0 ? Direction::West : d.z > 0 ? Direction::South
                                                                                               : Direction::North;
             movement_costs::parkour(ctx, src_.x, src_.y, src_.z, dir, res);
+            if (res.x == dest_.x && res.y == dest_.y && res.z == dest_.z) return res.cost;
+            res.reset();
+            movement_costs::ladderJump(ctx, src_.x, src_.y, src_.z, dir, res);
             return (res.x == dest_.x && res.y == dest_.y && res.z == dest_.z) ? res.cost : COST_INF;
         }
     }
@@ -530,7 +640,15 @@ public:
 protected:
     std::unordered_set<BlockPos> calculateValidPositions() const override {
         BlockPos prior = (src_ - direction()).above();  // backing up to place, sprint ascends
-        return {src_, src_.above(), dest_, prior, prior.above()};
+        std::unordered_set<BlockPos> set{src_, src_.above(), dest_, prior, prior.above()};
+        // from a ladder top, the takeoff is at an end of its plate, over the next cell
+        for (Direction d : kHorizontals) set.insert(src_.offset(d));
+        return set;
+    }
+
+    void reset() override {
+        Movement::reset();
+        ladderTakeoff_.reset();
     }
 
     // Java headBonkClear: nothing around the head to bonk on, so jumping right away is safe
@@ -565,6 +683,22 @@ protected:
             return state;  // walk onto the slab, don't jump
         }
         if (Settings::get().assumeStep || feet == src_.above()) return state;  // step up / already jumping
+        // Bedrock addition: out of a ladder onto the block beside it, keep climbing (jump held)
+        // while heading for it: let go and we slide out of its bottom
+        if (helper::isClimbable(ctx.props(src_)) && helper::isClimbable(ctx.props(ctx.playerFeet())))
+            return state.setInput(Input::Jump, true);
+        // Bedrock addition: from the top of a ladder onto a block, jump from the end of its plate
+        // (above the ladder's cell the jump is a climb), then straight at the destination. Into
+        // another ladder, the climb is what it takes.
+        if (helper::isClimbable(ctx.props(src_.below())) && !helper::isClimbable(ctx.props(dest_)) &&
+            !helper::isClimbable(ctx.props(dest_.below())) && ctx.player.onGround()) {
+            const Vec3d pos = ctx.player.position(), aim = Vec3d::center(dest_);
+            const float yaw = static_cast<float>(std::atan2(-(aim.x - pos.x), aim.z - pos.z) * 180 / std::numbers::pi);
+            if (!ladderTakeoff_.ready(ctx, state.setInput(Input::MoveForward, false), src_, dest_, yaw)) return state;
+            state.setTarget({Rotation{yaw, ctx.playerRotations().pitch}, false});
+            // a sprint jump: the end of the plate leaves us beside the block, not against it
+            return state.setInput(Input::MoveForward, true).setInput(Input::Jump, true).setInput(Input::Sprint, true);
+        }
 
         int xAxis = std::abs(src_.x - dest_.x), zAxis = std::abs(src_.z - dest_.z);
         Vec3d pos = ctx.player.position();
@@ -580,6 +714,7 @@ protected:
 
 private:
     int ticksWithoutPlacement_ = 0;
+    LadderTakeoff ladderTakeoff_;
 };
 
 // ===========================================================================
@@ -893,14 +1028,31 @@ protected:
             if (feet == dest_) return state.setStatus(MovementStatus::Success);
             return state;
         }
-        bool ladder = helper::isClimbable(fromDown);
+        // on a ladder, or under one that starts at head height (jump into it)
+        bool ladder = helper::isClimbable(fromDown) || helper::isClimbable(ctx.props(dest_));
         Rotation rotation = ru::calcRotationFromVec3d(ctx.playerHead(), Vec3d::center(*positionToPlace_), ctx.playerRotations());
         if (!ladder) state.setTarget({ctx.playerRotations().withPitch(rotation.pitch), true});
 
         bool blockIsThere = ctx.canWalkOn(src_) || ladder;
         if (ladder) {
-            if (feet == dest_) return state.setStatus(MovementStatus::Success);
-            mh::moveTowards(ctx, state, dest_);
+            // the top of a ladder (no ladder in the destination): done once standing on its thin
+            // top; until then keep pushing over it towards the wall, or we slide back down
+            const bool top = !helper::isClimbable(ctx.props(dest_));
+            if (feet == dest_ && (!top || ctx.player.onGround())) return state.setStatus(MovementStatus::Success);
+            const BlockProps& climbing = helper::isClimbable(fromDown) ? fromDown : ctx.props(dest_);
+            if (auto wall = helper::ladderWall(climbing)) {
+                // Bedrock addition: face the block the ladder hangs on and push into it. That
+                // climbs, and at the top the feet end on the thin top of the ladder, against the
+                // wall, where the bot can stand and jump to the next one.
+                const float yaw = static_cast<float>(std::atan2(-wall->x, wall->z) * 180 / std::numbers::pi);
+                state.setTarget({Rotation{yaw, ctx.playerRotations().pitch}, false});
+                const double lateral = (pos.x - src_.x - 0.5) * -wall->z + (pos.z - src_.z - 0.5) * wall->x;
+                state.setInput(Input::MoveForward, true);
+                state.setInput(Input::MoveLeft, lateral > 0.12);
+                state.setInput(Input::MoveRight, lateral < -0.12);
+            } else {
+                mh::moveTowards(ctx, state, dest_);
+            }
             state.setInput(Input::Jump, true);
             return state;
         }
@@ -988,6 +1140,7 @@ public:
         planned_ = false;
         jump_.reset();
         launched_ = false;
+        jumped_ = false;
     }
 
 protected:
@@ -1003,6 +1156,7 @@ protected:
                 }
             }
         }
+        for (int y = dest_.y; y <= dest_.y + 2; ++y) set.insert({dest_.x, y, dest_.z});  // a ladder we climb on
         return set;
     }
 
@@ -1018,6 +1172,9 @@ protected:
         BlockPos feet = ctx.playerFeet();
         Vec3d pos = ctx.player.position();
         if (feet.y < src_.y) return state.setStatus(MovementStatus::Unreachable);  // we fell
+        // Bedrock addition: still arriving (top of a ladder, end of an ascend or of a jump):
+        // land first. Walking on in the air took us over the edge without a jump.
+        if (!jumped_ && !ctx.player.onGround()) return state;
         if (dist_ >= 4 || ascend_ || diagonal_) state.setInput(Input::Sprint, true);
         if (Settings::get().allowWalkOnMagmaBlocks && ctx.props(feet.below()).type == T::Magma) state.setInput(Input::Sneak, true);
         mh::moveTowards(ctx, state, dest_);
@@ -1041,24 +1198,42 @@ protected:
             double landing = along + travel;  // relative to the middle of the landing block
             float yaw = static_cast<float>(std::atan2(-stepX_, stepZ_) * 180.0 / 3.14159265358979);
             state.setTarget({Rotation{yaw, ctx.playerRotations().pitch}, false});
-            state.setInput(Input::MoveForward, landing < -0.35);
-            state.setInput(Input::MoveBack, landing > 0.05);
-            if (landing >= -0.35) state.setInput(Input::Sprint, false);
+            if (helper::isClimbable(ctx.props(dest_))) {
+                // jumping into a ladder: the wall behind it stops us, pressing into it climbs
+                state.setInput(Input::MoveForward, true);
+                state.setInput(Input::MoveBack, false);
+                state.setInput(Input::Sprint, false);
+            } else {
+                state.setInput(Input::MoveForward, landing < -0.35);
+                state.setInput(Input::MoveBack, landing > 0.05);
+                if (landing >= -0.35) state.setInput(Input::Sprint, false);
+            }
+            if (!diagonal_) {
+                // Bedrock addition: stay on the line of the jump (a sideways drift from the
+                // run-up misses one block wide platforms)
+                const double lateral = (pos.x - src_.x - 0.5) * -stepZ_ + (pos.z - src_.z - 0.5) * stepX_;
+                const double drift = lateral + (vel.x * -stepZ_ + vel.z * stepX_) * 3;
+                state.setInput(Input::MoveLeft, drift > 0.08);
+                state.setInput(Input::MoveRight, drift < -0.08);
+            }
         }
+        if (holdingLadder(ctx, dest_)) return state.setStatus(MovementStatus::Success);
         if (feet == dest_) {
-            if (helper::isClimbable(ctx.props(dest_))) return state.setStatus(MovementStatus::Success);
             if (ctx.player.onGround() && pos.y - feet.y < 0.094) state.setStatus(MovementStatus::Success);
         } else if (diagonal_ && ctx.player.onGround() && pos.y - src_.y < 0.0001) {
             // diagonal: run to the corner of the block and jump once the body is past it (the
             // player crosses the corner cells, so the feet block can't tell when to jump)
             double out = ((pos.x - (src_.x + 0.5)) * stepX_ + (pos.z - (src_.z + 0.5)) * stepZ_) / std::numbers::sqrt2;
-            if (out > 0.62) state.setInput(Input::Jump, true);
+            if (out > 0.62) {
+                state.setInput(Input::Jump, true);
+                jumped_ = true;
+            }
             else if (out < -0.2) {
                 state.setInput(Input::Sprint, false);
                 mh::moveTowards(ctx, state, src_);
             }
         } else if (feet != src_ && !diagonal_) {
-            if (feet == src_ + step || pos.y - src_.y > 0.0001) {
+            if (feet == src_ + step || (jumped_ && pos.y - src_.y > 0.0001)) {
                 if (Settings::get().allowPlace && ctx.inventory.hasGenericThrowaway() && !ctx.canWalkOn(dest_.below()) &&
                     !ctx.player.onGround() &&
                     mh::attemptToPlaceABlock(ctx, state, dest_.below(), true, false) == mh::PlaceResult::ReadyToPlace) {
@@ -1069,6 +1244,7 @@ protected:
                     if (std::max(std::fabs(xDiff), std::fabs(zDiff)) < 0.7) return state;
                 }
                 state.setInput(Input::Jump, true);
+                if (ctx.player.onGround()) jumped_ = true;
             } else if (feet != dest_ - step) {
                 state.setInput(Input::Sprint, false);
                 if (feet == src_ - step) mh::moveTowards(ctx, state, src_);
@@ -1141,6 +1317,7 @@ private:
     bool ascend_;
     bool diagonal_ = false;  // Bedrock addition: a jump along a diagonal
     bool planned_ = false, launched_ = false;
+    bool jumped_ = false;  // the legacy jump: we pressed jump from the ground
     std::optional<movement_costs::ParkourJump> jump_;
 };
 
@@ -1342,6 +1519,438 @@ private:
     int phaseTicks_ = 0;
 };
 
+// ===========================================================================
+// EdgeWalk (Bedrock addition): sneak along the edge of the floor beside blocks that leave a
+// little room in their cell, such as honey blocks.
+// ===========================================================================
+
+class MovementEdgeWalk : public Movement {
+public:
+    MovementEdgeWalk(BlockPos src, BlockPos dest) : Movement(MovementType::EdgeWalk, src, dest, {}, std::nullopt) {
+        const BlockPos d = dest - src;
+        stepX_ = (d.x > 0) - (d.x < 0);
+        stepZ_ = (d.z > 0) - (d.z < 0);
+    }
+
+    bool safeToCancel(ExecContext& ctx) const override { return ctx.player.onGround(); }
+    void reset() override {
+        Movement::reset();
+        side_ = 0;
+    }
+
+protected:
+    std::unordered_set<BlockPos> calculateValidPositions() const override {
+        std::unordered_set<BlockPos> set;
+        const int n = std::abs(dest_.x - src_.x) + std::abs(dest_.z - src_.z);
+        for (int k = 0; k <= n; ++k)
+            for (int s = -1; s <= 1; ++s) set.insert({src_.x + stepX_ * k - stepZ_ * s, src_.y, src_.z + stepZ_ * k + stepX_ * s});
+        return set;
+    }
+
+    MovementState& updateState(ExecContext& ctx, MovementState& state) override {
+        Movement::updateState(ctx, state);
+        if (state.status != MovementStatus::Running) return state;
+        if (side_ == 0) {
+            auto walk = movement_costs::edgeWalk(ctx.calc, src_, dest_);
+            if (!walk) return state.setStatus(MovementStatus::Unreachable);
+            side_ = walk->side;
+        }
+        const Vec3d pos = ctx.player.position();
+        if (pos.y < src_.y - 0.3) return state.setStatus(MovementStatus::Unreachable);  // fell off the edge
+        // distances along the walk (from the middle of the destination) and towards the side
+        const double along = (pos.x - dest_.x - 0.5) * stepX_ + (pos.z - dest_.z - 0.5) * stepZ_;
+        const double out = ((pos.x - src_.x - 0.5) * -stepZ_ + (pos.z - src_.z - 0.5) * stepX_) * side_;
+        const float yaw = static_cast<float>(std::atan2(-stepX_, stepZ_) * 180 / std::numbers::pi);
+        state.setTarget({Rotation{yaw, ctx.playerRotations().pitch}, false});
+        state.setInput(Input::Sneak, true);  // sneaking keeps the feet on the edge
+        if (along > -0.25) {
+            // past the blocks: back to the middle of the destination
+            if (std::abs(along) < 0.25 && std::abs(out) < 0.25 && ctx.player.onGround())
+                return state.setStatus(MovementStatus::Success);
+            mh::moveTowards(ctx, state, dest_);
+            return state;
+        }
+        const bool sideways = std::abs(std::remainder(ctx.playerRotations().yaw - yaw, 360.f)) < 10;
+        if (!sideways) return state;
+        // first to the edge, then along it, still pushing over the edge
+        state.setInput(side_ > 0 ? Input::MoveRight : Input::MoveLeft, true);
+        state.setInput(Input::MoveForward, out > 0.62);
+        return state;
+    }
+
+private:
+    int stepX_, stepZ_;
+    int side_ = 0;
+};
+
+// ===========================================================================
+// LadderHop (Bedrock addition): from the thin top of a ladder, jump into another ladder.
+// ===========================================================================
+
+class MovementLadderHop : public Movement {
+public:
+    MovementLadderHop(BlockPos src, BlockPos dest) : Movement(MovementType::LadderHop, src, dest, {}, std::nullopt) {}
+
+    bool safeToCancel(ExecContext& ctx) const override { return !jumped_ && ctx.player.onGround(); }
+    void reset() override {
+        Movement::reset();
+        jumped_ = false;
+        groundTicks_ = 0;
+        takeoff_.reset();
+    }
+
+protected:
+    std::unordered_set<BlockPos> calculateValidPositions() const override {
+        // the jump may swing a little past the cells between; the feet never get more than a
+        // block above the higher end (cells above would be those of the movements after it)
+        std::unordered_set<BlockPos> set;
+        for (int x = std::min(src_.x, dest_.x) - 1; x <= std::max(src_.x, dest_.x) + 1; ++x)
+            for (int z = std::min(src_.z, dest_.z) - 1; z <= std::max(src_.z, dest_.z) + 1; ++z)
+                for (int y = src_.y - 1; y <= std::max(src_.y, dest_.y) + 1; ++y) set.insert({x, y, z});
+        return set;
+    }
+
+    MovementState& updateState(ExecContext& ctx, MovementState& state) override {
+        Movement::updateState(ctx, state);
+        if (state.status != MovementStatus::Running) return state;
+        if (holdingLadder(ctx, dest_)) return state.setStatus(MovementStatus::Success);
+        // landed on the top of the ladder instead (the jump peaks above it): as good as climbed
+        if (ctx.playerFeet() == dest_.above() && ctx.player.onGround() && !helper::isClimbable(ctx.props(dest_.above())))
+            return state.setStatus(MovementStatus::Success);
+        const Vec3d pos = ctx.player.position();
+        if (pos.y < src_.y - 1.2) return state.setStatus(MovementStatus::Unreachable);  // fell
+        // Straight at the ladder, even around a corner: the block between stops one axis and the
+        // body slides along its side until it clears it. Aiming at the open corner first wastes
+        // the jump (in game the turn came when the feet were already below the ladder).
+        // Climbing one block, the feet reach the ladder's cell at the top of the jump: pass well
+        // beside its plate (the 3 pixels on the wall side of the cell stop a body that comes
+        // along the wall). At the same height the jump peaks above the ladder: come down on its
+        // top, against the wall (as good as climbing it), or into its upper part.
+        const BlockPos d = dest_ - src_;
+        Vec3d target = Vec3d::center(dest_);
+        const auto destWall = helper::ladderWall(ctx.props(dest_));
+        if (destWall) {
+            const double towardsWall = dest_.y > src_.y ? -0.2 : 0.1;
+            target.x += destWall->x * towardsWall;
+            target.z += destWall->z * towardsWall;
+        }
+        // Steer from where the momentum takes us in 4 ticks: that brakes before the target. Not
+        // towards the ladder's wall, which stops us anyway: braking there only loses the height
+        // the feet need when they reach the ladder.
+        const Vec3d vel = ctx.player.velocity();
+        const bool airborne = jumped_ && !ctx.player.onGround();
+        double aheadX = airborne ? vel.x * 4 : 0, aheadZ = airborne ? vel.z * 4 : 0;
+        if (destWall) {
+            const double intoWall = aheadX * destWall->x + aheadZ * destWall->z;
+            if (intoWall > 0) {
+                aheadX -= intoWall * destWall->x;
+                aheadZ -= intoWall * destWall->z;
+            }
+        }
+        const double dx = target.x - pos.x - aheadX, dz = target.z - pos.z - aheadZ;
+        const float yaw = static_cast<float>(std::atan2(-dx, dz) * 180 / std::numbers::pi);
+        state.setTarget({Rotation{yaw, ctx.playerRotations().pitch}, false});
+        // A sprint jump up into a ladder or further than a block and a half: the fall below the
+        // ladder comes within about 10 ticks. Not for the short ones: from standing still the
+        // Bedrock client starts sprinting a tick late, without the boost, while the server sprints
+        // at once, carries us past the ladder and corrects us onto wherever it landed.
+        const bool sprint = dest_.y > src_.y || std::hypot(d.x, d.z) > 1.5;
+        if (Settings::get().chatDebug)
+            debugLog(std::format("ladder hop {} -> {}: pos {:.2f} {:.2f} {:.2f} vel {:.2f} {:.2f} {:.2f} ground {} feet {} jumped {}",
+                          src_, dest_, pos.x, pos.y, pos.z, ctx.player.velocity().x, ctx.player.velocity().y,
+                          ctx.player.velocity().z, ctx.player.onGround(), ctx.playerFeet(), jumped_));
+        if (!jumped_ && helper::isClimbable(ctx.props(ctx.playerFeet()))) {
+            // slipped into the ladder below: climb back onto its top, against its wall
+            if (auto wall = helper::ladderWall(ctx.props(ctx.playerFeet()))) {
+                const float wallYaw = static_cast<float>(std::atan2(-wall->x, wall->z) * 180 / std::numbers::pi);
+                state.setTarget({Rotation{wallYaw, ctx.playerRotations().pitch}, false});
+            }
+            state.setInput(Input::MoveForward, true).setInput(Input::Jump, true);
+            return state;
+        }
+        if (!jumped_) {
+            if (!ctx.player.onGround()) {
+                // still settling on the top of the ladder: keep over it, against its wall
+                if (auto wall = helper::ladderWall(ctx.props(src_.below()))) {
+                    const float wallYaw = static_cast<float>(std::atan2(-wall->x, wall->z) * 180 / std::numbers::pi);
+                    state.setTarget({Rotation{wallYaw, ctx.playerRotations().pitch}, false});
+                    state.setInput(Input::MoveForward, true);
+                }
+                return state;
+            }
+            // on the ground somewhere else (a correction of the server): plan again from there
+            if (ctx.playerFeet().y != src_.y) return state.setStatus(MovementStatus::Unreachable);
+            // from the end of the plate, once the server agrees on where we are
+            if (!takeoff_.ready(ctx, state, src_, dest_, yaw)) return state;
+            state.setInput(Input::Jump, true).setInput(Input::MoveForward, true).setInput(Input::Sprint, sprint);
+            jumped_ = true;
+            groundTicks_ = 0;
+            return state;
+        }
+        // Landed, but not where we were going (on the top of the block beside it, where the server
+        // put us...): plan again from there rather than push on towards the target, off the edge.
+        groundTicks_ = ctx.player.onGround() ? groundTicks_ + 1 : 0;
+        if (groundTicks_ > 2) return state.setStatus(MovementStatus::Unreachable);
+        // in the air: push towards where we should be (the yaw already allows for the momentum)
+        state.setInput(Input::MoveForward, std::hypot(dx, dz) > 0.08);
+        state.setInput(Input::Sprint, sprint);
+        return state;
+    }
+
+private:
+    bool jumped_ = false;
+    int groundTicks_ = 0;
+    LadderTakeoff takeoff_;
+};
+
+// ===========================================================================
+// MomentumJump (Bedrock addition): a 4 block gap, with a hop on the run-up for momentum.
+// ===========================================================================
+
+namespace {
+// Flat ground physics along the jump: sprinting, 0.13 of speed and 0.546 of friction on the
+// ground, 0.026 and 0.91 in the air; a jump goes up at 0.42 and adds 0.2 forward. Jumping now
+// with `motion` (after friction): where the feet are when the landing tick starts (its vertical
+// move comes first, there: it has to be over the block), where they are after it, and the
+// motion kept for the next tick (a jump then adds its boost to the air speed: the momentum).
+struct FlatHop {
+    double landingStart, landed, motion;
+};
+FlatHop flatHop(double motion) {
+    motion += 0.2 + 0.13;
+    double distance = motion, y = 0.42, vy = (0.42 - 0.08) * 0.98;
+    motion *= 0.546;
+    for (int tick = 0; tick < 40; ++tick) {
+        motion += 0.026;
+        if (y + vy <= 0) {
+            const double start = distance;
+            distance += motion;
+            return {start, distance, motion * 0.91};
+        }
+        distance += motion;
+        motion *= 0.91;
+        y += vy;
+        vy = (vy - 0.08) * 0.98;
+    }
+    return {distance, distance, motion};
+}
+}  // namespace
+
+class MovementMomentumJump : public Movement {
+public:
+    MovementMomentumJump(BlockPos src, BlockPos dest) : Movement(MovementType::MomentumJump, src, dest, {}, std::nullopt) {
+        const BlockPos d = dest - src;
+        stepX_ = (d.x > 0) - (d.x < 0);
+        stepZ_ = (d.z > 0) - (d.z < 0);
+    }
+
+    bool safeToCancel(ExecContext& ctx) const override {
+        return (phase_ == Phase::BackUp || phase_ == Phase::Settle) && ctx.player.onGround();
+    }
+    void reset() override {
+        Movement::reset();
+        runUp_ = 0;
+        attempts_ = 0;
+        phase_ = Phase::BackUp;
+        last_.reset();
+    }
+
+protected:
+    std::unordered_set<BlockPos> calculateValidPositions() const override {
+        std::unordered_set<BlockPos> set;
+        for (int k = -movement_costs::kMaxMomentumRunUp - 1; k <= movement_costs::kMomentumGap + 2; ++k)
+            for (int s = -1; s <= 1; ++s)
+                for (int dy = 0; dy <= 1; ++dy)
+                    set.insert({src_.x + stepX_ * k - stepZ_ * s, src_.y + dy, src_.z + stepZ_ * k + stepX_ * s});
+        return set;
+    }
+
+    MovementState& updateState(ExecContext& ctx, MovementState& state) override {
+        Movement::updateState(ctx, state);
+        if (state.status != MovementStatus::Running) return state;
+        if (runUp_ == 0) {
+            auto jump = movement_costs::momentumJump(ctx.calc, src_, dest_);
+            if (!jump) return state.setStatus(MovementStatus::Unreachable);
+            runUp_ = jump->runUp;
+        }
+        const Vec3d pos = ctx.player.position();
+        const bool ground = ctx.player.onGround();
+        if (ctx.playerFeet() == dest_ && ground) return state.setStatus(MovementStatus::Success);
+        if (pos.y < src_.y - 0.5) return state.setStatus(MovementStatus::Unreachable);  // fell
+        // Along the jump, from the middle of src. The motion comes from the last tick's move
+        // (what the game reports as the velocity differs between versions).
+        const double along = (pos.x - src_.x - 0.5) * stepX_ + (pos.z - src_.z - 0.5) * stepZ_;
+        const double motion = last_ ? (along - last_->first) * (last_->second ? 0.546 : 0.91) : 0;
+        last_ = std::pair{along, ground};
+        // face the landing block: running at it keeps us on the line of the jump
+        const Vec3d aim = Vec3d::center(dest_);
+        const float yaw = static_cast<float>(std::atan2(-(aim.x - pos.x), aim.z - pos.z) * 180 / std::numbers::pi);
+        state.setTarget({Rotation{yaw, ctx.playerRotations().pitch}, false});
+        constexpr double limit = 0.5 + 0.28;  // the feet are still over the takeoff block
+        if (Settings::get().chatDebug)
+            debugLog(std::format("momentum jump {} -> {}: phase {} along {:.3f} motion {:.3f} ground {}", src_, dest_,
+                                 static_cast<int>(phase_), along, motion, ground));
+        switch (phase_) {
+            case Phase::BackUp: {
+                // to the start of the run-up, sneaking (it may be one block wide)
+                state.setInput(Input::Sneak, true);
+                if (along > -runUp_ + 0.1) {
+                    state.setInput(Input::MoveBack, true);
+                    return state;
+                }
+                phase_ = Phase::Settle;
+                settled_ = 0;
+                return state;
+            }
+            case Phase::Settle:
+                // Still, not sneaking, for a moment: the server's corrections of the back-up
+                // arrive (it is a step back onto the run-up if one does), and the sprint does not
+                // start in the same tick as the sneaking stops.
+                if (along > -runUp_ + 0.1 + 0.15) {
+                    phase_ = Phase::BackUp;
+                    return state;
+                }
+                settled_ = ground && std::abs(motion) < 0.003 ? settled_ + 1 : 0;
+                if (settled_ < kSettleTicks || std::abs(std::remainder(ctx.playerRotations().yaw - yaw, 360.f)) > 10)
+                    return state;
+                phase_ = Phase::Run;
+                [[fallthrough]];
+            case Phase::Run: {
+                state.setInput(Input::MoveForward, true).setInput(Input::Sprint, true);
+                if (!ground) return state;
+                // Hop when it lands on the run-up and the jump from there makes the gap, on the
+                // tick that leaves the most margin (a tick moves us 0.29).
+                auto margin = [&](double at, double speed) -> std::optional<double> {
+                    const FlatHop hop = flatHop(speed);
+                    if (at + hop.landed > limit) return std::nullopt;
+                    const FlatHop jump = flatHop(hop.motion);
+                    const double over = at + hop.landed + jump.landingStart;
+                    const double nearEdge = kGapEnd - 0.3 + 0.05, farEdge = kGapEnd + 1 + 0.3 - 0.05;
+                    if (over < nearEdge || over > farEdge) return std::nullopt;
+                    return std::min({over - nearEdge, farEdge - over, limit - at - hop.landed});
+                };
+                const auto now = margin(along, motion), next = margin(along + motion + 0.13, (motion + 0.13) * 0.546);
+                if (now && (!next || *now >= *next)) {
+                    state.setInput(Input::Jump, true);
+                    phase_ = Phase::Hop;
+                    return state;
+                }
+                if (!now && along + flatHop(motion).landed > limit) {
+                    // Past the moment for the hop (pushed, lagging...): a jump from here falls
+                    // short. Stop well before the edge and run again.
+                    phase_ = Phase::Brake;
+                    state.setInput(Input::MoveForward, false).setInput(Input::Sprint, false);
+                    state.setInput(Input::Sneak, true).setInput(Input::MoveBack, true);
+                }
+                return state;
+            }
+            case Phase::Hop:
+                // hold the jump: we jump again the very tick we land
+                state.setInput(Input::MoveForward, true).setInput(Input::Sprint, true).setInput(Input::Jump, true);
+                if (ground) phase_ = Phase::Jump;
+                return state;
+            case Phase::Jump:
+                state.setInput(Input::MoveForward, true).setInput(Input::Sprint, true);
+                return state;
+            case Phase::Brake:
+                state.setInput(Input::Sneak, true).setInput(Input::MoveBack, true);
+                if (ground && std::abs(motion) < 0.003) {
+                    if (++attempts_ >= 3) return state.setStatus(MovementStatus::Unreachable);
+                    phase_ = Phase::BackUp;
+                }
+                return state;
+        }
+        return state;
+    }
+
+private:
+    enum class Phase { BackUp, Settle, Run, Hop, Jump, Brake };
+    static constexpr double kGapEnd = 0.5 + movement_costs::kMomentumGap;  // the near side of the landing block
+    static constexpr int kSettleTicks = 12;  // the server corrects a gap over 0.3 that lasts 500 ms
+    int stepX_ = 0, stepZ_ = 0, runUp_ = 0, attempts_ = 0, settled_ = 0;
+    Phase phase_ = Phase::BackUp;
+    std::optional<std::pair<double, bool>> last_;  // along, on the ground
+};
+
+// ===========================================================================
+// LadderShimmy (Bedrock addition): hanging in a ladder, sideways into the next one.
+// ===========================================================================
+
+class MovementLadderShimmy : public Movement {
+public:
+    MovementLadderShimmy(BlockPos src, BlockPos dest) : Movement(MovementType::LadderShimmy, src, dest, {}, std::nullopt) {}
+
+protected:
+    std::unordered_set<BlockPos> calculateValidPositions() const override {
+        return {src_, dest_, src_.above(), dest_.above(), src_.below(), dest_.below()};
+    }
+
+    MovementState& updateState(ExecContext& ctx, MovementState& state) override {
+        Movement::updateState(ctx, state);
+        if (state.status != MovementStatus::Running) return state;
+        if (dest_.y > src_.y) return climbAcross(ctx, state);
+        if (ctx.playerFeet() == dest_) return state.setStatus(MovementStatus::Success);
+        const Vec3d pos = ctx.player.position();
+        if (pos.y < src_.y - 0.6) return state.setStatus(MovementStatus::Unreachable);
+        if (!helper::isClimbable(ctx.props(src_))) {
+            mh::moveTowards(ctx, state, dest_);  // from a block: walk into the ladder
+            return state;
+        }
+        state.setInput(Input::Sneak, true);  // sneaking holds us on the ladder
+        const BlockPos d = dest_ - src_;
+        // face the wall the ladder hangs on and step sideways
+        const auto wall = helper::ladderWall(ctx.props(src_));
+        const BlockPos facing = wall ? *wall : d;
+        const float yaw = static_cast<float>(std::atan2(-facing.x, facing.z) * 180 / std::numbers::pi);
+        state.setTarget({Rotation{yaw, ctx.playerRotations().pitch}, false});
+        if (std::abs(std::remainder(ctx.playerRotations().yaw - yaw, 360.f)) > 20) return state;
+        const int right = -facing.z * d.x + facing.x * d.z;  // the step, on our right (+1) or left (-1)
+        if (right > 0) state.setInput(Input::MoveRight, true);
+        else if (right < 0) state.setInput(Input::MoveLeft, true);
+        else state.setInput(facing == d ? Input::MoveForward : Input::MoveBack, true);
+        return state;
+    }
+
+    // One up and one along the wall (a staircase of ladders): climb this one pushing into the
+    // wall, at its edge on the next one's side, and step across once the feet are at the next
+    // one's height (they leave this ladder there; a moment later and they fall back).
+    MovementState& climbAcross(ExecContext& ctx, MovementState& state) {
+        const Vec3d pos = ctx.player.position();
+        // really in it: the feet are rounded up a little, and a moment later they fall back
+        if (holdingLadder(ctx, dest_) && std::floor(pos.y) >= dest_.y) return state.setStatus(MovementStatus::Success);
+        if (pos.y < src_.y - 0.6) return state.setStatus(MovementStatus::Unreachable);
+        const auto wall = helper::ladderWall(ctx.props(src_));
+        if (!wall) return state.setStatus(MovementStatus::Unreachable);
+        const BlockPos d{dest_.x - src_.x, 0, dest_.z - src_.z};
+        const float yaw = static_cast<float>(std::atan2(-wall->x, wall->z) * 180 / std::numbers::pi);
+        state.setTarget({Rotation{yaw, ctx.playerRotations().pitch}, false});
+        if (std::abs(std::remainder(ctx.playerRotations().yaw - yaw, 360.f)) > 20) return state;
+        // how far the feet still are from the next ladder's column (0 at the line between them)
+        const double toEdge = 0.5 - ((pos.x - src_.x - 0.5) * d.x + (pos.z - src_.z - 0.5) * d.z);
+        const int right = -wall->z * d.x + wall->x * d.z;  // the step, on our right (+1) or left
+        const Input across = right > 0 ? Input::MoveRight : Input::MoveLeft;
+        const Input back = right > 0 ? Input::MoveLeft : Input::MoveRight;
+        const bool atTop = pos.y >= dest_.y - 0.05;
+        if (atTop) {
+            state.setInput(Input::MoveForward, true).setInput(Input::Jump, true).setInput(across, true);
+            return state;
+        }
+        // Hold the feet 0.06 to 0.18 from the edge until then. A ladder keeps the air's friction:
+        // let go of the key and we coast about ten times our speed, so steer by where that ends.
+        const Vec3d vel = ctx.player.velocity();
+        const double coast = toEdge - (vel.x * d.x + vel.z * d.z) * 10;
+        if (coast > 0.18) state.setInput(across, true);
+        else if (coast < 0.06) state.setInput(back, true);
+        if (toEdge > 0.25) {
+            // to the edge first, held by sneaking: the climb is faster than the steps in a ladder
+            state.setInput(Input::Sneak, true);
+            return state;
+        }
+        state.setInput(Input::MoveForward, true).setInput(Input::Jump, true);  // climbing
+        return state;
+    }
+};
+
 std::unique_ptr<Movement> Movement::create(const MovementSpec& spec) {
     std::unique_ptr<Movement> m;
     switch (spec.type) {
@@ -1355,6 +1964,10 @@ std::unique_ptr<Movement> Movement::create(const MovementSpec& spec) {
         case MovementType::Parkour: m = std::make_unique<MovementParkour>(spec.src, spec.dest); break;
         case MovementType::ParkourCorner: m = std::make_unique<MovementParkourCorner>(spec.src, spec.dest); break;
         case MovementType::ParkourShulker: m = std::make_unique<MovementParkourShulker>(spec.src, spec.dest); break;
+        case MovementType::EdgeWalk: m = std::make_unique<MovementEdgeWalk>(spec.src, spec.dest); break;
+        case MovementType::LadderHop: m = std::make_unique<MovementLadderHop>(spec.src, spec.dest); break;
+        case MovementType::LadderShimmy: m = std::make_unique<MovementLadderShimmy>(spec.src, spec.dest); break;
+        case MovementType::MomentumJump: m = std::make_unique<MovementMomentumJump>(spec.src, spec.dest); break;
     }
     m->overrideCost(spec.cost);
     m->calculatedWhileLoaded = spec.calculatedWhileLoaded;

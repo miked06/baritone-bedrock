@@ -53,6 +53,9 @@ public:
         return mem::callVirtual<const Block*, const BlockPos&, uint32_t>(this, offsets::BlockSource_vt_getBlockLayer,
                                                                          pos, layer);
     }
+    const void* getBlockEntity(const BlockPos& pos) const {
+        return mem::callVirtual<const void*, const BlockPos&>(this, offsets::BlockSource_vt_getBlockEntity, pos);
+    }
     bool hasChunksAt(const BlockPos& pos, int radius) const {
         return mem::callVirtual<bool, const BlockPos&, int, bool>(this, offsets::BlockSource_vt_hasChunksAt, pos,
                                                                   radius, false);

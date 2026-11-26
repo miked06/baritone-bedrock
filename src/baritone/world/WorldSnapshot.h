@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <shared_mutex>
 #include <unordered_map>
 #include <unordered_set>
@@ -43,6 +44,11 @@ public:
     }
 
     void set(int lx, int y, int lz, StateId id);
+    // Facing of a block entity (shulker boxes), set while the chunk is scanned, before it is
+    // shared with other threads.
+    void setFacing(int lx, int y, int lz, uint8_t facing);
+    std::optional<uint8_t> facing(int lx, int y, int lz) const;
+    const std::vector<std::pair<uint32_t, uint8_t>>& facings() const { return facings_; }
 
     int minY() const { return minY_; }
     int numSections() const { return numSections_; }
@@ -52,6 +58,7 @@ public:
 private:
     int cx_, cz_, minY_, numSections_;
     std::unique_ptr<std::atomic<Section*>[]> sections_;
+    std::vector<std::pair<uint32_t, uint8_t>> facings_;  // (local index, facing), a few per chunk
 };
 
 // All chunks the bot currently knows about in the player's dimension.

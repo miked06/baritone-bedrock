@@ -17,10 +17,11 @@ struct MoveResult {
     }
 };
 
-enum class MovementType : uint8_t { Traverse, Ascend, Descend, Fall, Diagonal, Pillar, Downward, Parkour, ParkourCorner, ParkourShulker };
+enum class MovementType : uint8_t { Traverse, Ascend, Descend, Fall, Diagonal, Pillar, Downward, Parkour, ParkourCorner, ParkourShulker, EdgeWalk, LadderHop, LadderShimmy, MomentumJump };
 
 inline bool isParkour(MovementType type) {
-    return type == MovementType::Parkour || type == MovementType::ParkourCorner || type == MovementType::ParkourShulker;
+    return type == MovementType::Parkour || type == MovementType::ParkourCorner || type == MovementType::ParkourShulker ||
+           type == MovementType::MomentumJump;
 }
 
 // Every move the A* tries from a node (Baritone's Moves enum).
@@ -56,9 +57,40 @@ struct ParkourJump {
     double takeoff;
     double cost;
     bool sprint;
+    // Sideways offset of the jump from the line between the two block centers (positive: to
+    // the right of the jump direction), to pass beside something in the middle.
+    double lane = 0;
 };
 std::optional<ParkourJump> parkourJump(CalculationContext& ctx, const BlockPos& src, const BlockPos& dest);
 double shulkerClimb(CalculationContext& ctx, BlockPos src, BlockPos dest);
+// Bedrock addition: jump into a ladder hanging one or two blocks ahead, one block up: the
+// feet reach its cell at the top of the jump and the wall behind it stops us there.
+void ladderJump(CalculationContext& ctx, int x, int y, int z, Direction dir, MoveResult& res);
+// Bedrock addition: sneak along the edge of the floor beside blocks that leave a little room
+// in their cell (a honey block is 1/16 smaller on every side). side: +1 to the right of the
+// walking direction, -1 to the left.
+struct EdgeWalk {
+    int side;
+    double cost;
+};
+std::optional<EdgeWalk> edgeWalk(CalculationContext& ctx, BlockPos src, BlockPos dest);
+// Bedrock addition: from the thin top of a ladder (against its wall), jump into another
+// ladder up to 2 blocks away, at the same height or one block up, also around the corner of
+// the block they hang on.
+double ladderHop(CalculationContext& ctx, BlockPos src, BlockPos dest);
+// Bedrock addition: hanging in a ladder, move sideways into the next ladder (sneaking holds us).
+double ladderShimmy(CalculationContext& ctx, BlockPos src, BlockPos dest);
+// Bedrock addition: a straight 4 block gap (5 blocks from the middle of one block to the middle
+// of the other). A sprint jump from the ground falls short of it by about a hundredth of a block;
+// it takes momentum: a hop on the run-up, then the jump the tick we land, which adds the jump
+// boost to the speed kept from the air. runUp: the free blocks behind the takeoff block (5 or 6)
+// the executor backs up onto first.
+inline constexpr int kMomentumGap = 4, kMinMomentumRunUp = 5, kMaxMomentumRunUp = 6;
+struct MomentumJump {
+    int runUp;
+    double cost;
+};
+std::optional<MomentumJump> momentumJump(CalculationContext& ctx, BlockPos src, BlockPos dest);
 }  // namespace movement_costs
 
 }  // namespace baritone

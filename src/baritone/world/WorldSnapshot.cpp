@@ -16,6 +16,24 @@ ChunkData::~ChunkData() {
     for (int i = 0; i < numSections_; ++i) delete sections_[i].load(std::memory_order_relaxed);
 }
 
+void ChunkData::setFacing(int lx, int y, int lz, uint8_t facing) {
+    const uint32_t index = (static_cast<uint32_t>(y - minY_) << 8) | (lz << 4) | lx;
+    for (auto& [i, f] : facings_)
+        if (i == index) {
+            f = facing;
+            return;
+        }
+    facings_.emplace_back(index, facing);
+}
+
+std::optional<uint8_t> ChunkData::facing(int lx, int y, int lz) const {
+    if (y < minY_) return std::nullopt;
+    const uint32_t index = (static_cast<uint32_t>(y - minY_) << 8) | (lz << 4) | lx;
+    for (const auto& [i, f] : facings_)
+        if (i == index) return f;
+    return std::nullopt;
+}
+
 void ChunkData::set(int lx, int y, int lz, StateId id) {
     int s = (y - minY_) >> 4;
     if (s < 0 || s >= numSections_) return;

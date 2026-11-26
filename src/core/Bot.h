@@ -122,7 +122,7 @@ public:
     }
 
     // Debug helpers
-    void walkFor(int ticks, bool sprint);
+    void walkFor(int ticks, bool sprint, bool sneak = false, int strafe = 0);
     void jumpFor(int ticks) { cancelAll(); jumpTicks_ = ticks; }
     void lookAt(float yaw, float pitch) { manualLook_ = sdk::Vec2{pitch, yaw}; }
     void cancelAll();
@@ -254,7 +254,8 @@ private:
 
     int walkTicks_ = 0;
     int jumpTicks_ = 0;
-    bool walkSprint_ = false;
+    bool walkSprint_ = false, walkSneak_ = false;
+    int walkStrafe_ = 0;  // +1 left, -1 right
     std::optional<sdk::Vec2> manualLook_;
     LookBehavior look_;
 };

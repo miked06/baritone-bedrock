@@ -45,7 +45,14 @@ public:
     // Ticks to break `block` with the best tool, COST_INF if impossible.
     double breakTime(const BlockProps& block) const;
 
-    bool isAvoided(const BlockProps& p) const { return blocksToAvoid.contains(p.name); }
+    bool isAvoided(const BlockProps& p) const {
+        if (!blocksToAvoid.contains(p.name)) return false;
+        // a string that no tripwire hook holds triggers nothing (parkour maps stretch them as decoration)
+        return !(p.name == "minecraft:trip_wire" && p.state("attached_bit") == "0");
+    }
+    // Facing of a block entity (shulker boxes: the side their lid opens to), Bedrock ids:
+    // 0 down, 1 up, 2 north, 3 south, 4 west, 5 east. Unknown in cached chunks.
+    std::optional<uint8_t> blockFacing(const BlockPos& p) { return bsi.facing(p.x, p.y, p.z); }
     bool isDisallowedBreaking(const BlockProps& p) const { return blocksToDisallowBreaking.contains(p.name); }
 
     // Snapshot of settings

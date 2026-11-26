@@ -2,6 +2,133 @@
 
 All notable changes to Baritone Bedrock. Versions follow [semantic versioning](https://semver.org/).
 
+## Unreleased
+
+- **Parkour under candles and ceilings.** Jumps with a block or a candle 3 blocks
+  above them were refused (Baritone's head-bump rule). A bump there only lowers the
+  top of the jump from 1.25 to 1.2 blocks, so flat jumps, up to a 3 block gap,
+  are now planned under it. Jumps that climb a block still need the full height.
+- **Candles** are 6 pixels tall (they were 7) and are parkour supports: the bot
+  lands on them and jumps from them, using one candle's 2 pixel footprint or the
+  footprint of a group. It prefers short, straight jumps onto such small targets.
+- Baritone's grid jumps no longer start from, or land on, candles, end rods and
+  panes: their real height made those jumps fail (a jump from a candle to a block
+  4 away climbs 0.625). The simulated jumps handle them.
+- A one block gap with a block at head height above it is crossed with a simulated
+  low hop.
+- After a failed jump, the bot waits for the landing before planning again. It used
+  to plan from mid-air, find nothing three times in a row and give up the `#goto`.
+- `#terrain dump` writes the blocks around the player with their pathfinding
+  properties, and the `dev_replay_terrain_dump` test replays a path problem from
+  such a file offline.
+- **Ladders hanging in the air**: the bot jumps into a ladder one or two blocks ahead
+  and one up (the block it hangs on stops it in its cell), or straight up into one
+  starting at head height, then climbs it. A ladder at head height is a thin plate on
+  its wall and no longer blocks the jumps that pass under it.
+- **Honey blocks** keep their real collision, 1/16 smaller than the cell: the bot sneaks
+  along the edge of the floor beside them (new `EdgeWalk` movement), the body over the
+  void, when they stand in the way.
+- Closed shulker boxes are full blocks to stand and walk on.
+- **Shulker box facing**: the bot reads the side each box's lid opens to from its block
+  entity (Bedrock keeps it out of the block state; `BlockSource` virtual 3 and the
+  byte at `0x380` of the shulker block actor in 26.65, found by comparing boxes with a
+  single free side). Lid climbs are only planned from that side, instead of trying
+  both and replanning after a failure. Terrain dumps keep the facings.
+- **Ladder tops and ladder jumps**: climbing pushes into the wall the ladder hangs on,
+  so the bot ends on the thin top of a ladder. From there it jumps into another ladder
+  up to 2 blocks away, at the same height or one up, also around the corner of the
+  block they hang on (`LadderHop`): zigzags of single ladders, ladders on two faces
+  of a pillar. Hanging in a row of ladders under a ceiling, it moves sideways
+  (`LadderShimmy`, sneaking keeps it on the ladders).
+- From the top of a ladder the bot can step up onto the next block (Baritone forbids
+  any jump from above a ladder): the spiral of ladders around the pillar near
+  `56 3 0` now leads to the floor above. It never jumps onto the thin top of a
+  ladder (too easy to miss): it walks into a ladder beside it and climbs it, and
+  walking onto ladder tops aims against their wall.
+- Ladder jumps aim straight at the ladder with a sprint jump; around a corner the
+  body slides along the block between. Aiming at the free corner first turned too
+  late in game.
+- **Strings**: a tripwire that no hook holds triggers nothing and is no longer
+  avoided (`blocksToAvoid` still avoids armed tripwires).
+- `#bactor <x y z> [index] [bytes]` (developer): calls a `BlockSource` virtual on a
+  position and dumps the result, to find block entity fields after a game update.
+- Baritone's grid jumps wait to be on the ground before starting (they used to walk
+  off the edge right after a ladder or an ascend) and correct their sideways drift in
+  the air.
+- `#terrain dump` takes an optional center, and the replay test a
+  `BARITONE_SWEEP="x0 x1 z0 z1"` that lists which standing places are reachable.
+- **4 block gaps** (5 blocks from middle to middle, new `MomentumJump` movement). A
+  sprint jump from the ground falls short of one by about a hundredth of a block. With
+  5 or 6 free blocks of run-up behind the takeoff block, the bot backs up onto them
+  (sneaking: run-ups are often one block wide), sprints, hops once on the run-up and
+  jumps again the tick it lands: that jump adds its boost to the speed kept from the
+  air. It picks the hop tick with the most margin from a model of the run, and stops
+  to run again if the moment passes, instead of jumping short.
+- **Ladder zigzags on one wall and spirals**: before jumping into the next ladder up, the
+  bot moves along the thin top to its end nearest to the destination, and away from
+  the wall to the outer edge of the plate. That lets the body pass beside the next
+  ladder's plate, which used to stop the jump dead. In the air it no longer brakes
+  towards the wall of the destination ladder (the wall stops it anyway), keeping the
+  height the feet need when they reach it.
+- Arrival on the top of a ladder waits for the climb out of it to finish; it used to
+  cancel in the air, drop back into the ladder and start over.
+- Offline simulator for the tests (`tests/SimPlayer.h`): the bot's inputs drive a
+  player with the game's walking, sprinting, jumping, ladder and sneaking physics
+  against the real collision boxes. `dev_simulate_terrain_dump` plays a `#goto` on a
+  terrain dump (`BARITONE_TERRAIN`, `BARITONE_SIMULATE`, `BARITONE_START`,
+  `BARITONE_GOAL`, `BARITONE_TRACE="from count"`) before anything is tried in game.
+- In the simulator on terrain dumps of Dean's Terrible Towers: the spiral of ladders
+  from `58 0 0` and its 4 block gap (`#goto 61 6 11`, 17 seconds), the zigzag of
+  single ladders and the row of ladders from `48 7 -16`, the corner pillar from
+  `51 58 14`, and the green tower climb to `60 -22 4`.
+- **Jumping from the top of a ladder in Bedrock.** The first tries of the spiral in game
+  fell at its second hop. Standing on a ladder's top with the feet above its cell, the
+  Bedrock client takes the player for being on the ladder: it ignores the sneaking (it
+  moved 0.3 to 0.5 of a block further than the server) and a jump becomes a climb (0.2
+  up, no boost), while the server jumps; the server's corrections arrived in mid-air. The
+  bot now takes off from the end of the plate, the feet past the ladder's cell: it sneaks
+  sideways only (pushing into the wall climbs it), lets the sneaking stop it at the end,
+  keeps pushing until the server is there too, then stands still 12 ticks before the
+  jump (the server corrects a gap over 0.3 that lasts 500 ms). An `Ascend` from a ladder
+  top onto a block does the same, with a sprint jump. The momentum jump also waits
+  between backing up and running. The simulator jumps like the Bedrock client above a
+  ladder, so the tests catch takeoffs from inside its cell.
+- **Jumps that land a block lower** over a gap (Baritone has none): where walking off the
+  edge falls into the gap, as in the corridor after the 4 block gap (`60 6 12` to
+  `58 5 12`). A step down onto the next block stays a descend.
+- After being pushed off the path, the bot goes back to the most recent movement that
+  holds its position (Baritone takes the first). In game it went back from the top of the
+  spiral's pillar to the hop below it, jumped from there and fell back, over and over. A
+  ladder hop's zone also stops a block above its higher end.
+- **Staircases of ladders** (single ladders on one wall, each one along and one up, near
+  `58 18 7`): the next one's plate stands beside the top of each, so no jump can start
+  from the end of the plate there and ladder hops are no longer planned. The bot climbs
+  from inside instead (`LadderShimmy` one up): it slides to the edge while sneaking
+  (which holds it), climbs, and steps across as its feet pass the next ladder's bottom,
+  braking early (inside a ladder it coasts about ten times its speed). It can step down
+  into a ladder hanging in the air from its top, and keeps climbing (jump held) when it
+  leaves a ladder for the block beside it. In game the bot froze there: the takeoff could
+  not move along the plate and restarted its push forever.
+- Short ladder hops (same height, a block and a half at most) no longer sprint: from
+  standing still the Bedrock client starts sprinting a tick late, the server at once, and
+  the server's correction put the player on top of the spiral's pillar, where the hop
+  started over and fell. A hop that ends on the ground anywhere else (or finds the player
+  at another height before jumping) gives up and the bot plans again from there.
+- Tested in game on Dean's Terrible Towers after that: the spiral `#goto 53 6 8` from
+  `58 0 0` in 16 seconds (one cancelled move recovered at the row of ladders), then the 4
+  block gap `#goto 61 6 11` in 10 seconds: the hop landed 0.54 into the takeoff block (the
+  model said 0.49 to 0.63) and the jump made the gap. Then `#goto 52 5 12` from `56 -20 12`
+  in 65 seconds: the rest of the green tower, the spiral, the 4 block gap and the corridor.
+  Then the staircase of ladders, `#goto 61 22 12` from the top of its first ladder, in 5.5
+  seconds.
+- `#walk <ticks> [sprint|sneak|normal] [left|right]` (test): also sneaks and steps
+  sideways, and prints the positions with decimals, to compare them with the server's
+  corrections.
+- Tested in Survival on Dean's Terrible Towers with breaking and placing disabled:
+  `#goto 60 -22 4` (twice), `#goto 53 -15 7`, then the whole green tower from its
+  floor to its exit, `#goto 61 0 10` (33 blocks up: candles, low hop, hanging
+  ladder, honey edge, 4 block jumps) in 44 seconds without a fall.
+
 ## 1.10.2
 
 - Experimental advanced parkour now plans curved jumps around obstacles,

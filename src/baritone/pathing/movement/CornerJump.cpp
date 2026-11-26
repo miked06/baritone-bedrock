@@ -244,6 +244,24 @@ std::optional<CornerJump> searchSteeredLanding(const std::vector<Box>& boxes, Bl
     return std::nullopt;
 }
 
+// A one block gap with a block at head height above it: a normal jump bumps its head 0.2
+// up and the arc collapses. The simulated hop (sprint, jump under the ceiling, brake) can
+// still cross it.
+bool isLowCeilingHop(CalculationContext& ctx, BlockPos src, BlockPos dest) {
+    const BlockPos d = dest - src;
+    if (!ctx.allowParkour || !ctx.canSprint || d.y != 0 || std::abs(d.x) + std::abs(d.z) != 2 || (d.x != 0 && d.z != 0))
+        return false;
+    const BlockPos gap{src.x + d.x / 2, src.y, src.z + d.z / 2};
+    const auto& ceiling = ctx.props(gap.x, src.y + 2, gap.z);
+    return ceiling.collides && !helper::avoidWalkingInto(ceiling) && !ctx.isAvoided(ceiling) &&
+           !helper::canWalkOn(ctx, gap.x, gap.y - 1, gap.z) && !helper::avoidWalkingInto(ctx.props(gap.x, gap.y - 1, gap.z)) &&
+           helper::fullyPassable(ctx, gap.x, gap.y, gap.z) && helper::fullyPassable(ctx, gap.x, gap.y + 1, gap.z) &&
+           helper::fullyPassable(ctx, src.x, src.y, src.z) && helper::fullyPassable(ctx, src.x, src.y + 1, src.z) &&
+           helper::fullyPassable(ctx, dest.x, dest.y, dest.z) && helper::fullyPassable(ctx, dest.x, dest.y + 1, dest.z) &&
+           ctx.props(src.x, src.y - 1, src.z).fullCube && ctx.props(dest.x, dest.y - 1, dest.z).fullCube &&
+           helper::canParkourOn(ctx, src.below()) && helper::canParkourOn(ctx, dest.below()) && ctx.permitsSegment(src, dest);
+}
+
 }  // namespace
 
 bool isCornerJump(CalculationContext& ctx, BlockPos src, BlockPos dest) {
@@ -252,6 +270,7 @@ bool isCornerJump(CalculationContext& ctx, BlockPos src, BlockPos dest) {
     const bool flat = d.y == 0 && (distance == 2 || distance == 3) && (d.x == 0 || d.z == 0);
     const bool lower = d.y == -1 && d.x * d.x + d.z * d.z == 10;
     const bool underLedge = d.y == -2 && std::abs(d.x) == 2 && std::abs(d.z) == 2;
+    if (flat && distance == 2 && isLowCeilingHop(ctx, src, dest)) return true;
     if (!ctx.allowParkour || !ctx.canSprint || (!flat && !lower && !underLedge) ||
         -d.y > ctx.maxFallHeightNoWater || !ctx.props(dest.x, dest.y - 1, dest.z).fullCube) return false;
 
@@ -330,7 +349,7 @@ std::optional<CornerJump> planCornerJump(CalculationContext& ctx, BlockPos src, 
         });
     };
     const bool longFlat = d.y == 0 && std::abs(d.x) + std::abs(d.z) == 3;
-    if (d.y < 0 || longFlat) {
+    if (d.y < 0 || longFlat || isLowCeilingHop(ctx, src, dest)) {
         using Offsets = std::array<std::pair<double, double>, 4>;
         const Offsets stages = longFlat ? Offsets{{{0.28, 0.28}, {-0.28, 0.28}, {0.28, -0.28}, {-0.28, -0.28}}}
                                       : Offsets{{{0.28, 0.28}, {0.28, 0.0}, {0.28, -0.28}, {0.0, 0.28}}};

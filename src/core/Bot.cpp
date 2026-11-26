@@ -1,4 +1,5 @@
 #include "core/Bot.h"
+#include "baritone/utils/DebugLog.h"
 
 #include <Windows.h>
 
@@ -38,6 +39,7 @@ bool Bot::start() {
         else chat::info(msg);
     });
     baritone::Baritone::setNotifier([](const std::string& msg, bool error) { notify::show("Baritone", msg, error); });
+    baritone::debugSink() = [](const std::string& line) { logger::debug("{}", line); };
     player_.setToolPolicy([this](const baritone::HotbarStack& stack) { return !baritone_ || baritone_->maintenance().permits(stack); });
     player_.setActionObserver([this](baritone::BlockPos pos) { recordIntent(pos); });
     int loaded = baritone::loadSettings((paths::dataDir() / "settings.txt").string());
@@ -210,9 +212,11 @@ void Bot::updateClickSelection() {
     }
 }
 
-void Bot::walkFor(int ticks, bool sprint) {
+void Bot::walkFor(int ticks, bool sprint, bool sneak, int strafe) {
     walkTicks_ = ticks;
+    walkStrafe_ = strafe;
     walkSprint_ = sprint;
+    walkSneak_ = sneak;
 }
 
 void Bot::loadSchematicAsync(std::string file, baritone::BlockPos origin, bool preview) {
@@ -493,8 +497,14 @@ void Bot::onTick(void* level) {
         --walkTicks_;
         input_.set(Key::MoveForward, walkTicks_ > 0);
         input_.set(Key::Sprint, walkSprint_ && walkTicks_ > 0);
+        input_.set(Key::Sneak, walkSneak_ && walkTicks_ > 0);
+        input_.set(Key::MoveLeft, walkStrafe_ > 0 && walkTicks_ > 0);
+        input_.set(Key::MoveRight, walkStrafe_ < 0 && walkTicks_ > 0);
         input_.setControlling(walkTicks_ > 0);
-        if (walkTicks_ == 0) chat::info(std::format("Finished walking, position {}", player->feet()));
+        if (walkTicks_ == 0) {
+            const auto p = player->position();
+            chat::info(std::format("Finished walking, position {:.3f} {:.3f} {:.3f}", p.x, p.y, p.z));
+        }
         return;
     }
 

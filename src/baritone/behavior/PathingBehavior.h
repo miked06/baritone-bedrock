@@ -113,6 +113,10 @@ private:
     MovementState output_;
     std::optional<BlockPos> etaStart_;  // Java startPosition
     int ticksElapsedSoFar_ = 0;
+    // Ticks spent in the air (jumping or falling, not swimming or climbing). A path from a
+    // position in mid-air finds nothing: wait for the landing, for a while.
+    int airborneTicks_ = 0;
+    bool waitingToLand() const { return airborneTicks_ > 0 && airborneTicks_ < 60; }
     bool producedOutput_ = false;
 
     std::shared_ptr<const WorldSnapshot> world_;

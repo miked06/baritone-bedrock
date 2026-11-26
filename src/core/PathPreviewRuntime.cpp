@@ -23,7 +23,7 @@ void Bot::startPathPreview(baritone::BlockPos start, baritone::GoalPtr goal) {
         auto preview = result.path ? baritone::describePath(std::move(result.path), inspection) : baritone::PathPreview{};
         if (preview.path) {
             std::string moves;
-            constexpr const char* names[]{"T", "A", "D", "F", "Di", "P", "Dw", "Pk", "PkC", "PkS"};
+            constexpr const char* names[]{"T", "A", "D", "F", "Di", "P", "Dw", "Pk", "PkC", "PkS", "Edg", "LH", "LS", "MJ"};
             for (const auto& move : preview.path->movements()) {
                 moves += names[static_cast<int>(move.type)];
                 moves += ' ';

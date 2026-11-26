@@ -26,6 +26,7 @@
 #include "command/ModuleCommands.h"
 #include "core/Perf.h"
 #include "baritone/utils/RayTrace.h"
+#include "baritone/world/TerrainDump.h"
 #include "core/Bot.h"
 #include "platform/WorldTracker.h"
 #include "core/Chat.h"
@@ -1278,6 +1279,72 @@ void registerAll(CommandManager& manager, Bot& bot) {
                      }
                  }});
 
+    manager.add({{"terrain"}, "terrain dump [radius] [below] [above] [x y z]",
+                 "Dev: write the blocks around you, as the pathfinder sees them, for offline replay",
+                 [](const Args& args) {
+        if (args.empty() || args[0] != "dump" || (args.size() > 4 && args.size() != 7))
+            throw CommandError("Usage: #terrain dump [radius] [below] [above] [x y z]");
+        auto& player = requirePlayer();
+        auto snap = platform::WorldTracker::get().snapshot();
+        if (!snap) throw CommandError("No world snapshot available");
+        const int radius = args.size() > 1 ? parseInt(args[1], "radius") : 32;
+        const int below = args.size() > 2 ? parseInt(args[2], "below") : 16;
+        const int above = args.size() > 3 ? parseInt(args[3], "above") : 32;
+        if (radius < 1 || radius > 128 || below < 0 || below > 256 || above < 0 || above > 256)
+            throw CommandError("radius 1..128, below/above 0..256");
+        baritone::BlockPos feet = feetPos(player);
+        const auto position = player.feet();
+        if (args.size() == 7)  // another place than the player (still the player's position as the start)
+            feet = {parseCoord(args[4], feet.x, "x"), parseCoord(args[5], feet.y, "y"), parseCoord(args[6], feet.z, "z")};
+        const std::string text = baritone::writeTerrainDump(*snap, {feet.x - radius, feet.y - below, feet.z - radius},
+                                                            {feet.x + radius, feet.y + above, feet.z + radius},
+                                                            {position.x, position.y, position.z});
+        const auto folder = paths::dataDir() / "terrain";
+        std::error_code error;
+        std::filesystem::create_directories(folder, error);
+        const auto file = folder / std::format("terrain_{}_{}_{}.txt", feet.x, feet.y, feet.z);
+        std::ofstream out(file, std::ios::binary | std::ios::trunc);
+        if (!out.write(text.data(), static_cast<std::streamsize>(text.size()))) throw CommandError("Could not write " + file.string());
+        chat::info(std::format("Terrain written to {} ({} KiB)", file.string(), text.size() / 1024));
+    }});
+
+    manager.add({{"bactor"}, "bactor <x y z> [vtIndex] [bytes]",
+                 "Dev: call a BlockSource virtual function on a position (block entity lookup) and dump its result",
+                 [](const Args& args) {
+        if (args.size() < 3 || args.size() > 5) throw CommandError("Usage: #bactor <x y z> [vtIndex] [bytes]");
+        auto& player = requirePlayer();
+        auto* region = sdk::ClientInstance::get()->region();
+        if (!region) throw CommandError("No region");
+        const baritone::BlockPos feet = feetPos(player);
+        const sdk::BlockPos pos{parseCoord(args[0], feet.x, "x"), parseCoord(args[1], feet.y, "y"), parseCoord(args[2], feet.z, "z")};
+        const std::size_t index = args.size() > 3 ? static_cast<std::size_t>(parseInt(args[3], "index")) : 3;
+        const int bytes = args.size() > 4 ? parseInt(args[4], "bytes") : 0x200;
+        if (index > 64 || bytes < 8 || bytes > 0x2000) throw CommandError("index 0..64, bytes 8..8192");
+        struct Call {
+            const sdk::BlockSource* region;
+            sdk::BlockPos pos;
+            std::size_t index;
+            void* result = nullptr;
+        } call{region, pos, index};
+        void* fault = nullptr;
+        const unsigned long code = safe::detail::invokeSeh(
+            [](void* p) {
+                auto* c = static_cast<Call*>(p);
+                c->result = mem::callVirtual<void*, const sdk::BlockPos&>(c->region, c->index, c->pos);
+            },
+            &call, &fault);
+        if (code) {
+            chat::error(std::format("vt[{}] faulted (0x{:08X} at {})", index, code, fault));
+            return;
+        }
+        auto base = reinterpret_cast<uintptr_t>(GetModuleHandleW(L"Minecraft.Windows.exe"));
+        uintptr_t vt = mem::isReadable(call.result, 8) ? *static_cast<const uintptr_t*>(call.result) : 0;
+        chat::info(std::format("vt[{}]({} {} {}) = {} vtable {}", index, pos.x, pos.y, pos.z, call.result,
+                               vt >= base && vt < base + 0x13000000 ? std::format("Minecraft.Windows.exe+0x{:X}", vt - base)
+                                                                   : std::format("0x{:X}", vt)));
+        if (call.result && mem::isReadable(call.result, 8)) hexDump(std::format("vt{}@{},{},{}", index, pos.x, pos.y, pos.z), call.result, bytes);
+    }});
+
     manager.add({{"world"}, "world", "Dev: show world snapshot state", [](const Args&) {
         auto& tracker = platform::WorldTracker::get();
         auto snap = tracker.snapshot();
@@ -1482,14 +1549,19 @@ void registerAll(CommandManager& manager, Bot& bot) {
     manager.add({{"debug", "info"}, "debug", "Show data read from the game (check offsets)",
                  [](const Args&) { debugInfo(); }});
 
-    manager.add({{"walk"}, "walk <ticks> [sprint]", "Test: walk straight ahead for N ticks",
+    manager.add({{"walk"}, "walk <ticks> [sprint|sneak|normal] [left|right]", "Test: walk ahead (and sideways) for N ticks",
                  [&bot](const Args& args) {
-                     if (args.empty()) throw CommandError("Usage: #walk <ticks> [sprint]");
+                     if (args.empty()) throw CommandError("Usage: #walk <ticks> [sprint|sneak]");
                      int ticks = parseInt(args[0], "ticks");
                      bool sprint = args.size() > 1 && args[1] == "sprint";
+                     bool sneak = args.size() > 1 && args[1] == "sneak";
+                     const std::string side = args.size() > 2 ? args[2] : "";
+                     const int strafe = side == "left" ? 1 : side == "right" ? -1 : 0;
                      requirePlayer();
-                     bot.walkFor(ticks, sprint);
-                     chat::info(std::format("Walking for {} ticks{}", ticks, sprint ? " while sprinting" : ""));
+                     const auto p = requirePlayer().position();
+                     bot.walkFor(ticks, sprint, sneak, strafe);
+                     chat::info(std::format("Walking for {} ticks{} from {:.3f} {:.3f} {:.3f}", ticks,
+                                            sprint ? " while sprinting" : sneak ? " sneaking" : "", p.x, p.y, p.z));
                  }});
 
     manager.add({{"jump"}, "jump <ticks>", "Dev: hold normal jump/swim input for 1..200 ticks", [&bot](const Args& args) {

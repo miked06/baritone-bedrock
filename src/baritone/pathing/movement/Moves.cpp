@@ -37,6 +37,33 @@ bool checkOvershootSafety(CalculationContext& ctx, int x, int y, int z) {
     return !avoidWalkingInto(ctx.props(x, y, z)) && !avoidWalkingInto(ctx.props(x, y + 1, z));
 }
 
+// Head height of a jump (2 blocks above the feet): a ladder there is only a thin plate the
+// head passes beside; the feet never reach it.
+bool headRoom(CalculationContext& ctx, int x, int y, int z) {
+    const BlockProps& p = ctx.props(x, y, z);
+    return fullyPassable(ctx, x, y, z, p) || p.type == T::Ladder;
+}
+
+// The collision box of a block inside its cell, horizontally (cell coordinates 0..1).
+struct Footprint {
+    double x0, x1, z0, z1;
+};
+
+Footprint footprint(const BlockProps& p, bool endpointPane) {
+    if (p.type == T::Ladder) {
+        // a 3 pixel plate against the block it hangs on (facing away from it)
+        constexpr double t = 0.1875;
+        const auto facing = p.state("facing_direction");
+        if (facing == "2") return {0, 1, 1 - t, 1};  // faces north: on the south side
+        if (facing == "3") return {0, 1, 0, t};
+        if (facing == "4") return {1 - t, 1, 0, 1};
+        if (facing == "5") return {0, t, 0, 1};
+    }
+    const double hx = endpointPane ? p.supportHalfX() : p.collisionHalfX();
+    const double hz = endpointPane ? p.supportHalfZ() : p.collisionHalfZ();
+    return {0.5 - hx, 0.5 + hx, 0.5 - hz, 0.5 + hz};
+}
+
 double costFromJumpDistance(int dist) {
     switch (dist) {
         case 2: return WALK_ONE_BLOCK_COST * 2;
@@ -60,12 +87,14 @@ std::optional<ParkourJump> parkourJump(CalculationContext& ctx, const BlockPos& 
     const BlockProps& support = ctx.props(from.x, from.y, from.z);
     const bool specialSupport = support.parkourSupport != ParkourSupport::None ||
                                 landing.parkourSupport != ParkourSupport::None;
-    if (delta.y < 0 && !specialSupport) return std::nullopt;
     if (!specialSupport) {
-        // Leave ordinary connected terrain to traverses and diagonals.
+        // Leave ordinary connected terrain to traverses and diagonals, and a step down onto
+        // the next block to descends. Bedrock addition: jumps that land a block lower (Baritone
+        // has none), over a gap where walking off the edge falls further.
         const int x = src.x + (delta.x > 0) - (delta.x < 0);
         const int z = src.z + (delta.z > 0) - (delta.z < 0);
         if (canWalkOn(ctx, x, src.y - 1, z)) return std::nullopt;
+        if (delta.y < 0 && canWalkOn(ctx, x, src.y - 2, z)) return std::nullopt;
     }
     if (!canParkourOn(ctx, onto) || !canParkourOn(ctx, from)) return std::nullopt;
     if (!ctx.isLoadedLive(src.x, src.z) || !ctx.isLoadedLive(dest.x, dest.z)) return std::nullopt;
@@ -106,13 +135,13 @@ std::optional<ParkourJump> parkourJump(CalculationContext& ctx, const BlockPos& 
                     const double bottom = y + (p.isHorizontalRod() ? 0.375 : p.topSlab ? 0.5 : 0);
                     if (by + epsilon >= top || by + playerHeight <= bottom + epsilon) continue;
                     // For panes, check the post at either endpoint and treat connecting arms elsewhere
-                    // as obstacles. The landing post is always centered.
-                    const bool rod = p.parkourSupport == ParkourSupport::RodY || p.isHorizontalRod();
+                    // as obstacles. The landing post is always centered. Rods, candles, honey and
+                    // ladders use their real (smaller) boxes.
                     const bool endpointPane = p.parkourSupport == ParkourSupport::Pane &&
                                               (BlockPos{x, y, z} == from || BlockPos{x, y, z} == onto);
-                    const double hx = rod || endpointPane ? p.supportHalfX() : 0.5;
-                    const double hz = rod || endpointPane ? p.supportHalfZ() : 0.5;
-                    if (std::abs(px - x - 0.5) < hx + radius && std::abs(pz - z - 0.5) < hz + radius) return false;
+                    const Footprint f = footprint(p, endpointPane);
+                    if (px > x + f.x0 - radius && px < x + f.x1 + radius && pz > z + f.z0 - radius &&
+                        pz < z + f.z1 + radius) return false;
                 }
             }
         }
@@ -135,10 +164,69 @@ std::optional<ParkourJump> parkourJump(CalculationContext& ctx, const BlockPos& 
             }
         }
         if (open && clear(length, landY, false)) {
-            return ParkourJump{takeoff, flight + takeoff / 0.20 + ctx.jumpPenalty, sprint};
+            // A long jump onto (or from) a candle or an end rod leaves almost no margin for the
+            // steering: prefer walking closer and making a short one when there is a choice.
+            const bool tiny = landing.hasSmallFootprint() || support.hasSmallFootprint();
+            const double precision = tiny ? 8 * std::max(0.0, length - 2.05) + (delta.x != 0 && delta.z != 0 ? 4 : 0) : 0;
+            return ParkourJump{takeoff, flight + takeoff / 0.20 + ctx.jumpPenalty + precision, sprint};
         }
     }
     return std::nullopt;
+}
+
+namespace {
+// A floor with the usual friction and a full top: the momentum jump's model of the run-up
+// depends on it (ice, slime and honey change the speed; soul sand and magma the jump).
+bool plainFloor(CalculationContext& ctx, int x, int y, int z) {
+    const BlockProps& p = ctx.props(x, y, z);
+    if (!p.fullCube || p.parkourSupport != ParkourSupport::None || p.hasFluid() || isClimbable(p)) return false;
+    if (p.type == T::Ice || p.type == T::Honey || p.type == T::SoulSand || p.type == T::Magma) return false;
+    if (p.name.find("slime") != std::string::npos) return false;
+    return canWalkOn(ctx, x, y, z, p) && !avoidWalkingInto(p) && !ctx.isAvoided(p);
+}
+
+// Room for the body through a whole jump: the head reaches 3.05 above the feet.
+bool jumpRoom(CalculationContext& ctx, int x, int y, int z) {
+    for (int dy = 0; dy <= 3; ++dy) {
+        const BlockProps& p = ctx.props(x, y + dy, z);
+        if (!fullyPassable(ctx, x, y + dy, z, p) || ctx.isAvoided(p)) return false;
+    }
+    return true;
+}
+}  // namespace
+
+std::optional<MomentumJump> momentumJump(CalculationContext& ctx, BlockPos src, BlockPos dest) {
+    if (!ctx.allowParkour || !ctx.canSprint) return std::nullopt;
+    if (!ctx.allowJumpAtBuildLimit && src.y >= ctx.bsi.maxY() - 4) return std::nullopt;
+    const BlockPos d = dest - src;
+    constexpr int length = kMomentumGap + 1;
+    if (d.y != 0 || !((std::abs(d.x) == length && d.z == 0) || (d.x == 0 && std::abs(d.z) == length))) return std::nullopt;
+    const int sx = (d.x > 0) - (d.x < 0), sz = (d.z > 0) - (d.z < 0);
+    if (!ctx.isLoadedLive(src.x, src.z) || !ctx.isLoadedLive(dest.x, dest.z)) return std::nullopt;
+    if (!plainFloor(ctx, src.x, src.y - 1, src.z) || !plainFloor(ctx, dest.x, dest.y - 1, dest.z)) return std::nullopt;
+    if (!jumpRoom(ctx, src.x, src.y, src.z)) return std::nullopt;
+    // the gap: open up to the top of the jump, and nothing to land on (a shorter jump would do)
+    for (int i = 1; i <= kMomentumGap; ++i) {
+        const int x = src.x + sx * i, z = src.z + sz * i;
+        if (!ctx.isLoadedLive(x, z) || !jumpRoom(ctx, x, src.y, z)) return std::nullopt;
+        if (canWalkOn(ctx, x, src.y - 1, z)) return std::nullopt;
+    }
+    // coming down into the landing block, and the half block we slide on after it
+    for (int dy = 0; dy <= 2; ++dy)
+        if (!fullyPassable(ctx, dest.x, dest.y + dy, dest.z)) return std::nullopt;
+    if (!checkOvershootSafety(ctx, dest.x + sx, dest.y, dest.z + sz)) return std::nullopt;
+    // the run-up: the hop on it needs the same room as the jump
+    int runUp = 0;
+    while (runUp < kMaxMomentumRunUp) {
+        const int x = src.x - sx * (runUp + 1), z = src.z - sz * (runUp + 1);
+        if (!ctx.isLoadedLive(x, z) || !plainFloor(ctx, x, src.y - 1, z) || !jumpRoom(ctx, x, src.y, z)) break;
+        ++runUp;
+    }
+    if (runUp < kMinMomentumRunUp) return std::nullopt;
+    // back up sneaking (the run-up may be one block wide), then sprint the run-up and the jump;
+    // a little extra for a jump with a few tenths of a block of margin
+    const double cost = runUp * SNEAK_ONE_BLOCK_COST + (runUp + length) * SPRINT_ONE_BLOCK_COST + 2 * ctx.jumpPenalty + 10;
+    return MomentumJump{runUp, cost};
 }
 
 double shulkerClimb(CalculationContext& ctx, BlockPos src, BlockPos dest) {
@@ -148,8 +236,12 @@ double shulkerClimb(CalculationContext& ctx, BlockPos src, BlockPos dest) {
         std::ranges::find(ctx.failedShulkerClimbs, std::pair{src, dest}) != ctx.failedShulkerClimbs.end())
         return COST_INF;
     const BlockPos lower{dest.x, src.y, dest.z};
+    // The opening lid is the step we stand on: it must open towards us (Bedrock facing ids).
+    const uint8_t towardsUs = src.x > dest.x ? 5 : src.x < dest.x ? 4 : src.z > dest.z ? 3 : 2;
     const auto isBox = [&](BlockPos p) {
-        return ctx.props(p.x, p.y, p.z).parkourSupport == ParkourSupport::ShulkerBox && ctx.permitsModify(p);
+        if (ctx.props(p.x, p.y, p.z).parkourSupport != ParkourSupport::ShulkerBox || !ctx.permitsModify(p)) return false;
+        const auto facing = ctx.blockFacing(p);
+        return !facing || *facing == towardsUs;
     };
     if (!isBox(lower) || (delta.y == 3 && !isBox(lower.above())) ||
         !ctx.props(dest.x, dest.y - 1, dest.z).fullCube ||
@@ -226,6 +318,10 @@ double traverse(CalculationContext& ctx, int x, int y, int z, int destX, int des
 
 double ascend(CalculationContext& ctx, int x, int y, int z, int destX, int destZ) {
     const BlockProps& toPlace = ctx.props(destX, y, destZ);
+    // Bedrock addition: landing a jump on the 3 pixel top of a ladder misses easily, and the
+    // ladder below does not always catch the fall. Climb it instead (into a column that goes on
+    // is fine: that is how a ladder is entered).
+    if (toPlace.type == T::Ladder && !isClimbable(ctx.props(destX, y + 1, destZ))) return COST_INF;
     double additionalPlacementCost = 0;
     if (!canWalkOn(ctx, destX, y, destZ, toPlace)) {
         additionalPlacementCost = ctx.costOfPlacingAt(destX, y, destZ, toPlace);
@@ -238,7 +334,10 @@ double ascend(CalculationContext& ctx, int x, int y, int z, int destX, int destZ
         return COST_INF;  // it would fall on us and could suffocate us
     }
     const BlockProps& srcDown = ctx.props(x, y - 1, z);
-    if (isClimbable(srcDown)) return COST_INF;
+    // Bedrock addition: on the thin top of a ladder (the climb ends pressed against its wall)
+    // the jump works as from a block; from inside a ladder it does not.
+    const bool ladderTop = srcDown.type == T::Ladder && ladderWall(srcDown) && !isClimbable(ctx.props(x, y, z));
+    if (isClimbable(srcDown) && !(ladderTop && additionalPlacementCost == 0)) return COST_INF;
     bool jumpingFromBottomSlab = isBottomSlab(srcDown);
     bool jumpingToBottomSlab = isBottomSlab(toPlace);
     if (jumpingFromBottomSlab && !jumpingToBottomSlab) return COST_INF;  // only slab -> slab from a bottom slab
@@ -473,6 +572,13 @@ void diagonal(CalculationContext& ctx, int x, int y, int z, int destX, int destZ
 double pillar(CalculationContext& ctx, int x, int y, int z) {
     const BlockProps& fromState = ctx.props(x, y, z);
     bool ladder = isClimbable(fromState);
+    if (!ladder && ctx.allowParkour && ctx.props(x, y + 1, z).type == T::Ladder) {
+        // Bedrock addition: a ladder starting at head height. A jump brings the feet into it.
+        const BlockProps& floor = ctx.props(x, y - 1, z);
+        if (canWalkOn(ctx, x, y - 1, z, floor) && !isClimbable(floor) && !floor.hasFluid() && !fromState.hasFluid() &&
+            fullyPassable(ctx, x, y, z, fromState) && !isBottomSlab(floor))
+            return JUMP_ONE_BLOCK_COST + LADDER_UP_ONE_COST + ctx.jumpPenalty;
+    }
     const BlockProps& fromDown = ctx.props(x, y - 1, z);
     if (!ladder) {
         if (isClimbable(fromDown)) return COST_INF;  // can't pillar from a ladder onto something else
@@ -517,8 +623,11 @@ double pillar(CalculationContext& ctx, int x, int y, int z) {
 
 double downward(CalculationContext& ctx, int x, int y, int z) {
     if (!ctx.allowDownward) return COST_INF;
-    if (!canWalkOn(ctx, x, y - 2, z)) return COST_INF;
     const BlockProps& down = ctx.props(x, y - 1, z);
+    // Bedrock addition: from the thin top of a ladder hanging in the air, down into it (stepping
+    // off the plate's outer edge): the ladder holds us, to climb it or the next one from inside
+    if (down.type == T::Ladder && ladderWall(down) && !canWalkOn(ctx, x, y - 2, z)) return LADDER_DOWN_ONE_COST;
+    if (!canWalkOn(ctx, x, y - 2, z)) return COST_INF;
     if (isClimbable(down)) return LADDER_DOWN_ONE_COST;
     // it may be falling now, but it will be air by the time we get here
     return fallCost(1) + getMiningDurationTicks(ctx, x, y - 1, z, down, false);
@@ -535,6 +644,7 @@ void parkourDiagonal(CalculationContext& ctx, int x, int y, int z, int sx, int s
     if (!fullyPassable(ctx, x, y + 2, z)) return;
     const BlockProps& standingOn = ctx.props(x, y - 1, z);
     if (isClimbable(standingOn) || standingOn.type == T::Stairs || isBottomSlab(standingOn)) return;
+    if (standingOn.parkourSupport != ParkourSupport::None) return;  // parkourJump's job
     if (standingOn.type == T::SoulSand || (ctx.allowWalkOnMagmaBlocks && standingOn.type == T::Magma)) return;
     if (ctx.assumeWalkOnWater && standingOn.hasFluid()) return;
     if (ctx.props(x, y, z).hasFluid()) return;  // can't jump out of water
@@ -557,7 +667,8 @@ void parkourDiagonal(CalculationContext& ctx, int x, int y, int z, int sx, int s
         if (overLava(ax, az) || overLava(bx, bz)) return;
         if (!clearColumn(cx, cz, i < maxJump ? 2 : 1)) return;
         const BlockProps& landingOn = ctx.props(cx, y - 1, cz);
-        if (i >= 2 && landingOn.type != T::Farmland && canWalkOn(ctx, cx, y - 1, cz, landingOn) && fullyPassable(ctx, cx, y + 2, cz)) {
+        if (i >= 2 && landingOn.type != T::Farmland && landingOn.parkourSupport == ParkourSupport::None &&
+            canWalkOn(ctx, cx, y - 1, cz, landingOn) && fullyPassable(ctx, cx, y + 2, cz)) {
             if (!checkOvershootSafety(ctx, cx + sx, y, cz + sz)) return;
             res.x = cx;
             res.y = y;
@@ -580,10 +691,13 @@ void parkour(CalculationContext& ctx, int x, int y, int z, Direction dir, MoveRe
     if (canWalkOn(ctx, x + xDiff, y - 1, z + zDiff, adj)) return;  // a traverse would do
     if (avoidWalkingInto(adj) && adj.type != T::Water) return;  // magma sucks (and never over lava)
     if (!fullyPassable(ctx, x + xDiff, y + 1, z + zDiff)) return;
-    if (!fullyPassable(ctx, x + xDiff, y + 2, z + zDiff)) return;
-    if (!fullyPassable(ctx, x, y + 2, z)) return;
+    if (!headRoom(ctx, x + xDiff, y + 2, z + zDiff)) return;
+    if (!headRoom(ctx, x, y + 2, z)) return;
     const BlockProps& standingOn = ctx.props(x, y - 1, z);
     if (isClimbable(standingOn) || standingOn.type == T::Stairs || isBottomSlab(standingOn)) return;
+    // Candles, end rods, panes: their real height and width make a different jump;
+    // parkourJump simulates those.
+    if (standingOn.parkourSupport != ParkourSupport::None) return;
     if (ctx.assumeWalkOnWater && standingOn.hasFluid()) return;
     if (ctx.props(x, y, z).hasFluid()) return;  // can't jump out of water
 
@@ -594,15 +708,16 @@ void parkour(CalculationContext& ctx, int x, int y, int z, Direction dir, MoveRe
     else maxJump = ctx.canSprint ? 4 : 3;
 
     int verifiedMaxJump = 1;
+    bool headBump = false;  // something 3 blocks up stops the jump just below its top
     for (int i = 2; i <= maxJump; i++) {
         int destX = x + xDiff * i;
         int destZ = z + zDiff * i;
         if (!fullyPassable(ctx, destX, y + 1, destZ)) break;
-        if (!fullyPassable(ctx, destX, y + 2, destZ)) break;
+        if (!headRoom(ctx, destX, y + 2, destZ)) break;
 
         const BlockProps& destInto = ctx.props(destX, y, destZ);
         if (!fullyPassable(ctx, destX, y, destZ, destInto)) {
-            if (i <= 3 && ctx.allowParkourAscend && ctx.canSprint && canWalkOn(ctx, destX, y, destZ, destInto) &&
+            if (i <= 3 && !headBump && ctx.allowParkourAscend && ctx.canSprint && canWalkOn(ctx, destX, y, destZ, destInto) &&
                 checkOvershootSafety(ctx, destX + xDiff, y + 1, destZ + zDiff)) {
                 res.x = destX;
                 res.y = y + 1;
@@ -614,8 +729,10 @@ void parkour(CalculationContext& ctx, int x, int y, int z, Direction dir, MoveRe
         }
 
         const BlockProps& landingOn = ctx.props(destX, y - 1, destZ);
-        if ((landingOn.type != T::Farmland && canWalkOn(ctx, destX, y - 1, destZ, landingOn)) ||
-            (std::min(16, ctx.frostWalker + 2) >= i && canUseFrostWalker(ctx, landingOn))) {
+        // landing on a candle, rod or pane is parkourJump's job; jumping over one is fine
+        const bool specialLanding = landingOn.parkourSupport != ParkourSupport::None && landingOn.collides;
+        if (!specialLanding && ((landingOn.type != T::Farmland && canWalkOn(ctx, destX, y - 1, destZ, landingOn)) ||
+            (std::min(16, ctx.frostWalker + 2) >= i && canUseFrostWalker(ctx, landingOn)))) {
             if (checkOvershootSafety(ctx, destX + xDiff, y, destZ + zDiff)) {
                 res.x = destX;
                 res.y = y;
@@ -625,7 +742,15 @@ void parkour(CalculationContext& ctx, int x, int y, int z, Direction dir, MoveRe
             }
             break;
         }
-        if (!fullyPassable(ctx, destX, y + 3, destZ)) break;
+        if (!fullyPassable(ctx, destX, y + 3, destZ)) {
+            // Bedrock addition: Baritone gives up here. A block 3 up only lowers the top of the
+            // jump from 1.25 to 1.2 (the head is 1.8 tall): about one tick less of flight, still
+            // enough for a flat 3 block gap, but no longer for climbing a block. Parkour maps
+            // put candles and ceilings there on purpose.
+            const BlockProps& ceiling = ctx.props(destX, y + 3, destZ);
+            if (ceiling.hasFluid() || avoidWalkingInto(ceiling) || ctx.isAvoided(ceiling)) break;
+            headBump = true;
+        }
         verifiedMaxJump = i;
     }
 
@@ -647,6 +772,164 @@ void parkour(CalculationContext& ctx, int x, int y, int z, Direction dir, MoveRe
             return;
         }
     }
+}
+
+void ladderJump(CalculationContext& ctx, int x, int y, int z, Direction dir, MoveResult& res) {
+    if (!ctx.allowParkour) return;
+    if (!ctx.allowJumpAtBuildLimit && y >= ctx.bsi.maxY() - 2) return;
+    const DirOffset o = offsetOf(dir);
+    const BlockProps& standingOn = ctx.props(x, y - 1, z);
+    if (!canWalkOn(ctx, x, y - 1, z, standingOn) || isClimbable(standingOn) || standingOn.type == T::Stairs ||
+        isBottomSlab(standingOn) || standingOn.parkourSupport != ParkourSupport::None || standingOn.hasFluid() ||
+        standingOn.type == T::SoulSand || standingOn.type == T::Honey) return;
+    const BlockProps& at = ctx.props(x, y, z);
+    if (at.hasFluid() || isClimbable(at) || !headRoom(ctx, x, y + 2, z)) return;
+    for (int i = 1; i <= 2; ++i) {
+        const int lx = x + o.x * i, lz = z + o.z * i;
+        if (!ctx.isLoadedLive(lx, lz)) return;
+        const BlockProps& ladder = ctx.props(lx, y + 1, lz);
+        if (ladder.type == T::Ladder) {
+            // the legs cross the cell below it before the top of the jump; the head goes on up
+            if (!fullyPassable(ctx, lx, y, lz) || !headRoom(ctx, lx, y + 2, lz)) return;
+            // the block behind the ladder stops us in its cell, and pressing into it climbs
+            if (!ctx.props(lx + o.x, y + 1, lz + o.z).fullCube) return;
+            res.x = lx;
+            res.y = y + 1;
+            res.z = lz;
+            res.cost = WALK_ONE_BLOCK_COST * i + JUMP_ONE_BLOCK_COST + ctx.jumpPenalty;
+            return;
+        }
+        if (!fullyPassable(ctx, lx, y, lz) || !fullyPassable(ctx, lx, y + 1, lz) || !headRoom(ctx, lx, y + 2, lz)) return;
+        const BlockProps& under = ctx.props(lx, y - 1, lz);
+        if (avoidWalkingInto(under) && under.type != T::Water) return;  // never over lava
+    }
+}
+
+std::optional<EdgeWalk> edgeWalk(CalculationContext& ctx, BlockPos src, BlockPos dest) {
+    const BlockPos d = dest - src;
+    const int n = std::abs(d.x) + std::abs(d.z);
+    if (d.y != 0 || (d.x != 0 && d.z != 0) || n < 2 || n > 5) return std::nullopt;
+    if (!ctx.isLoadedLive(src.x, src.z) || !ctx.isLoadedLive(dest.x, dest.z)) return std::nullopt;
+    const BlockPos step{(d.x > 0) - (d.x < 0), 0, (d.z > 0) - (d.z < 0)};
+    const auto standable = [&](BlockPos p) {
+        const BlockProps& floor = ctx.props(p.x, p.y - 1, p.z);
+        return floor.fullCube && canWalkOn(ctx, p.x, p.y - 1, p.z, floor) && !avoidWalkingInto(floor) &&
+               fullyPassable(ctx, p.x, p.y, p.z) && fullyPassable(ctx, p.x, p.y + 1, p.z);
+    };
+    if (!standable(src) || !standable(dest)) return std::nullopt;
+    for (int side : {1, -1}) {
+        const BlockPos perp{-step.z * side, 0, step.x * side};
+        bool ok = true, blocked = false;
+        for (int k = 0; k <= n && ok; ++k) {
+            const BlockPos c{src.x + step.x * k, src.y, src.z + step.z * k};
+            const BlockPos beside = c + perp;
+            if (!ctx.isLoadedLive(beside.x, beside.z)) ok = false;
+            // the body hangs over the column beside
+            for (int dy = 0; dy <= 1 && ok; ++dy) {
+                const BlockProps& b = ctx.props(beside.x, c.y + dy, beside.z);
+                if (!fullyPassable(ctx, beside.x, c.y + dy, beside.z, b) || ctx.isAvoided(b)) ok = false;
+            }
+            if (isLava(ctx.props(beside.x, c.y - 1, beside.z))) ok = false;
+            if (k == 0 || k == n || !ok) continue;
+            // a floor with a full top up to its edge, and only blocks that keep clear of it
+            const BlockProps& floor = ctx.props(c.x, c.y - 1, c.z);
+            if (!floor.fullCube || avoidWalkingInto(floor)) ok = false;
+            for (int dy = 0; dy <= 1 && ok; ++dy) {
+                const BlockProps& p = ctx.props(c.x, c.y + dy, c.z);
+                if (fullyPassable(ctx, c.x, c.y + dy, c.z, p)) continue;
+                blocked = true;
+                const double half = perp.x != 0 ? p.collisionHalfX() : p.collisionHalfZ();
+                if (!p.collides || p.hasFluid() || avoidWalkingInto(p) || ctx.isAvoided(p) || p.type == T::Ladder ||
+                    p.parkourSupport == ParkourSupport::Pane || half > 0.44) ok = false;
+            }
+        }
+        // with nothing in the way, walking along the middle is simpler
+        if (ok && blocked) return EdgeWalk{side, (n + 2) * SNEAK_ONE_BLOCK_COST};
+    }
+    return std::nullopt;
+}
+
+double ladderHop(CalculationContext& ctx, BlockPos src, BlockPos dest) {
+    if (!ctx.allowParkour) return COST_INF;
+    const BlockProps& top = ctx.props(src.x, src.y - 1, src.z);
+    if (top.type != T::Ladder || !ladderWall(top)) return COST_INF;  // standing on the thin top of a ladder
+    const BlockPos d = dest - src;
+    if (d.y < 0 || d.y > 1 || (d.x == 0 && d.z == 0) || std::abs(d.x) > 2 || std::abs(d.z) > 2) return COST_INF;
+    const BlockProps& target = ctx.props(dest.x, dest.y, dest.z);
+    if (target.type != T::Ladder || !ladderWall(target)) return COST_INF;
+    if (!ctx.isLoadedLive(src.x, src.z) || !ctx.isLoadedLive(dest.x, dest.z)) return COST_INF;
+    if (d.y == 1) {
+        // the feet reach one block up from about 1 to 1.6 blocks of flight
+        const double gx = std::max(0.0, std::abs(d.x) - 0.5), gz = std::max(0.0, std::abs(d.z) - 0.5);
+        if (gx * gx + gz * gz > 1.6 * 1.6) return COST_INF;
+    }
+    const BlockProps& at = ctx.props(src.x, src.y, src.z);
+    if (!fullyPassable(ctx, src.x, src.y, src.z, at) || !headRoom(ctx, src.x, src.y + 1, src.z) ||
+        !headRoom(ctx, src.x, src.y + 2, src.z) || !headRoom(ctx, dest.x, dest.y + 1, dest.z)) return COST_INF;
+    // through the cells between, along x then z or z then x (around a corner)
+    const auto open = [&](int x, int z) {
+        for (int y = src.y; y <= std::max(src.y + 1, dest.y + 1); ++y) {
+            const BlockProps& p = ctx.props(x, y, z);
+            if (!(fullyPassable(ctx, x, y, z, p) || p.type == T::Ladder) || avoidWalkingInto(p) || ctx.isAvoided(p)) return false;
+        }
+        return !isLava(ctx.props(x, src.y - 1, z));
+    };
+    const auto route = [&](bool xFirst) {
+        int x = src.x, z = src.z;
+        for (int i = 0; i < std::abs(d.x) + std::abs(d.z) - 1; ++i) {
+            const bool moveX = xFirst ? x != dest.x : z == dest.z;
+            if (moveX) x += d.x > 0 ? 1 : -1;
+            else z += d.z > 0 ? 1 : -1;
+            if (!open(x, z)) return false;
+        }
+        return true;
+    };
+    if (!route(true) && !route(false)) return COST_INF;
+    // The takeoff is at the end of the plate on the destination's side, the feet past the
+    // ladder's cell (above it, Bedrock's client takes the jump for a climb): the cell there must
+    // be open. A ladder beside it on the same wall (a staircase of ladders) has its plate in the
+    // way: that one is climbed from inside instead (LadderShimmy one up).
+    const BlockPos wall = *ladderWall(top);
+    int sx = d.x - (d.x * wall.x + d.z * wall.z) * wall.x, sz = d.z - (d.x * wall.x + d.z * wall.z) * wall.z;
+    if (sx == 0 && sz == 0) {  // straight out from the wall: the takeoff goes right
+        sx = -wall.z;
+        sz = wall.x;
+    }
+    sx = (sx > 0) - (sx < 0);
+    sz = (sz > 0) - (sz < 0);
+    for (int y = src.y; y <= src.y + 1; ++y)
+        if (!fullyPassable(ctx, src.x + sx, y, src.z + sz)) return COST_INF;
+    return JUMP_ONE_BLOCK_COST + SPRINT_ONE_BLOCK_COST * std::hypot(d.x, d.z) + 8 + ctx.jumpPenalty;
+}
+
+double ladderShimmy(CalculationContext& ctx, BlockPos src, BlockPos dest) {
+    const BlockPos d = dest - src;
+    if (d.y < 0 || d.y > 1 || std::abs(d.x) + std::abs(d.z) != 1) return COST_INF;
+    const BlockProps& from = ctx.props(src.x, src.y, src.z);
+    const BlockProps& to = ctx.props(dest.x, dest.y, dest.z);
+    if (to.type != T::Ladder || !ladderWall(to)) return COST_INF;
+    if (d.y == 1) {
+        // A staircase of ladders on one wall, one along and one up: climb out of the top of this
+        // one and step sideways into the next as the feet pass its bottom. In front of the plates
+        // nothing is in the way; from the thin top the next one's plate would be.
+        const auto wall = ladderWall(from), next = ladderWall(to);
+        if (from.type != T::Ladder || !wall || *wall != *next || d.x * wall->x + d.z * wall->z != 0) return COST_INF;
+        if (!fullyPassable(ctx, src.x, src.y + 1, src.z) || !headRoom(ctx, src.x, src.y + 2, src.z) ||
+            !headRoom(ctx, dest.x, dest.y + 1, dest.z) || !headRoom(ctx, dest.x, dest.y + 2, dest.z)) return COST_INF;
+        return LADDER_UP_ONE_COST + WALK_ONE_BLOCK_COST + 4;
+    }
+    if (!headRoom(ctx, src.x, src.y + 1, src.z) || !headRoom(ctx, dest.x, dest.y + 1, dest.z)) return COST_INF;
+    if (from.type != T::Ladder) {
+        // walking from a block into a ladder beside it, at the same height: it catches us
+        const BlockProps& floor = ctx.props(src.x, src.y - 1, src.z);
+        if (!fullyPassable(ctx, src.x, src.y, src.z, from) || !canWalkOn(ctx, src.x, src.y - 1, src.z, floor) ||
+            isClimbable(floor) || *ladderWall(to) == BlockPos{-d.x, 0, -d.z}) return COST_INF;
+        return WALK_ONE_BLOCK_COST;
+    }
+    // the plates must not stand in the way: never through the block a ladder hangs on
+    const auto wall = ladderWall(from);
+    if (wall && *wall == d) return COST_INF;
+    return SNEAK_ONE_BLOCK_COST;
 }
 
 }  // namespace movement_costs
@@ -712,6 +995,30 @@ void applyCornerJump(const Move& m, CalculationContext& ctx, int x, int y, int z
         res = {dest.x, dest.y, dest.z, 16.0 + plan->inputs.size() + ctx.jumpPenalty};
 }
 
+void applyLadderJump(const Move& m, CalculationContext& ctx, int x, int y, int z, MoveResult& res) {
+    ladderJump(ctx, x, y, z, m.direction, res);
+}
+
+void applyEdgeWalk(const Move& m, CalculationContext& ctx, int x, int y, int z, MoveResult& res) {
+    const BlockPos src{x, y, z}, dest = src.offset(m.dx, 0, m.dz);
+    if (auto walk = edgeWalk(ctx, src, dest)) res = {dest.x, dest.y, dest.z, walk->cost};
+}
+
+void applyLadderHop(const Move& m, CalculationContext& ctx, int x, int y, int z, MoveResult& res) {
+    const BlockPos src{x, y, z}, dest = src.offset(m.dx, m.dy, m.dz);
+    res = {dest.x, dest.y, dest.z, ladderHop(ctx, src, dest)};
+}
+
+void applyLadderShimmy(const Move& m, CalculationContext& ctx, int x, int y, int z, MoveResult& res) {
+    const BlockPos src{x, y, z}, dest = src.offset(m.dx, m.dy, m.dz);
+    res = {dest.x, dest.y, dest.z, ladderShimmy(ctx, src, dest)};
+}
+
+void applyMomentumJump(const Move& m, CalculationContext& ctx, int x, int y, int z, MoveResult& res) {
+    const BlockPos src{x, y, z}, dest = src.offset(m.dx, 0, m.dz);
+    if (auto jump = momentumJump(ctx, src, dest)) res = {dest.x, dest.y, dest.z, jump->cost};
+}
+
 void applyShulkerClimb(const Move& m, CalculationContext& ctx, int x, int y, int z, MoveResult& res) {
     const BlockPos src{x, y, z};
     const BlockPos dest = src.offset(m.dx, m.dy, m.dz);
@@ -760,7 +1067,19 @@ std::span<const Move> allMoves() {
             result.push_back({"PARKOUR_CORNER", MT::ParkourCorner, 3 * step.x, 0, 3 * step.z, false, false, dir, applyCornerJump});
             result.push_back({"PARKOUR_SHULKER", MT::ParkourShulker, step.x, 2, step.z, false, false, dir, applyShulkerClimb});
             result.push_back({"PARKOUR_SHULKER", MT::ParkourShulker, step.x, 3, step.z, false, false, dir, applyShulkerClimb});
+            result.push_back({"PARKOUR_LADDER", MT::Parkour, 2 * step.x, 1, 2 * step.z, true, true, dir, applyLadderJump});
+            for (int n = 2; n <= 5; ++n)
+                result.push_back({"EDGE_WALK", MT::EdgeWalk, n * step.x, 0, n * step.z, false, false, dir, applyEdgeWalk});
+            result.push_back({"LADDER_SHIMMY", MT::LadderShimmy, step.x, 0, step.z, false, false, dir, applyLadderShimmy});
+            result.push_back({"LADDER_SHIMMY", MT::LadderShimmy, step.x, 1, step.z, false, false, dir, applyLadderShimmy});
+            result.push_back({"PARKOUR_MOMENTUM", MT::MomentumJump, (kMomentumGap + 1) * step.x, 0, (kMomentumGap + 1) * step.z,
+                              false, false, dir, applyMomentumJump});
         }
+        for (int dx = -2; dx <= 2; ++dx)
+            for (int dz = -2; dz <= 2; ++dz)
+                for (int dy = 0; dy <= 1; ++dy)
+                    if (dx != 0 || dz != 0)
+                        result.push_back({"LADDER_HOP", MT::LadderHop, dx, dy, dz, false, false, N, applyLadderHop});
         for (int dx = -3; dx <= 3; ++dx) {
             for (int dz = -3; dz <= 3; ++dz) {
                 const int distance = dx * dx + dz * dz;

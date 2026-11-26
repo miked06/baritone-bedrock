@@ -74,6 +74,10 @@ inline constexpr uint8_t ContainerEnumName_Inventory = 29;
 
 inline constexpr std::size_t BlockSource_vt_getBlockLayer = 1;  // getBlock(BlockPos const&, uint32 layer)
 inline constexpr std::size_t BlockSource_vt_getBlock = 2;       // getBlock(BlockPos const&)
+inline constexpr std::size_t BlockSource_vt_getBlockEntity = 3;  // BlockActor* getBlockEntity(BlockPos const&), null without one
+// ShulkerBoxBlockActor: the side the lid opens to (FacingID: 0 down 1 up 2 north 3 south 4 west
+// 5 east). Found in 26.65 by comparing boxes that only have one free side (#bactor).
+inline constexpr std::ptrdiff_t ShulkerBoxBlockActor_facing = 0x380;
 inline constexpr std::size_t BlockSource_vt_hasChunksAt = 0x10;  // hasChunksAt(BlockPos const&, int radius, bool)
 inline constexpr std::ptrdiff_t BlockSource_maxHeight = 0x38;   // int16
 inline constexpr std::ptrdiff_t BlockSource_minHeight = 0x3A;   // int16

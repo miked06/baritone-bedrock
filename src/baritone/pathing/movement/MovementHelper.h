@@ -9,6 +9,17 @@ inline bool isLava(const BlockProps& p) { return p.fluid == Fluid::Lava; }
 inline bool isLiquid(const BlockProps& p) { return p.hasFluid(); }
 inline bool isBottomSlab(const BlockProps& p) { return p.bottomSlab; }
 inline bool isClimbable(const BlockProps& p) { return p.type == BlockType::Ladder || p.type == BlockType::Vine; }
+// The side of its cell a ladder hangs on: towards the block holding it (Bedrock
+// facing_direction: 2 faces north, so it hangs on the block south of it). nullopt if unknown.
+inline std::optional<BlockPos> ladderWall(const BlockProps& p) {
+    if (p.type != BlockType::Ladder) return std::nullopt;
+    const auto facing = p.state("facing_direction");
+    if (facing == "2") return BlockPos{0, 0, 1};
+    if (facing == "3") return BlockPos{0, 0, -1};
+    if (facing == "4") return BlockPos{1, 0, 0};
+    if (facing == "5") return BlockPos{-1, 0, 0};
+    return std::nullopt;
+}
 inline bool isBlockNormalCube(const BlockProps& p) { return p.fullCube; }
 
 bool possiblyFlowing(const BlockProps& p);

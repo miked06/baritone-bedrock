@@ -56,6 +56,17 @@ For the 1.4 feature inventories and per-feature qualifications, see [FEATURE_COM
 Things Bedrock Baritone has that Java does not:
 
 - Diagonal parkour: Baritone only jumps along the four axes; Bedrock Baritone also jumps 2 blocks diagonally over a gap (3 when it can sprint), at the same height, never over lava (with `allowParkour`).
+- Parkour under a ceiling: Baritone refuses a jump when anything is 3 blocks above it. A head bump there only lowers the top of the jump from 1.25 to 1.2 blocks, so Bedrock Baritone still makes flat jumps (up to a 3 block gap) under it; jumps that climb a block still need the full height. A one block gap with a block at head height is crossed with a simulated low hop.
+- Ladders: Bedrock Baritone jumps into a ladder hanging in the air (its bottom one block above the jump, up to 2 blocks ahead, with the block it hangs on behind it) or straight up into one starting at head height. A ladder at head height counts as the thin plate it is.
+- Shulker box lid climbs read the box's facing from its block entity and only start from the side the lid opens to.
+- Ladders: climbing pushes into the wall, so the bot can stand on the thin top of a ladder and jump into another one up to 2 blocks away, at the same height or one up, also around the corner of the block they hang on. In a row of ladders it moves sideways while hanging (sneaking).
+- 4 block gaps: Baritone jumps at most 3 blocks of gap. With 5 or 6 free blocks of run-up, Bedrock Baritone backs up, sprints, hops once on the run-up and jumps again the tick it lands, for the momentum a 4 block gap needs (`MomentumJump`).
+- Staircases of ladders (one along and one up on the same wall): climbed from inside, stepping across at the top of each.
+- Jumps over a gap that land a block lower (Baritone's parkour only goes level or up).
+- Back on the path after a lag-back: the most recent movement that holds the player, not the first (overlapping jump zones sent the bot back to an earlier jump).
+- Tripwires not attached to hooks are not avoided (`blocksToAvoid` only matches armed tripwires).
+- Honey blocks are 1/16 smaller than their cell: the bot sneaks along the edge of the floor beside them (`EdgeWalk`). Closed shulker boxes can be walked on.
+- Candles are parkour supports, like end rods: the bot lands on them and jumps from them with their real size (6 pixels tall, 2 to 6 pixels wide), and prefers short, straight jumps onto them.
 - `#build` reads `.mcstructure` (Bedrock) files and converts Java block names to Bedrock.
 - `#complete` exposes completion suggestions through a command.
 - Ore-family and item aliases such as `diamond` expand to the matching ore blocks.

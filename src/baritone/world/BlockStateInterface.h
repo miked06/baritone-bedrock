@@ -35,6 +35,11 @@ public:
     const BlockProps& props(int x, int y, int z) { return registry_.props(get(x, y, z)); }
     const BlockProps& props(StateId id) const { return registry_.props(id); }
 
+    std::optional<uint8_t> facing(int x, int y, int z) {
+        get(x, y, z);  // selects the chunk
+        return cur_.live ? cur_.live->facing(x & 15, y, z & 15) : std::nullopt;
+    }
+
     // Loaded or cached (BlockStateInterface.isLoaded): the pathfinder may go there.
     bool isLoaded(int x, int z) {
         Entry e = lookup(x >> 4, z >> 4);

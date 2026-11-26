@@ -38,7 +38,16 @@ std::optional<PathingCommand> CustomGoalProcess::onTick(bool calcFailed, bool is
         case State::Executing: {
             PathingBehavior& p = baritone_.pathing();
             const BlockPos feet = baritone_.playerFeet();
-            if (goal_ && goal_->isInGoal(feet) && goal_->isInGoal(p.pathStart())) {
+            // Bedrock addition: standing on the edge of the goal's support (e.g. the 3 pixel top of
+            // a ladder) the feet can be just outside the goal block. The path calculation then
+            // starts in the goal and does nothing: that is arrived too, once on the ground.
+            if (goal_ && goal_->isInGoal(p.pathStart()) && (goal_->isInGoal(feet) || baritone_.player().onGround())) {
+                // Still in the air (e.g. climbing out of a ladder onto its top): let the last
+                // movement finish. Cancelling now drops us back down and starts over.
+                if (!baritone_.player().onGround() && p.isPathing()) {
+                    settledTicks_ = 0;
+                    return PathingCommand{goal_, PathingCommandType::SetGoalAndPath};
+                }
                 // Release path input and let residual movement settle. If the
                 // player crosses the boundary, resume pathing to the same goal.
                 const auto velocity = baritone_.player().velocity();

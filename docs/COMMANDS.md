@@ -231,13 +231,15 @@ These read the game's memory and help when updating the bot to a new game versio
 | `#world` | State of the world snapshot. |
 | `#calc <x> [y] <z>` / `#calc clear` | Preview a path without moving, then hide it with `clear`. Reports estimated travel time, required block changes, nearby hazards, drops and movements planned from cached chunks. The in-game overlay uses cyan for the route, red for break, green for placement and amber for nearby hazards. |
 | `#cost` | Cost of every movement from the player's position. |
+| `#terrain dump [radius] [below] [above] [x y z]` | Write the blocks around you, or around `x y z` (default 32 around, 16 below, 32 above), with the properties the pathfinder gives them, to `terrain	errain_<x>_<y>_<z>.txt`. The `dev_replay_terrain_dump` test replays a path problem from such a file: set `BARITONE_TERRAIN` to the file, `BARITONE_GOAL` to `x y z` and optionally `BARITONE_START`, then run `baritone_tests.exe --filter dev_replay`. `BARITONE_SWEEP="x0 x1 z0 z1"` lists the standing places of that area the bot can reach. |
 | `#inv [all]` (`#hotbar`) | Hotbar (or whole inventory) contents. |
 | `#entities` (`#ent`) | Loaded entities. |
 | `#perf [on\|off\|reset]` | Opt-in rolling timings in milliseconds: mean, p95, p99 and maximum for game-frame intervals, bot work, scanning, preview/rendering and background loads. Reports Minecraft's current and peak working set and private allocation. `on` starts a fresh capture; `off` stops and reports; no argument reports the current capture. The last 4096 samples per metric are retained; `n` counts all recorded samples. Disabled by default. |
 | `#nbt [dx dy dz]` | Block states of a block near the player. |
+| `#bactor <x y z> [index] [bytes]` | Call a `BlockSource` virtual function (default 3, `getBlockEntity`) on a position and dump the object it returns to `log.txt`. Used to find block entity fields, such as the shulker box facing, after a game update. |
 | `#ecs <Component...>` / `#ecsdump <Component> [bytes]` | Does the player have these EnTT components / raw content of one. |
 | `#attrs` | Player attributes (health, hunger, speed...). |
 | `#quiet [on\|off]` | Hide the bot's messages from the chat (screenshots, videos); they still go to `log.txt`. |
 | `#vt <object> [count]` / `#hex <object> [size]` / `#hexat <address> [size]` | Dump a vtable or memory to the log. |
 | `#ism [slot...]` / `#swap <slot> <slot> [local\|server]` | Inventory request manager state / swap two slots. |
-| `#slot <0-8>`, `#walk <ticks> [sprint]`, `#look <yaw> <pitch>`, `#break dx dy dz`, `#place dx dy dz`, `#grab <0\|1>` | Low-level tests of input and interaction. |
+| `#slot <0-8>`, `#walk <ticks> [sprint\|sneak\|normal] [left\|right]`, `#look <yaw> <pitch>`, `#break dx dy dz`, `#place dx dy dz`, `#grab <0\|1>` | Low-level tests of input and interaction. |
